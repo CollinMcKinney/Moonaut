@@ -1,6 +1,8 @@
 # Moonaut Engine
 
-A lightweight game engine written in C with Lua scripting support. Designed for simplicity, featuring a tag-based asset system, real-time physics, and multiple shading modes.
+A lightweight game engine written in C with Lua scripting support. Designed for simplicity, featuring a tag-based asset system, real-time physics, and multiple software-rendering shading modes with tweakable effects.
+
+https://github.com/user-attachments/assets/cc707332-6408-40ea-ad67-584855b1fde4
 
 ## Features
 
