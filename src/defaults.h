@@ -83,9 +83,9 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
         model_definition *mdl = (model_definition*)loaded;
         tag_reference *refs = (tag_reference*)mdl->materials.address;
         if (name && strstr(name, "sphere"))
-            refs[0].handle = tag_load("water", TAG_material);
+            refs[0].handle = tag_load("default_material_water", TAG_material);
         else if (name && strstr(name, "box"))
-            refs[0].handle = tag_load("grass", TAG_material);
+            refs[0].handle = tag_load("default_material_grass", TAG_material);
     }
 
     tag_postprocess_tag(handle);
@@ -108,27 +108,37 @@ void tag_register_default_all(void){
     tag_register_group(&lua_script);
 
     /* Default material definitions. */
-    tag_register_default("default_wireframe", TAG_material, &DEFAULT_MATERIAL_WIREFRAME);
-    tag_register_default("default_flat",      TAG_material, &DEFAULT_MATERIAL_FLAT);
-    tag_register_default("default_gouraud",   TAG_material, &DEFAULT_MATERIAL_GOURAUD);
-    tag_register_default("default_phong",     TAG_material, &DEFAULT_MATERIAL_PHONG);
-    tag_register_default("water",             TAG_material, &DEFAULT_MATERIAL_WATER);
-    tag_register_default("grass",             TAG_material, &DEFAULT_MATERIAL_GRASS);
-    tag_register_default("cloth",             TAG_material, &DEFAULT_MATERIAL_CLOTH);
+    tag_register_default("default_material_wireframe",  TAG_material, &DEFAULT_MATERIAL_WIREFRAME);
+    tag_register_default("default_material_flat",       TAG_material, &DEFAULT_MATERIAL_FLAT);
+    tag_register_default("default_material_gouraud",    TAG_material, &DEFAULT_MATERIAL_GOURAUD);
+    tag_register_default("default_material_phong",      TAG_material, &DEFAULT_MATERIAL_PHONG);
+    tag_register_default("default_material_water",      TAG_material, &DEFAULT_MATERIAL_WATER);
+    tag_register_default("default_material_grass",      TAG_material, &DEFAULT_MATERIAL_GRASS);
+    tag_register_default("default_material_cloth",      TAG_material, &DEFAULT_MATERIAL_CLOTH);
+    tag_register_default("default_material_wood",       TAG_material, &DEFAULT_MATERIAL_WOOD);
+    tag_register_default("default_material_metal",      TAG_material, &DEFAULT_MATERIAL_METAL);
+    tag_register_default("default_material_glass",      TAG_material, &DEFAULT_MATERIAL_GLASS);
+    tag_register_default("default_material_skin",       TAG_material, &DEFAULT_MATERIAL_SKIN);
+    tag_register_default("default_material_rubber",     TAG_material, &DEFAULT_MATERIAL_RUBBER);
+    tag_register_default("default_material_ice",        TAG_material, &DEFAULT_MATERIAL_ICE);
+    tag_register_default("default_material_stone",      TAG_material, &DEFAULT_MATERIAL_STONE);
+    tag_register_default("default_material_lava",       TAG_material, &DEFAULT_MATERIAL_LAVA);
+    tag_register_default("default_material_toon",       TAG_material, &DEFAULT_MATERIAL_TOON);
+    tag_register_default("default_material_hologram",   TAG_material, &DEFAULT_MATERIAL_HOLOGRAM);
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);
     tag_register_default("default_camera",    TAG_camera,    &DEFAULT_CAMERA);
 
     /* Register models and rigid bodies first, since entities reference them */
-    tag_register_default("default_rigid_body_sphere",    TAG_rigid_body, &DEFAULT_RIGID_BODY_SPHERE);
-    tag_register_default("default_model_sphere",     TAG_model,     &DEFAULT_MODEL_SPHERE);
-    tag_register_default("default_rigid_body_box",    TAG_rigid_body,&DEFAULT_RIGID_BODY_BOX);
-    tag_register_default("default_model_box",     TAG_model,     &DEFAULT_MODEL_BOX);
+    tag_register_default("default_rigid_body_sphere",   TAG_rigid_body, &DEFAULT_RIGID_BODY_SPHERE);
+    tag_register_default("default_model_sphere",        TAG_model,      &DEFAULT_MODEL_SPHERE);
+    tag_register_default("default_rigid_body_box",      TAG_rigid_body, &DEFAULT_RIGID_BODY_BOX);
+    tag_register_default("default_model_box",           TAG_model,      &DEFAULT_MODEL_BOX);
 
     /* Then entities */
-    tag_register_default("default_entity_sphere",    TAG_entity,    &DEFAULT_ENTITY_SPHERE);
-    tag_register_default("default_entity_box",    TAG_entity,    &DEFAULT_ENTITY_BOX);
+    tag_register_default("default_entity_sphere",   TAG_entity,    &DEFAULT_ENTITY_SPHERE);
+    tag_register_default("default_entity_box",      TAG_entity,    &DEFAULT_ENTITY_BOX);
 
     /* Register the default scenario */
     tag_register_default("default_scenario",  TAG_scenario,  &DEFAULT_SCENARIO);
