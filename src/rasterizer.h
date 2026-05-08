@@ -113,6 +113,11 @@ static u32 pack_color_real(real r, real g, real b) {
 /* - Transparent / opaque pixel write - */
 static void write_pixel(i32 idx, real iw, vec3 color, real alpha)
 {
+    if (iw <= 0.0f) return;
+
+    alpha = saturate(alpha);
+    if (alpha <= 0.0f) return;
+
     if (alpha >= 1.0f) {
         /* Opaque – normal depth write */
         if (iw > zbuf[idx]) {
@@ -120,7 +125,9 @@ static void write_pixel(i32 idx, real iw, vec3 color, real alpha)
             fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
         }
     } else {
-        /* Transparent – blend with background, do NOT update zbuf, do NOT depth test */
+        /* Transparent – depth test against opaque geometry, but do not update zbuf. */
+        if (iw < zbuf[idx]) return;
+
         u32 bg = fb[idx];
         real br = (real)((bg >> 16) & 0xFF) / 255.0f;
         real bg_g = (real)((bg >> 8)  & 0xFF) / 255.0f;
@@ -195,6 +202,7 @@ static void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
 static void swapi(i32 *a, i32 *b) { i32 t = *a; *a = *b; *b = t; }
 static void swapr(real *a, real *b) { real t = *a; *a = *b; *b = t; }
 static void swapv(vec3 *a, vec3 *b) { vec3 t = *a; *a = *b; *b = t; }
+static i32 raster_round(real x) { return (i32)real_floor(x + 0.5f); }
 
 /* Global render time (animates emissive pulse) */
 static real render_time = 0.0f;
@@ -443,7 +451,7 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
    Wireframe rasterization
    ------------------------------------------------------------------------- */
 /* Bresenham line drawing with z-buffer */
-static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, u8 r, u8 g, u8 b)
+static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3 color, real alpha)
 {
     i32 dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     i32 dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
@@ -457,10 +465,7 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, u8 r
     while (1) {
         if (x0 >= 0 && x0 < fw && y0 >= 0 && y0 < fh) {
             i32 idx = y0 * fw + x0;
-            if (iw > zbuf[idx]) {
-                zbuf[idx] = iw;
-                fb[idx] = pack_color(r, g, b);
-            }
+            write_pixel(idx, iw, color, alpha);
         }
         if (x0 == x1 && y0 == y1) break;
         e2 = 2 * err;
@@ -469,7 +474,7 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, u8 r
     }
 }
 
-static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color)
+static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color, real alpha)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -481,14 +486,10 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
     /* All vertices must be in front of the camera */
     if (x0 < 0 || x1 < 0 || x2 < 0) return;
 
-    u8 r = (u8)(edge_color.color.r * 255.0f);
-    u8 g = (u8)(edge_color.color.g * 255.0f);
-    u8 b = (u8)(edge_color.color.b * 255.0f);
-
     /* Bresenham line drawing for each edge with z */
-    draw_line_z(x0, y0, iw0, x1, y1, iw1, r, g, b);
-    draw_line_z(x1, y1, iw1, x2, y2, iw2, r, g, b);
-    draw_line_z(x2, y2, iw2, x0, y0, iw0, r, g, b);
+    draw_line_z(x0, y0, iw0, x1, y1, iw1, edge_color, alpha);
+    draw_line_z(x1, y1, iw1, x2, y2, iw2, edge_color, alpha);
+    draw_line_z(x2, y2, iw2, x0, y0, iw0, edge_color, alpha);
 }
 
 /* -------------------------------------------------------------------------
@@ -515,24 +516,25 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alp
     if(y2>y1){ real idy=1.0f/(y2-y1); dx1=(x2-x1)*idy; diw1=(iw2-iw1)*idy; }
     if(y2>y0){ real idy=1.0f/(y2-y0); dx2=(x2-x0)*idy; diw2=(iw2-iw0)*idy; }
 
-    i32 y_start=y0<0?0:y0, y_end=y2>=fh?fh-1:y2;
+    /* Half-open coverage keeps shared mesh edges from being blended twice. */
+    i32 y_start=y0<0?0:y0, y_end=y2>fh?fh:y2;
     i32 y,sx,ex,x; real siw,eiw,iw_step,iw;
-    for(y=y_start;y<=y_end;y++){
+    for(y=y_start;y<y_end;y++){
         if(y<y1){
             real t=(real)(y-y0);
-            sx=x0+(i32)(dx0*t); ex=x0+(i32)(dx2*t+0.999f);
+            sx=x0+raster_round(dx0*t); ex=x0+raster_round(dx2*t);
             siw=iw0+diw0*t; eiw=iw0+diw2*t;
         } else {
             real t=(real)(y-y1);
-            sx=x1+(i32)(dx1*t); ex=x0+(i32)(dx2*(y-y0)+0.999f);
+            sx=x1+raster_round(dx1*t); ex=x0+raster_round(dx2*(y-y0));
             siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
         }
         if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);}
-        if(sx<0)sx=0; if(ex>=fw)ex=fw-1;
-        if(ex<sx) continue;
+        if(sx<0)sx=0; if(ex>fw)ex=fw;
+        if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
         iw=siw;
-        for(x=sx;x<=ex;x++){
+        for(x=sx;x<ex;x++){
             i32 idx=y*fw+x;
             write_pixel(idx, iw, color, alpha);
             iw+=iw_step;
@@ -569,25 +571,25 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
     if(y2>y0){ real idy=1.0f/(y2-y0); dx2=(x2-x0)*idy; diw2=(iw2-iw0)*idy;
         dc2.color.r=(c2.color.r-c0.color.r)*idy; dc2.color.g=(c2.color.g-c0.color.g)*idy; dc2.color.b=(c2.color.b-c0.color.b)*idy; }
 
-    i32 y_start=y0<0?0:y0, y_end=y2>=fh?fh-1:y2;
+    i32 y_start=y0<0?0:y0, y_end=y2>fh?fh:y2;
     i32 y,sx,ex,x; real siw,eiw,iw_step,iw;
     vec3 cs,ce,col,dc_step;
-    for(y=y_start;y<=y_end;y++){
-        if(y<y1){ real t=(real)(y-y0); sx=x0+(i32)(dx0*t+0.5f); ex=x0+(i32)(dx2*t+0.5f); siw=iw0+diw0*t; eiw=iw0+diw2*t;
+    for(y=y_start;y<y_end;y++){
+        if(y<y1){ real t=(real)(y-y0); sx=x0+raster_round(dx0*t); ex=x0+raster_round(dx2*t); siw=iw0+diw0*t; eiw=iw0+diw2*t;
             cs.color.r=c0.color.r+dc0.color.r*t; cs.color.g=c0.color.g+dc0.color.g*t; cs.color.b=c0.color.b+dc0.color.b*t;
             ce.color.r=c0.color.r+dc2.color.r*t; ce.color.g=c0.color.g+dc2.color.g*t; ce.color.b=c0.color.b+dc2.color.b*t; }
-        else { real t=(real)(y-y1); sx=x1+(i32)(dx1*t+0.5f); ex=x0+(i32)(dx2*(y-y0)+0.5f); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
+        else { real t=(real)(y-y1); sx=x1+raster_round(dx1*t); ex=x0+raster_round(dx2*(y-y0)); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
             cs.color.r=c1.color.r+dc1.color.r*t; cs.color.g=c1.color.g+dc1.color.g*t; cs.color.b=c1.color.b+dc1.color.b*t;
             ce.color.r=c0.color.r+dc2.color.r*(y-y0); ce.color.g=c0.color.g+dc2.color.g*(y-y0); ce.color.b=c0.color.b+dc2.color.b*(y-y0); }
         if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);swapv(&cs,&ce);}
-        if(sx<0)sx=0; if(ex>=fw)ex=fw-1;
-        if(ex<sx) continue;
+        if(sx<0)sx=0; if(ex>fw)ex=fw;
+        if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
         dc_step.color.r=(ex>sx)?(ce.color.r-cs.color.r)/(ex-sx):0;
         dc_step.color.g=(ex>sx)?(ce.color.g-cs.color.g)/(ex-sx):0;
         dc_step.color.b=(ex>sx)?(ce.color.b-cs.color.b)/(ex-sx):0;
         iw=siw; col=cs;
-        for(x=sx;x<=ex;x++){
+        for(x=sx;x<ex;x++){
             i32 idx=y*fw+x;
             write_pixel(idx, iw, col, alpha);
             iw+=iw_step; col.color.r+=dc_step.color.r; col.color.g+=dc_step.color.g; col.color.b+=dc_step.color.b;
@@ -636,34 +638,34 @@ static void raster_triangle_phong(
         dnw2.position.x=(n2w.position.x-n0w.position.x)*idy; dnw2.position.y=(n2w.position.y-n0w.position.y)*idy; dnw2.position.z=(n2w.position.z-n0w.position.z)*idy;
         dwpw2.position.x=(wp2w.position.x-wp0w.position.x)*idy; dwpw2.position.y=(wp2w.position.y-wp0w.position.y)*idy; dwpw2.position.z=(wp2w.position.z-wp0w.position.z)*idy; }
 
-    i32 y_start=y0<0?0:y0, y_end=y2>=fh?fh-1:y2;
+    i32 y_start=y0<0?0:y0, y_end=y2>fh?fh:y2;
     i32 y,sx,ex,x; real siw,eiw,iw_step,iw;
     vec3 nws,nwe,nw_val,dnw_step;
     vec3 wps,wpe,wp_val,dwp_step;
 
-    for(y=y_start;y<=y_end;y++){
-        if(y<y1){ real t=(real)(y-y0); sx=x0+(i32)(dx0*t+0.5f); ex=x0+(i32)(dx2*t+0.5f); siw=iw0+diw0*t; eiw=iw0+diw2*t;
+    for(y=y_start;y<y_end;y++){
+        if(y<y1){ real t=(real)(y-y0); sx=x0+raster_round(dx0*t); ex=x0+raster_round(dx2*t); siw=iw0+diw0*t; eiw=iw0+diw2*t;
             nws.position.x=n0w.position.x+dnw0.position.x*t; nws.position.y=n0w.position.y+dnw0.position.y*t; nws.position.z=n0w.position.z+dnw0.position.z*t;
             nwe.position.x=n0w.position.x+dnw2.position.x*t; nwe.position.y=n0w.position.y+dnw2.position.y*t; nwe.position.z=n0w.position.z+dnw2.position.z*t;
             wps.position.x=wp0w.position.x+dwpw0.position.x*t; wps.position.y=wp0w.position.y+dwpw0.position.y*t; wps.position.z=wp0w.position.z+dwpw0.position.z*t;
             wpe.position.x=wp0w.position.x+dwpw2.position.x*t; wpe.position.y=wp0w.position.y+dwpw2.position.y*t; wpe.position.z=wp0w.position.z+dwpw2.position.z*t; }
-        else { real t=(real)(y-y1); sx=x1+(i32)(dx1*t+0.5f); ex=x0+(i32)(dx2*(y-y0)+0.5f); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
+        else { real t=(real)(y-y1); sx=x1+raster_round(dx1*t); ex=x0+raster_round(dx2*(y-y0)); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
             nws.position.x=n1w.position.x+dnw1.position.x*t; nws.position.y=n1w.position.y+dnw1.position.y*t; nws.position.z=n1w.position.z+dnw1.position.z*t;
             nwe.position.x=n0w.position.x+dnw2.position.x*(y-y0); nwe.position.y=n0w.position.y+dnw2.position.y*(y-y0); nwe.position.z=n0w.position.z+dnw2.position.z*(y-y0);
             wps.position.x=wp1w.position.x+dwpw1.position.x*t; wps.position.y=wp1w.position.y+dwpw1.position.y*t; wps.position.z=wp1w.position.z+dwpw1.position.z*t;
             wpe.position.x=wp0w.position.x+dwpw2.position.x*(y-y0); wpe.position.y=wp0w.position.y+dwpw2.position.y*(y-y0); wpe.position.z=wp0w.position.z+dwpw2.position.z*(y-y0); }
         if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);swapv(&nws,&nwe);swapv(&wps,&wpe);}
-        if(sx<0)sx=0; if(ex>=fw)ex=fw-1;
-        if(ex<sx) continue;
+        if(sx<0)sx=0; if(ex>fw)ex=fw;
+        if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
         if(ex>sx){
             dnw_step.position.x=(nwe.position.x-nws.position.x)/(ex-sx); dnw_step.position.y=(nwe.position.y-nws.position.y)/(ex-sx); dnw_step.position.z=(nwe.position.z-nws.position.z)/(ex-sx);
             dwp_step.position.x=(wpe.position.x-wps.position.x)/(ex-sx); dwp_step.position.y=(wpe.position.y-wps.position.y)/(ex-sx); dwp_step.position.z=(wpe.position.z-wps.position.z)/(ex-sx);
         } else { dnw_step=vec3_init_from_3(0,0,0); dwp_step=vec3_init_from_3(0,0,0); }
         iw=siw; nw_val=nws; wp_val=wps;
-        for(x=sx;x<=ex;x++){
+        for(x=sx;x<ex;x++){
             i32 idx=y*fw+x;
-            if(iw>zbuf[idx]){
+            if(iw > 0.0f && (iw>zbuf[idx] || (mat->alpha < 1.0f && iw >= zbuf[idx]))){
                 real inv_w = 1.0f / iw;
                 vec3 normal, world_pos;
                 normal.position.x = nw_val.position.x * inv_w;
@@ -718,7 +720,7 @@ static void draw_triangle_shaded(
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
         vec3 color = shade_surface(face_normal, face_center, mat);
-        raster_triangle_wireframe(v0, v1, v2, color);
+        raster_triangle_wireframe(v0, v1, v2, color, mat->alpha);
         return;
     }
 
