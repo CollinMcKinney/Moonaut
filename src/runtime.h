@@ -182,7 +182,7 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
             mat = (material_definition*)tag_get(mat_handle, TAG_material);
     }
     if (!mat) {
-        static material_definition fallback = { SHADE_FLAT, {1,1,1}, 1.0f, 1.0f, 1.0f, {1,1,1} };
+        static material_definition fallback = DEFAULT_MATERIAL_FLAT;
         mat = &fallback;
     }
 

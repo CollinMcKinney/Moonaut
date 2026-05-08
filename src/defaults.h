@@ -83,7 +83,7 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
         model_definition *mdl = (model_definition*)loaded;
         tag_reference *refs = (tag_reference*)mdl->materials.address;
         if (name && strstr(name, "sphere"))
-            refs[0].handle = tag_load("default_material_iridescent", TAG_material);
+            refs[0].handle = tag_load("default_material_water", TAG_material);
         else if (name && strstr(name, "box"))
             refs[0].handle = tag_load("default_material_grass", TAG_material);
     }
@@ -126,6 +126,14 @@ void tag_register_default_all(void){
     tag_register_default("default_material_toon",       TAG_material, &DEFAULT_MATERIAL_TOON);
     tag_register_default("default_material_hologram",   TAG_material, &DEFAULT_MATERIAL_HOLOGRAM);
     tag_register_default("default_material_iridescent", TAG_material, &DEFAULT_MATERIAL_IRIDESCENT);
+    tag_register_default("default_material_plastic",    TAG_material, &DEFAULT_MATERIAL_PLASTIC);
+    tag_register_default("default_material_brick",      TAG_material, &DEFAULT_MATERIAL_BRICK);
+    tag_register_default("default_material_leather",    TAG_material, &DEFAULT_MATERIAL_LEATHER);
+    tag_register_default("default_material_gold",       TAG_material, &DEFAULT_MATERIAL_GOLD);
+    tag_register_default("default_material_snow",       TAG_material, &DEFAULT_MATERIAL_SNOW);
+    tag_register_default("default_material_dirt",       TAG_material, &DEFAULT_MATERIAL_DIRT);
+    tag_register_default("default_material_neon",       TAG_material, &DEFAULT_MATERIAL_NEON);
+
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);
