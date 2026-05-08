@@ -122,17 +122,15 @@ static void write_pixel(i32 idx, real iw, vec3 color, real alpha)
             fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
         }
     } else {
-        /* Transparent – blend with background, do NOT update zbuf */
-        if (iw > zbuf[idx]) {
-            u32 bg = fb[idx];
-            real br = (real)((bg >> 16) & 0xFF) / 255.0f;
-            real bg_g = (real)((bg >> 8)  & 0xFF) / 255.0f;
-            real bg_b = (real)(bg & 0xFF) / 255.0f;
-            real r = color.color.r * alpha + br * (1.0f - alpha);
-            real g = color.color.g * alpha + bg_g * (1.0f - alpha);
-            real b = color.color.b * alpha + bg_b * (1.0f - alpha);
-            fb[idx] = pack_color_real(r, g, b);
-        }
+        /* Transparent – blend with background, do NOT update zbuf, do NOT depth test */
+        u32 bg = fb[idx];
+        real br = (real)((bg >> 16) & 0xFF) / 255.0f;
+        real bg_g = (real)((bg >> 8)  & 0xFF) / 255.0f;
+        real bg_b = (real)(bg & 0xFF) / 255.0f;
+        real r = color.color.r * alpha + br * (1.0f - alpha);
+        real g = color.color.g * alpha + bg_g * (1.0f - alpha);
+        real b = color.color.b * alpha + bg_b * (1.0f - alpha);
+        fb[idx] = pack_color_real(r, g, b);
     }
 }
 
@@ -269,6 +267,7 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
                 Lproj = vec3_div_scalar(Lproj, lenL);
                 Vproj = vec3_div_scalar(Vproj, lenV);
                 cos_phi_diff = vec3_dot(Lproj, Vproj);
+                if (cos_phi_diff < 0.0f) cos_phi_diff = 0.0f;
             }
         }
 
@@ -276,10 +275,17 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
         real sin_beta  = real_sqrt(1.0f - ndotv * ndotv);
         real max_cos = 0.0f;
         if (sin_alpha > 1e-6f && sin_beta > 1e-6f) {
-            max_cos = (ndotl > ndotv) ?
-                      (ndotl / sin_alpha * sin_beta) :
-                      (ndotv / sin_beta * sin_alpha);
+            if (ndotl > ndotv) {
+                /* theta_l < theta_v, min_theta = theta_l, max_theta = theta_v */
+                real tan_min = sin_alpha / ndotl;
+                max_cos = sin_beta * tan_min;
+            } else {
+                /* theta_v < theta_l, min_theta = theta_v, max_theta = theta_l */
+                real tan_min = sin_beta / ndotv;
+                max_cos = sin_alpha * tan_min;
+            }
         }
+        
         diffuse_term = ndotl * (a + b * max_cos * cos_phi_diff);
     }
 
@@ -339,12 +345,14 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
         color = vec3_add(color, vec3_mul_scalar(mat->strobe_color, s));
     }
 
-    /* - Specular (Blinn‑Phong with optional toon threshold) - */
+    /* - Specular - */
     if (mat->specular_exponent > 0.0f) {
         vec3 H = vec3_normalize(vec3_add(light_dir, V));
-        real spec = vec3_dot(N, H);
-        if (spec < 0.0f) spec = 0.0f;
-        spec = real_pow(spec, mat->specular_exponent);
+        real nh = vec3_dot(N, H);
+        if (nh < 0.0f) nh = 0.0f;
+
+        real spec = real_pow(nh, mat->specular_exponent);
+
         if (mat->specular_threshold > 0.0f) {
             spec = (spec > mat->specular_threshold) ? 1.0f : 0.0f;
         }
@@ -436,14 +444,41 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
 /* -------------------------------------------------------------------------
    Wireframe rasterization
    ------------------------------------------------------------------------- */
+/* Bresenham line drawing with z-buffer */
+static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, u8 r, u8 g, u8 b)
+{
+    i32 dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    i32 dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    i32 err = dx + dy, e2;
+
+    real steps = (real)(dx > dy ? dx : dy);
+    if (steps == 0) steps = 1;
+    real diw = (iw1 - iw0) / steps;
+    real iw = iw0;
+
+    while (1) {
+        if (x0 >= 0 && x0 < fw && y0 >= 0 && y0 < fh) {
+            i32 idx = y0 * fw + x0;
+            if (iw > zbuf[idx]) {
+                zbuf[idx] = iw;
+                fb[idx] = pack_color(r, g, b);
+            }
+        }
+        if (x0 == x1 && y0 == y1) break;
+        e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; iw += diw; }
+        if (e2 <= dx) { err += dx; y0 += sy; iw += diw; }
+    }
+}
+
 static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color)
 {
     i32 x0, y0, x1, y1, x2, y2;
-    real iw_dummy;
+    real iw0, iw1, iw2;
 
-    project(v0, &x0, &y0, &iw_dummy);
-    project(v1, &x1, &y1, &iw_dummy);
-    project(v2, &x2, &y2, &iw_dummy);
+    project(v0, &x0, &y0, &iw0);
+    project(v1, &x1, &y1, &iw1);
+    project(v2, &x2, &y2, &iw2);
 
     /* All vertices must be in front of the camera */
     if (x0 < 0 || x1 < 0 || x2 < 0) return;
@@ -452,40 +487,26 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
     u8 g = (u8)(edge_color.color.g * 255.0f);
     u8 b = (u8)(edge_color.color.b * 255.0f);
 
-    /* Bresenham line drawing for each edge */
-    i32 edges[3][4] = {
-        { x0, y0, x1, y1 },
-        { x1, y1, x2, y2 },
-        { x2, y2, x0, y0 }
-    };
-
-    i32 e;
-    for (e = 0; e < 3; e++) {
-        i32 X0 = edges[e][0], Y0 = edges[e][1];
-        i32 X1 = edges[e][2], Y1 = edges[e][3];
-
-        i32 dx = abs(X1 - X0), sx = X0 < X1 ? 1 : -1;
-        i32 dy = -abs(Y1 - Y0), sy = Y0 < Y1 ? 1 : -1;
-        i32 err = dx + dy, e2;
-
-        while (1) {
-            set_pix(X0, Y0, r, g, b);
-            if (X0 == X1 && Y0 == Y1) break;
-            e2 = 2 * err;
-            if (e2 >= dy) { err += dy; X0 += sx; }
-            if (e2 <= dx) { err += dx; Y0 += sy; }
-        }
-    }
+    /* Bresenham line drawing for each edge with z */
+    draw_line_z(x0, y0, iw0, x1, y1, iw1, r, g, b);
+    draw_line_z(x1, y1, iw1, x2, y2, iw2, r, g, b);
+    draw_line_z(x2, y2, iw2, x0, y0, iw0, r, g, b);
 }
 
 /* -------------------------------------------------------------------------
    Per‑face/triangle rasterization
    ------------------------------------------------------------------------- */
 static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alpha) {
+    /* Backface culling in 3D space */
+    if (backface_cull) {
+        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+        vec3 view_dir = vec3_sub(cam_eye, face_center);
+        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
+    }
+
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
-    if(x0<0||x1<0||x2<0) return;
-    if(backface_cull){ i32 area=(x1-x0)*(y2-y0)-(x2-x0)*(y1-y0); if(area<=0) return; }
 
     if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);}
     if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);}
@@ -501,11 +522,11 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alp
     for(y=y_start;y<=y_end;y++){
         if(y<y1){
             real t=(real)(y-y0);
-            sx=x0+(i32)(dx0*t+0.5f); ex=x0+(i32)(dx2*t+0.5f);
+            sx=x0+(i32)(dx0*t); ex=x0+(i32)(dx2*t+0.999f);
             siw=iw0+diw0*t; eiw=iw0+diw2*t;
         } else {
             real t=(real)(y-y1);
-            sx=x1+(i32)(dx1*t+0.5f); ex=x0+(i32)(dx2*(y-y0)+0.5f);
+            sx=x1+(i32)(dx1*t); ex=x0+(i32)(dx2*(y-y0)+0.999f);
             siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
         }
         if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);}
@@ -525,11 +546,17 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alp
    Per‑vertex rasterization with interpolation
    ------------------------------------------------------------------------- */
 static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
-                                    vec3 c0, vec3 c1, vec3 c2, real alpha) {
+                                     vec3 c0, vec3 c1, vec3 c2, real alpha) {
+    /* Backface culling in 3D space */
+    if (backface_cull) {
+        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+        vec3 view_dir = vec3_sub(cam_eye, face_center);
+        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
+    }
+
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
-    if(x0<0||x1<0||x2<0) return;
-    if(backface_cull){ i32 area=(x1-x0)*(y2-y0)-(x2-x0)*(y1-y0); if(area<=0) return; }
 
     if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&c0,&c1);}
     if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&c1,&c2);}
@@ -578,10 +605,16 @@ static void raster_triangle_phong(
     vec3 n0, vec3 n1, vec3 n2,
     const struct material_definition *mat)
 {
+    /* Backface culling in 3D space */
+    if (backface_cull) {
+        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+        vec3 view_dir = vec3_sub(cam_eye, face_center);
+        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
+    }
+
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
-    if(x0<0||x1<0||x2<0) return;
-    if(backface_cull){ i32 area=(x1-x0)*(y2-y0)-(x2-x0)*(y1-y0); if(area<=0) return; }
 
     vec3 n0w=vec3_mul_scalar(n0,iw0), n1w=vec3_mul_scalar(n1,iw1), n2w=vec3_mul_scalar(n2,iw2);
     vec3 wp0w=vec3_mul_scalar(v0,iw0), wp1w=vec3_mul_scalar(v1,iw1), wp2w=vec3_mul_scalar(v2,iw2);
