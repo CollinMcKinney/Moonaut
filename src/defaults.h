@@ -83,7 +83,7 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
         model_definition *mdl = (model_definition*)loaded;
         tag_reference *refs = (tag_reference*)mdl->materials.address;
         if (name && strstr(name, "sphere"))
-            refs[0].handle = tag_load("default_material_water", TAG_material);
+            refs[0].handle = tag_load("default_material_iridescent", TAG_material);
         else if (name && strstr(name, "box"))
             refs[0].handle = tag_load("default_material_grass", TAG_material);
     }
@@ -125,6 +125,7 @@ void tag_register_default_all(void){
     tag_register_default("default_material_lava",       TAG_material, &DEFAULT_MATERIAL_LAVA);
     tag_register_default("default_material_toon",       TAG_material, &DEFAULT_MATERIAL_TOON);
     tag_register_default("default_material_hologram",   TAG_material, &DEFAULT_MATERIAL_HOLOGRAM);
+    tag_register_default("default_material_iridescent", TAG_material, &DEFAULT_MATERIAL_IRIDESCENT);
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);

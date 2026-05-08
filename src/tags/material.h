@@ -664,6 +664,44 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     /*.posterize_levels    =*/ 0
 };
 
+const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
+    /*.mode                =*/ SHADE_GOURAUD,
+    /*.color               =*/ {1.00f, 1.00f, 1.00f},   /* pure white base for full rainbow shift */
+    /*.ambient_light_factor=*/ 1.00f,                   /* full ambient to enhance colors */
+    /*.alpha               =*/ 0.90f,                   /* near opaque for visibility */
+    /*.saturation          =*/ 2.50f,                   /* max saturation for vibrant rainbows */
+    /*.tint                =*/ {2.50f, 1.50f, 1.00f},   /* red-green bias for rainbow spectrum */
+    /*.cel_bands           =*/ 0,
+    /*.diffuse_wrap        =*/ 0,
+    /*.oren_nayar_sigma    =*/ 0.10f,                   /* very smooth surface */
+    /*.minnaert_k          =*/ 0.00f,
+    /*.bump_amplitude      =*/ 0.05f,                   /* minimal bump for clean effect */
+    /*.bump_frequency      =*/ 128.0f,
+    /*.bump_speed          =*/ 0.00f,
+    /*.gooch_cool          =*/ {0.50f, 0.00f, 0.50f},   /* purple shadows for rainbow depth */
+    /*.gooch_warm          =*/ {1.00f, 0.80f, 0.20f},   /* orange highlights */
+    /*.back_glow_color     =*/ {0.80f, 0.60f, 1.00f},   /* magenta internal glow */
+    /*.rim_color           =*/ {1.00f, 0.50f, 0.00f},   /* orange rim */
+    /*.rim_exponent        =*/ 2.00f,
+    /*.fresnel_color       =*/ {0.50f, 0.50f, 0.50f},   /* neutral fresnel for angle dependence */
+    /*.fresnel_exponent    =*/ 2.00f,
+    /*.specular_exponent   =*/ 16.0f,                   /* moderate specular for GOURAUD */
+    /*.specular_color      =*/ {1.00f, 1.00f, 0.80f},   /* warm white highlights */
+    /*.specular_threshold  =*/ 0.00f,
+    /*.emissive_color      =*/ {0.30f, 0.20f, 0.40f},   /* purple emissive for rainbow base */
+    /*.emissive_pulse_frequency =*/ 0.50f,              /* slow pulse for dynamic effect */
+    /*.emissive_pulse_phase     =*/ 0.00f,
+    /*.emissive_pulse_amplitude =*/ 0.20f,
+    /*.strobe_color        =*/ {0.50f, 0.00f, 0.50f},   /* magenta flashes */
+    /*.strobe_frequency    =*/ 1.00f,                  /* occasional bursts */
+    /*.strobe_phase        =*/ 1.00f,
+    /*.skip_fog            =*/ 0,
+    /*.iridescence_strength=*/ 1.00f,                   /* max rainbow shift */
+    /*.glitch_intensity    =*/ 0.00f,
+    /*.fringe_intensity    =*/ 0.30f,                   /* chromatic aberration for rainbow spread */
+    /*.posterize_levels    =*/ 0
+};
+
 #ifdef __cplusplus
 }
 #endif
