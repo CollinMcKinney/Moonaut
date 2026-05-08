@@ -18,7 +18,6 @@ typedef struct globals_definition {
     vec3  light_dir;
     vec3  light_col;
     vec3  ambient_col;
-    i32   backface_cull;
     i32   pause_physics;
 } globals_definition;
 
@@ -33,7 +32,6 @@ static const struct globals_definition DEFAULT_GLOBALS = {
     /* light_dir */      { 0.5f, 1.0f, 0.4f },
     /* light_col */      { 1.0f, 1.0f, 1.0f },
     /* ambient_col */    { 0.2f, 0.2f, 0.25f },
-    /* backface_cull */  0,
     /* pause_physics */  0
 };
 
@@ -47,7 +45,6 @@ TAG_GROUP_BEGIN(globals, 'glbl', sizeof(struct globals_definition))
     FIELD_VEC3("light_dir"),
     FIELD_VEC3("light_col"),
     FIELD_VEC3("ambient_col"),
-    FIELD_I32("backface_cull"),
     FIELD_I32("pause_physics"),
     FIELD_TERMINATOR
 TAG_GROUP_END(globals, sizeof(struct globals_definition))

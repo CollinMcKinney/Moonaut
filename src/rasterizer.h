@@ -31,7 +31,6 @@ static i32  fw, fh;
 
 static mat4 vp;
 static vec3 light_dir, light_col, ambient_col;
-static i32  backface_cull = 0;
 static vec3 cam_eye;
 
 static vec3 fog_color;
@@ -81,8 +80,6 @@ static void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real asp
     vp = mat4_mul(proj, view);
     cam_eye = eye;
 }
-
-static void render_backface_cull(i32 on) { backface_cull = on; }
 
 static void render_set_fog(vec3 color, real start, real end) {
     fog_color = color;
@@ -500,9 +497,10 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
 /* -------------------------------------------------------------------------
    Per‑face/triangle rasterization
    ------------------------------------------------------------------------- */
-static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alpha) {
+static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, 
+                                const struct material_definition *mat) {
     /* Backface culling in 3D space */
-    if (backface_cull) {
+    if (!mat->double_sided) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
         vec3 view_dir = vec3_sub(cam_eye, face_center);
@@ -541,7 +539,7 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alp
         iw=siw;
         for(x=sx;x<ex;x++){
             i32 idx=y*fw+x;
-            write_pixel(idx, iw, color, alpha);
+            write_pixel(idx, iw, color, mat->alpha);
             iw+=iw_step;
         }
     }
@@ -551,9 +549,10 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, real alp
    Per‑vertex rasterization with interpolation
    ------------------------------------------------------------------------- */
 static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
-                                     vec3 c0, vec3 c1, vec3 c2, real alpha) {
+                                     vec3 c0, vec3 c1, vec3 c2, 
+                                     const struct material_definition *mat) {
     /* Backface culling in 3D space */
-    if (backface_cull) {
+    if (!mat->double_sided) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
         vec3 view_dir = vec3_sub(cam_eye, face_center);
@@ -596,7 +595,7 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
         iw=siw; col=cs;
         for(x=sx;x<ex;x++){
             i32 idx=y*fw+x;
-            write_pixel(idx, iw, col, alpha);
+            write_pixel(idx, iw, col, mat->alpha);
             iw+=iw_step; col.color.r+=dc_step.color.r; col.color.g+=dc_step.color.g; col.color.b+=dc_step.color.b;
         }
     }
@@ -611,7 +610,7 @@ static void raster_triangle_phong(
     const struct material_definition *mat)
 {
     /* Backface culling in 3D space */
-    if (backface_cull) {
+    if (!mat->double_sided) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
         vec3 view_dir = vec3_sub(cam_eye, face_center);
@@ -734,7 +733,7 @@ static void draw_triangle_shaded(
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
         vec3 color = shade_surface(face_normal, face_center, mat);
-        raster_triangle_flat(v0, v1, v2, color, mat->alpha);
+        raster_triangle_flat(v0, v1, v2, color, mat);
         return;
     }
 
@@ -748,7 +747,7 @@ static void draw_triangle_shaded(
     vec3 c0 = shade_surface(n0, v0, mat);
     vec3 c1 = shade_surface(n1, v1, mat);
     vec3 c2 = shade_surface(n2, v2, mat);
-    raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat->alpha);
+    raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
 }
 
 /* -------------------------------------------------------------------------

@@ -56,7 +56,6 @@ static vec3 sc_cam_eye    = {0, 0, 0};
 static vec3 sc_cam_center = {0, 0, -1};
 static vec3 sc_cam_up     = {0, 1, 0};
 static real sc_cam_fov    = 90.0f;
-static i32  sc_backface_cull = 0;
 static u8   sc_clear_r = 16, sc_clear_g = 24, sc_clear_b = 40;
 static i32  sc_pause_physics = 0;
 static real sc_fixed_dt = 1.0f / 60.0f;
@@ -92,7 +91,6 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
             physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES, g->gravity);
             sc_pause_physics = g->pause_physics;
             sc_fixed_dt = 1.0f / g->physics_rate;
-            sc_backface_cull = g->backface_cull;
             sc_clear_r = color_to_u8(g->clear_color.position.x);
             sc_clear_g = color_to_u8(g->clear_color.position.y);
             sc_clear_b = color_to_u8(g->clear_color.position.z);
@@ -221,7 +219,6 @@ static void scenario_render(scenario_world *w) {
     render_set_camera(sc_cam_eye, sc_cam_center, sc_cam_up,
                       sc_cam_fov * VECTORS_DEG2RAD, aspect);
     render_set_light(light_dir, light_col, ambient_col);
-    render_backface_cull(sc_backface_cull);
     render_clear(sc_clear_r, sc_clear_g, sc_clear_b);
 
     for (i = 0; i < w->render_count; i++) {
@@ -603,12 +600,6 @@ static i32 lua_shading_mode(lua_State *L) {
     return 0;
 }
 
-static i32 lua_backface_cull(lua_State *L) {
-    sc_backface_cull = lua_toboolean(L, 1) ? 1 : 0;
-    render_backface_cull(sc_backface_cull);
-    return 0;
-}
-
 static i32 lua_clear_color(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 color;
@@ -968,7 +959,6 @@ static void scenario_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "light_color",     lua_light_color);
     lua_register_builtin(state, "light_ambient",   lua_light_ambient);
     lua_register_builtin(state, "shading_mode",    lua_shading_mode);
-    lua_register_builtin(state, "backface_cull",   lua_backface_cull);
     lua_register_builtin(state, "clear_color",     lua_clear_color);
     lua_register_builtin(state, "pause_physics",   lua_pause_physics);
     lua_register_builtin(state, "physics_rate",    lua_physics_rate);

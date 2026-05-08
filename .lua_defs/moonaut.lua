@@ -134,9 +134,6 @@ function light_ambient(r, g, b) end
 ---@param mode shading_mode
 function shading_mode(mode) end
 
----@param on number|boolean
-function backface_cull(on) end
-
 ---@param r number
 ---@param g number
 ---@param b number
