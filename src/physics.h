@@ -213,7 +213,7 @@ static i32 sphere_sphere_contact(physics_world *w, i32 ia, i32 ib, contact *c) {
     physics_body *a = &w->bodies[ia], *b = &w->bodies[ib];
     vec3 pa = phys_ent_pos(w, ia), pb = phys_ent_pos(w, ib);
     vec3 d = vec3_sub(pb, pa);
-    real dist = vec3_magnitude(d);
+    real dist = vec3_distance(pa, pb);
     real sumr = a->sphere_radius + b->sphere_radius;
     if (dist >= sumr) return 0;
     if (dist < 1e-6f) {
@@ -233,10 +233,7 @@ static i32 sphere_sphere_contact(physics_world *w, i32 ia, i32 ib, contact *c) {
 static vec3 closest_point_on_box(vec3 box_pos, vec4 orient, vec3 he, vec3 point) {
     vec4 inv = quat_conjugate(orient);
     vec3 local = quat_rotate_vec3(inv, vec3_sub(point, box_pos));
-    vec3 clamped;
-    clamped.position.x = real_min(real_max(local.position.x, -he.position.x), he.position.x);
-    clamped.position.y = real_min(real_max(local.position.y, -he.position.y), he.position.y);
-    clamped.position.z = real_min(real_max(local.position.z, -he.position.z), he.position.z);
+    vec3 clamped = vec3_clamp(local, vec3_negate(he), he);
     return vec3_add(box_pos, quat_rotate_vec3(orient, clamped));
 }
 
@@ -247,11 +244,9 @@ static i32 sphere_box_contact(physics_world *w, i32 sphere_idx, i32 box_idx, con
     vec3 bp = phys_ent_pos(w, box_idx);
     vec4 bo = phys_ent_orient(w, box_idx);
     vec3 closest = closest_point_on_box(bp, bo, box->box_half_extents, sp);
-    vec3 d = vec3_sub(sp, closest);
-    real dist_sq = vec3_dot(d, d);
+    real dist = vec3_distance(sp, closest);
     real r = sphere->sphere_radius;
-    if (dist_sq > r*r) return 0;
-    real dist = real_sqrt(dist_sq);
+    if (dist > r) return 0;
     if (dist < 1e-6f) {
         c->normal = vec3_init_from_3(0,1,0);
         c->penetration = r;

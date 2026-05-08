@@ -88,6 +88,11 @@ STATIC_ASSERT(sizeof(real) == 0x4, real_size_wrong);
     static real real_trunc(real x)  { return (x) >= 0 ? real_floor(x) : real_ceil(x); }
 #endif
 
+/* Clamp a real value to the range [min, max]. */
+static real real_clamp(real x, real min, real max) { return real_min(real_max(x, min), max); }
+
+/* ------------------------------------------------------------------ */
+
 /* Real constants. */
 #define VECTORS_PI ((real)3.14159265358979323846)
 static const real VECTORS_RAD2DEG = (real)(180.0 / VECTORS_PI);

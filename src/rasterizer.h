@@ -98,9 +98,7 @@ static u32 pack_color(u8 r, u8 g, u8 b) {
 }
 
 static real saturate(real x) {
-    if (x < 0.0f) return 0.0f;
-    if (x > 1.0f) return 1.0f;
-    return x;
+    return real_clamp(x, 0.0f, 1.0f);
 }
 
 static u8 color_to_u8(real x) {
