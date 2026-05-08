@@ -80,7 +80,7 @@ typedef struct material_definition {
     i32           skip_fog;            /* 0 = apply global fog, 1 = skip (for objects that should stay bright). */
     
     /* Post‑lighting colour treatment */
-    
+
     real         iridescence_strength;  /* View‑angle rainbow shift (0 = off, typical 0.1‑1.0). */
     
     /* Stylizing effects */
@@ -211,27 +211,27 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
 
 const struct material_definition DEFAULT_MATERIAL_GRASS = {
     /*.mode                =*/ SHADE_GOURAUD,
-    /*.color               =*/ {0.25f, 0.6f, 0.15f},
+    /*.color               =*/ {0.0f, 0.24f, 0.08f},     /* bright grass green */
     /*.ambient_light_factor=*/ 1.0f,
     /*.alpha               =*/ 1.0f,
-    /*.saturation          =*/ 1.3f,
+    /*.saturation          =*/ 1.2f,                   /* slightly vivid for natural look */
     /*.tint                =*/ {1,1,1},
-    /*.cel_bands           =*/ 3,
+    /*.cel_bands           =*/ 4,                      /* more toon bands for blade definition */
     /*.diffuse_wrap        =*/ 1,
-    /*.oren_nayar_sigma    =*/ 0.0f,
+    /*.oren_nayar_sigma    =*/ 0.6f,                   /* rough fibrous surface */
     /*.minnaert_k          =*/ 0.0f,
-    /*.bump_amplitude      =*/ 0.1f,
-    /*.bump_frequency      =*/ 32.0f,
-    /*.bump_speed          =*/ 0.0f,
+    /*.bump_amplitude      =*/ 0.15f,                  /* pronounced blade texture */
+    /*.bump_frequency      =*/ 16.0f,
+    /*.bump_speed          =*/ 1.0f,
     /*.gooch_cool          =*/ {0,0,0},
     /*.gooch_warm          =*/ {0,0,0},
-    /*.back_glow_color     =*/ {0.05f, 0.2f, 0.02f},
-    /*.rim_color           =*/ {0.5f, 0.9f, 0.2f},
-    /*.rim_exponent        =*/ 1.5f,
-    /*.fresnel_color       =*/ {0.3f, 0.7f, 0.4f},
-    /*.fresnel_exponent    =*/ 2.0f,
-    /*.specular_exponent   =*/ 16.0f,
-    /*.specular_color      =*/ {0.3f, 0.5f, 0.1f},
+    /*.back_glow_color     =*/ {0.1f, 0.3f, 0.05f},   /* subtle subsurface scatter */
+    /*.rim_color           =*/ {0.4f, 0.8f, 0.15f},   /* backlit blade edges */
+    /*.rim_exponent        =*/ 2.0f,
+    /*.fresnel_color       =*/ {0.5f, 0.9f, 0.6f},    /* dew reflection at grazing */
+    /*.fresnel_exponent    =*/ 3.0f,
+    /*.specular_exponent   =*/ 4.0f,                  /* sharper blade highlights */
+    /*.specular_color      =*/ {0.3f, 0.4f, 0.15f},    /* bright green specular */
     /*.specular_threshold  =*/ 0.0f,
     /*.emissive_color      =*/ {0,0,0},
     /*.emissive_pulse_frequency =*/ 0.0f,
@@ -241,8 +241,8 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     /*.strobe_frequency    =*/ 0.0f,
     /*.strobe_phase        =*/ 0.0f,
     /*.skip_fog            =*/ 0,
-    /*.iridescence_strength=*/ 0.08f,
-    /*.glitch_intensity    =*/ 0.0f,
+    /*.iridescence_strength=*/ 0.05f,                  /* slight rainbow for moisture */
+    /*.glitch_intensity    =*/ 0.02f,
     /*.fringe_intensity    =*/ 0.01f,
 };
 
@@ -322,7 +322,6 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Polished Metal --------------------------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_METAL = {
     /*.mode                =*/ SHADE_PHONG,
     /*.color               =*/ {0.5f, 0.67f, 0.75f},   /* dark base, color from specular */
@@ -361,7 +360,6 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Glass / Crystal (corrected) ------------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
     /*.mode                =*/ SHADE_PHONG,
     /*.color               =*/ {0.85f, 0.95f, 1.00f},   /* pale ice blue */
@@ -400,7 +398,6 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Skin / Organic (corrected) -------------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
     /*.mode                =*/ SHADE_GOURAUD,
     /*.color               =*/ {0.87f, 0.8f, 0.64f},   /* warm peach */
@@ -439,7 +436,6 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Rubber / Tire (corrected) --------------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     /*.mode                =*/ SHADE_GOURAUD,
     /*.color               =*/ {0.10f, 0.10f, 0.10f},   /* very dark grey */
@@ -478,7 +474,6 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Ice / Frost (corrected) ----------------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_ICE = {
     /*.mode                =*/ SHADE_PHONG,
     /*.color               =*/ {0.65f, 0.85f, 0.95f},   /* pale cyan */
@@ -517,7 +512,6 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Stone (revised – no green cast) --------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_STONE = {
     /*.mode                =*/ SHADE_GOURAUD,
     /*.color               =*/ {0.48f, 0.43f, 0.38f},   /* neutral grey‑brown */
@@ -556,7 +550,6 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Lava / Ember (revised – no blue shift) -------------------------- */
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.mode                =*/ SHADE_GOURAUD,
     /*.color               =*/ {0.15f, 0.05f, 0.00f},   /* darker black-brown crust */
@@ -595,7 +588,6 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.posterize_levels    =*/ 0
 };
 
-/* ----- Toon / Cel‑shaded ------------------------------------------------- */
 const struct material_definition DEFAULT_MATERIAL_TOON = {
     /*.mode                =*/ SHADE_FLAT,                  /* flat shading for toon look */
     /*.color               =*/ {1.00f, 0.70f, 0.40f},   /* cartoon orange */
@@ -634,7 +626,6 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     /*.posterize_levels    =*/ 8                         /* more quantized */
 };
 
-/* ----- Hologram (corrected – tint around cyan/teal) -------------------- */
 const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     /*.mode                =*/ SHADE_PHONG,
     /*.color               =*/ {0.20f, 0.60f, 0.80f},   /* cyan/blue base */
