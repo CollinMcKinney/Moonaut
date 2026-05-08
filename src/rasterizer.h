@@ -262,6 +262,7 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
         real sigma_sq = sigma * sigma;
         real a = 1.0f - 0.5f * sigma_sq / (sigma_sq + 0.33f);
         real b = 0.45f * sigma_sq / (sigma_sq + 0.09f);
+        real oren_term = 0.0f;
 
         real cos_phi_diff = 0.0f;
         if (ndotl > 0.0f && ndotv > 0.0f) {
@@ -277,22 +278,26 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
             }
         }
 
-        real sin_alpha = real_sqrt(1.0f - ndotl * ndotl);
-        real sin_beta  = real_sqrt(1.0f - ndotv * ndotv);
-        real max_cos = 0.0f;
-        if (sin_alpha > 1e-6f && sin_beta > 1e-6f) {
+        if (cos_phi_diff > 0.0f && ndotl > 1e-4f && ndotv > 1e-4f) {
+            real sin_l = real_sqrt(saturate(1.0f - ndotl * ndotl));
+            real sin_v = real_sqrt(saturate(1.0f - ndotv * ndotv));
+            real sin_alpha;
+            real tan_beta;
+
             if (ndotl > ndotv) {
-                /* theta_l < theta_v, min_theta = theta_l, max_theta = theta_v */
-                real tan_min = sin_alpha / ndotl;
-                max_cos = sin_beta * tan_min;
+                sin_alpha = sin_v;          /* larger angle: view */
+                tan_beta = sin_l / ndotl;   /* smaller angle: light */
             } else {
-                /* theta_v < theta_l, min_theta = theta_v, max_theta = theta_l */
-                real tan_min = sin_beta / ndotv;
-                max_cos = sin_alpha * tan_min;
+                sin_alpha = sin_l;          /* larger angle: light */
+                tan_beta = sin_v / ndotv;   /* smaller angle: view */
             }
+
+            oren_term = sin_alpha * tan_beta;
+            if (oren_term > 1.0f) oren_term = 1.0f;
         }
-        
-        diffuse_term = ndotl * (a + b * max_cos * cos_phi_diff);
+
+        diffuse_term = ndotl * (a + b * cos_phi_diff * oren_term);
+        diffuse_term = saturate(diffuse_term);
     }
 
     /* - Base colour accumulation - */
