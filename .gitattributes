@@ -1,1 +1,3 @@
 lua-5.5.0/** linguist-vendored
+.c liguist-language=C
+.h linguist-language=C
