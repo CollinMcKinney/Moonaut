@@ -48,6 +48,7 @@ typedef struct {
     real  angular_damping;
     real  restitution;
     real  friction;
+    i32   asleep;                     /* 1 if at rest */
 
     /* cached collision shape (from rigid_body_definition tag) */
     enum32 shape;
@@ -161,6 +162,7 @@ static i32 physics_add_entity(physics_world *w, i32 entity_index) {
     memset(b, 0, sizeof(*b));
 
     b->entity_index    = entity_index;
+    b->asleep          = 0;
     b->velocity        = tag->velocity;
     b->angular_velocity= tag->angular_velocity;
     b->restitution     = tag->restitution;
@@ -275,12 +277,30 @@ static void physics_step(physics_world *w, real dt) {
                         (real)(1.0 - b->linear_damping*dt));
         b->angular_velocity = vec3_mul_scalar(b->angular_velocity,
                                 (real)(1.0 - b->angular_damping*dt));
+
+        /* Set to rest if below thresholds  */ 
+        /*TODO: higher values may be needed to cover all cases. 
+        This works for the default sphere colliding with the default box in the default scenario
+        with default globals. */
+        /* real lin_thresh = 0.03770751953125f; */
+        /* real ang_thresh = 0.03770751953125f; */
+        real lin_thresh = 0.1;
+        real ang_thresh = 0.1;
+        if (vec3_magnitude(b->velocity) < lin_thresh &&
+            vec3_magnitude(b->angular_velocity) < ang_thresh) {
+            b->velocity = vec3_init_from_3(0,0,0);
+            b->angular_velocity = vec3_init_from_3(0,0,0);
+            b->asleep = 1;
+        } else {
+            b->asleep = 0;
+        }
     }
 
     /* integrate */
     for (i = 0; i < w->body_count; i++) {
         physics_body *b = &w->bodies[i];
         if (b->inverse_mass <= 0.0f) continue;
+        if (b->asleep) continue;
         vec3 accel = vec3_mul_scalar(b->force, b->inverse_mass);
         b->velocity = vec3_add(b->velocity, vec3_mul_scalar(accel, dt));
         vec3 pos = phys_ent_pos(w, i);
@@ -335,6 +355,10 @@ static void physics_step(physics_world *w, real dt) {
             physics_body *a = &w->bodies[cn->body_a];
             physics_body *b = &w->bodies[cn->body_b];
             if (a->inverse_mass <= 0.0f && b->inverse_mass <= 0.0f) continue;
+            if (a->asleep && b->asleep) continue;
+            /* wake bodies if asleep */
+            a->asleep = 0;
+            b->asleep = 0;
 
             vec3 pa = phys_ent_pos(w, cn->body_a);
             vec3 pb = phys_ent_pos(w, cn->body_b);
@@ -395,6 +419,10 @@ static void physics_step(physics_world *w, real dt) {
             physics_body *a = &w->bodies[cn->body_a];
             physics_body *b = &w->bodies[cn->body_b];
             if (a->inverse_mass <= 0.0f && b->inverse_mass <= 0.0f) continue;
+            if (a->asleep && b->asleep) continue;
+            /* wake bodies if asleep */
+            a->asleep = 0;
+            b->asleep = 0;
             real slop = 0.005f, percent = 0.4f;
             real pen = cn->penetration;
             if (pen <= slop) continue;
@@ -435,6 +463,7 @@ static i32 physics_add_simple_sphere(physics_world *w, i32 entity_index,
     physics_body *b = &w->bodies[idx];
     memset(b, 0, sizeof(*b));
     b->entity_index  = entity_index;
+    b->asleep        = 0;
     b->shape         = RIGID_SHAPE_SPHERE;
     b->sphere_radius = radius;
     b->mass          = mass;
@@ -458,6 +487,7 @@ static i32 physics_add_simple_box(physics_world *w, i32 entity_index,
     physics_body *b = &w->bodies[idx];
     memset(b, 0, sizeof(*b));
     b->entity_index     = entity_index;
+    b->asleep           = 0;
     b->shape            = RIGID_SHAPE_BOX;
     b->box_half_extents = half_ext;
     b->mass             = mass;
