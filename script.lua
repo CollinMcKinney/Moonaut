@@ -83,10 +83,8 @@ function update(dt) --called every game-tick.
                 
                 local rigid_body_handle = tag_get_field(ent_handle, "rigid_body")
                 tag_set_field(rigid_body_handle, "velocity", vec3(-5, 10, 0))
-                tag_set_field(rigid_body_handle, "angular_velocity", vec3(0, 0, 0))
-                tag_set_field(rigid_body_handle, "restitution", 0.6)
-                tag_set_field(rigid_body_handle, "friction", 0.5)
-                tag_set_field(ent_handle, "position", vec3(10, 1.5, 0))
+                tag_set_field(rigid_body_handle, "angular_velocity", vec3(10, 0, 0))
+                tag_set_field(ent_handle, "position", vec3(10, -1, 0))
             end
         else
             print("No entities found in the scenario.")

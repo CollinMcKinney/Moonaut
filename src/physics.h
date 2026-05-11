@@ -206,8 +206,7 @@ static i32 sphere_sphere_contact(physics_world *w, i32 ia, i32 ib, contact *c) {
     } else {
         c->normal = vec3_div_scalar(d, dist);
         c->penetration = sumr - dist;
-        c->point = vec3_add(pa, vec3_mul_scalar(c->normal,
-                            a->rigid_body->sphere_radius - c->penetration*0.5f));
+        c->point = vec3_add(pa, vec3_mul_scalar(c->normal, a->rigid_body->sphere_radius));
     }
     c->body_a = ia; c->body_b = ib;
     return 1;
@@ -237,7 +236,7 @@ static i32 sphere_box_contact(physics_world *w, i32 sphere_idx, i32 box_idx, con
     } else {
         c->normal = vec3_normalize(vec3_sub(closest, sp));
         c->penetration = r - dist;
-        c->point = closest;
+        c->point = vec3_add(sp, vec3_mul_scalar(c->normal, r));
     }
     c->body_a = sphere_idx; c->body_b = box_idx;
     return 1;
@@ -374,23 +373,46 @@ static void physics_step(physics_world *w, real dt) {
             b->rigid_body->angular_velocity = vec3_add(b->rigid_body->angular_velocity,
                                      mat3_mul_vec3(invIb, vec3_cross(rb, imp)));
 
-            /* friction */
-            vec3 tangent = vec3_sub(vrel, vec3_mul_scalar(cn->normal, vn));
-            real tangent_len = vec3_magnitude(tangent);
-            if (tangent_len > 1e-6f) {
+            /* friction with 0…1 remapping */
+            {
+                real raw_f = real_sqrt(a->rigid_body->friction * b->rigid_body->friction);
+                if (raw_f > 1.0f) raw_f = 1.0f;  /* values >1 treated as max */
+
+                if (raw_f <= 0.0f) continue;    /* no friction at all */
+
+                vec3 tangent = vec3_sub(vrel, vec3_mul_scalar(cn->normal, vn));
+                real tangent_len = vec3_magnitude(tangent);
+                if (tangent_len < 1e-6f) continue;
                 tangent = vec3_div_scalar(tangent, tangent_len);
-                real jt = -vec3_dot(vrel, tangent) / denom;
-                real mu = real_sqrt(a->rigid_body->friction * b->rigid_body->friction);
-                real jtmax = mu * j;
-                if (jt > jtmax) jt = jtmax;
-                else if (jt < -jtmax) jt = -jtmax;
+
+                /* effective mass along tangent */
+                vec3 rcn_a_t = vec3_cross(ra, tangent);
+                vec3 rcn_b_t = vec3_cross(rb, tangent);
+                real denom_t = a->inverse_mass + b->inverse_mass +
+                               vec3_dot(mat3_mul_vec3(invIa, rcn_a_t), rcn_a_t) +
+                               vec3_dot(mat3_mul_vec3(invIb, rcn_b_t), rcn_b_t);
+                if (denom_t < 1e-6f) continue;
+
+                real jt_stick = -vec3_dot(vrel, tangent) / denom_t;
+                real jt;
+                if (raw_f >= 1.0f) {
+                    /* max friction → force full sticking impulse */
+                    jt = jt_stick;
+                } else {
+                    real mu = raw_f / (1.0f - raw_f);      /* 0→0, 0.5→1, 0.9→9 */
+                    real jt_max = mu * fabsf(j);           /* Coulomb limit */
+                    jt = jt_stick;
+                    if (jt >  jt_max) jt =  jt_max;
+                    else if (jt < -jt_max) jt = -jt_max;
+                }
+
                 vec3 imp_t = vec3_mul_scalar(tangent, jt);
                 a->rigid_body->velocity = vec3_sub(a->rigid_body->velocity, vec3_mul_scalar(imp_t, a->inverse_mass));
                 b->rigid_body->velocity = vec3_add(b->rigid_body->velocity, vec3_mul_scalar(imp_t, b->inverse_mass));
                 a->rigid_body->angular_velocity = vec3_sub(a->rigid_body->angular_velocity,
-                                         mat3_mul_vec3(invIa, vec3_cross(ra, imp_t)));
+                                          mat3_mul_vec3(invIa, vec3_cross(ra, imp_t)));
                 b->rigid_body->angular_velocity = vec3_add(b->rigid_body->angular_velocity,
-                                         mat3_mul_vec3(invIb, vec3_cross(rb, imp_t)));
+                                          mat3_mul_vec3(invIb, vec3_cross(rb, imp_t)));
             }
         }
 

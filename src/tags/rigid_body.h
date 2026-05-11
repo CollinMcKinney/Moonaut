@@ -100,9 +100,11 @@ static const struct rigid_body_definition DEFAULT_RIGID_BODY_SPHERE = {
     /* cylinder_height */  0.0f,
     /* convex_hull_vertices */ { 0u, NULL },
 
+     /* TODO: initialize these velocities as zero but make sure the physics engine
+     doesn't mark them 'asleep' unless they're part of a collision. (so we don't have objects stopping mid air). */
     /* velocity */          { 0.0f, 0.1f, 0.0f },
     /* angular_velocity */ { 0.0f, 0.1f, 0.0f },
-    /* restitution */       0.6f,
+    /* restitution */       0.5f,
     /* friction */          0.5f,
     /* linear_damping */   0.0f,
     /* angular_damping */  0.0f
@@ -122,8 +124,8 @@ static const struct rigid_body_definition DEFAULT_RIGID_BODY_BOX = {
 
     /* velocity */          { 0.0f, 0.0f, 0.0f },
     /* angular_velocity */ { 0.0f, 0.0f, 0.0f },
-    /* restitution */       0.3f,
-    /* friction */          0.8f,
+    /* restitution */       1.0f,
+    /* friction */          1.0f,
     /* linear_damping */   0.0f,
     /* angular_damping */  0.0f
 };
