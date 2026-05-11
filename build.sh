@@ -1,6 +1,6 @@
 #!/bin/bash
 
-gcc -ansi -Ofast -flto -v -Ilua-5.5.0/src -o Moonaut.exe \
+gcc -ansi -Ofast -flto -I lua-5.5.0/src -o Moonaut.exe \
   main.c \
   lua-5.5.0/src/lapi.c \
   lua-5.5.0/src/lauxlib.c \

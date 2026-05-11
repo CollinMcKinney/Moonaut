@@ -54,7 +54,8 @@ typedef struct {
     enum32 shape;
     real   sphere_radius;
     vec3   box_half_extents;
-} physics_body;
+} physics_body; /* TODO get rid of physics_body and instead keep a pointer to rigid_body  so
+that updates are shared through the reflection system. */
 
 /* ------------------------------------------------------------------------
    Contact between two bodies
@@ -71,7 +72,7 @@ typedef struct {
    Physics world
    ------------------------------------------------------------------------ */
 typedef struct {
-    entity_definition *entities;          /* pointer to external entity array */
+    entity_definition **entities;         /* pointer to array of entity pointers */
     i32                max_entities;      /* size of that array */
     physics_body       bodies[PHYSICS_MAX_BODIES];
     i32                body_count;
@@ -85,16 +86,16 @@ typedef struct {
    Internal helpers – access entity fields via body index
    ==================================================================== */
 static vec3  phys_ent_pos(const physics_world *w, i32 b) {
-    return w->entities[w->bodies[b].entity_index].position;
+    return w->entities[w->bodies[b].entity_index]->position;
 }
 static void phys_set_pos(physics_world *w, i32 b, vec3 v) {
-    w->entities[w->bodies[b].entity_index].position = v;
+    w->entities[w->bodies[b].entity_index]->position = v;
 }
 static vec4 phys_ent_orient(const physics_world *w, i32 b) {
-    return w->entities[w->bodies[b].entity_index].orientation;
+    return w->entities[w->bodies[b].entity_index]->orientation;
 }
 static void phys_set_orient(physics_world *w, i32 b, vec4 q) {
-    w->entities[w->bodies[b].entity_index].orientation = q;
+    w->entities[w->bodies[b].entity_index]->orientation = q;
 }
 
 /* ====================================================================
@@ -131,7 +132,7 @@ static mat3 inertia_box_phys(real mass, vec3 he) {
 /* ====================================================================
    World management
    ==================================================================== */
-static void physics_init(physics_world *w, entity_definition *entities,
+static void physics_init(physics_world *w, entity_definition **entities,
                          i32 max_entities, vec3 gravity) {
     w->entities     = entities;
     w->max_entities = max_entities;
@@ -150,7 +151,7 @@ static i32 physics_add_entity(physics_world *w, i32 entity_index) {
     if (w->entity_to_body[entity_index] >= 0) return w->entity_to_body[entity_index];
     if (w->body_count >= PHYSICS_MAX_BODIES) return -1;
 
-    entity_definition *ent = &w->entities[entity_index];
+    entity_definition *ent = w->entities[entity_index];
     if (ent->rigid_body.handle < 0) return -1;   /* no physics data */
 
     rigid_body_definition *tag =
@@ -447,59 +448,6 @@ static void physics_step(physics_world *w, real dt) {
             phys_set_pos(w, cn->body_b, vec3_add(pb, vec3_mul_scalar(corr_vec, b->inverse_mass)));
         }
     }
-}
-
-/* ====================================================================
-   Convenience: add a simple sphere / box at runtime (no tag needed)
-   These immediately register a physics body with the given parameters.
-   They require that a corresponding entity slot exists in the world.
-   ==================================================================== */
-static i32 physics_add_simple_sphere(physics_world *w, i32 entity_index,
-                                     real radius, real mass) {
-    if (entity_index < 0 || entity_index >= w->max_entities) return -1;
-    if (w->body_count >= PHYSICS_MAX_BODIES) return -1;
-
-    i32 idx = w->body_count++;
-    physics_body *b = &w->bodies[idx];
-    memset(b, 0, sizeof(*b));
-    b->entity_index  = entity_index;
-    b->asleep        = 0;
-    b->shape         = RIGID_SHAPE_SPHERE;
-    b->sphere_radius = radius;
-    b->mass          = mass;
-    b->restitution   = 0.6f;
-    b->friction      = 0.5f;
-    if (mass > 0.0f) {
-        b->inverse_mass = 1.0f / mass;
-        b->inertia_tensor = inertia_sphere_phys(mass, radius);
-        b->inverse_inertia_tensor = mat3_inverse_diagonal(b->inertia_tensor);
-    }
-    w->entity_to_body[entity_index] = idx;
-    return idx;
-}
-
-static i32 physics_add_simple_box(physics_world *w, i32 entity_index,
-                                  vec3 half_ext, real mass) {
-    if (entity_index < 0 || entity_index >= w->max_entities) return -1;
-    if (w->body_count >= PHYSICS_MAX_BODIES) return -1;
-
-    i32 idx = w->body_count++;
-    physics_body *b = &w->bodies[idx];
-    memset(b, 0, sizeof(*b));
-    b->entity_index     = entity_index;
-    b->asleep           = 0;
-    b->shape            = RIGID_SHAPE_BOX;
-    b->box_half_extents = half_ext;
-    b->mass             = mass;
-    b->restitution      = 0.3f;
-    b->friction         = 0.8f;
-    if (mass > 0.0f) {
-        b->inverse_mass = 1.0f / mass;
-        b->inertia_tensor = inertia_box_phys(mass, half_ext);
-        b->inverse_inertia_tensor = mat3_inverse_diagonal(b->inertia_tensor);
-    }
-    w->entity_to_body[entity_index] = idx;
-    return idx;
 }
 
 #ifdef __cplusplus

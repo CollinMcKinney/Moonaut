@@ -24,29 +24,21 @@ extern "C" {
 
 #define SCENARIO_MAX_ENTITIES PHYSICS_MAX_BODIES
 
-/* Render info for a single entity that has a model */
-typedef struct entity_render_info {
-    i32  model_handle;          /* tag handle to model_definition */
-    i32  entity_index;          /* which entity in `entities[]` */
-    vec3 position;              /* world‑space (updated from entity) */
-    vec4 orientation;
-} entity_render_info;
-
 /* ------------------------------------------------------------------------
    Scenario world
    ------------------------------------------------------------------------ */
 typedef struct scenario_world {
     physics_world physics;
 
-    /* All entities in the loaded scenario */
-    entity_definition entities[SCENARIO_MAX_ENTITIES];
+    /* Pointers to actual entity data (either Tag Instance memory or pool) */
+    entity_definition *entities[SCENARIO_MAX_ENTITIES];
     i32               entity_count;
 
-    /* Entities that are drawn (have models) */
-    entity_render_info render_list[SCENARIO_MAX_ENTITIES];
-    i32               render_count;
+    /* Backing store for entities created at runtime that aren't Tags */
+    entity_definition entity_pool[SCENARIO_MAX_ENTITIES];
 
-    i32 width, height;
+    i32 width;
+    i32 height;
 } scenario_world;
 
 static scenario_world *g_scene_world = NULL;
@@ -70,6 +62,20 @@ static physics_body *scenario_get_physics_body(scenario_world *w, i32 entity_ind
     return &w->physics.bodies[idx];
 }
 
+/* Helper to find field offset to avoid pointer drift if possible, 
+   though our simple system relies on sequential FIELD definitions matching C structs. */
+static void* get_field_ptr(void* struct_base, const tag_field_definition* fields, const char* name) {
+    u8* ptr = (u8*)struct_base;
+    const tag_field_definition* f;
+    for (f = fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
+        if (strcmp(f->name, name) == 0) return ptr;
+        ptr += tag_field_size(f);
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------------------------------
    Load a scenario tag and populate the world
    ------------------------------------------------------------------------ */
@@ -82,7 +88,6 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
 
     fprintf(stderr, "scenario loaded, globals handle=%d\n", scn->globals.handle);
     fprintf(stderr, "entities block count=%u address=%p\n", scn->entities.count, scn->entities.address);
-
 
     /* - Apply globals - */
     if (scn->globals.handle >= 0) {
@@ -112,10 +117,9 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
 
     /* - Process entities (now references) - */
     w->entity_count = 0;
-    w->render_count = 0;
 
     tag_reference *entity_refs = (tag_reference*)scn->entities.address;
-   
+
     /* Temporary: try to read the first two handles before the loop */
     if (scn->entities.count >= 1) {
         fprintf(stderr, "  entity[0] handle = %d\n", entity_refs[0].handle);
@@ -133,36 +137,14 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
         if (!src) continue;
 
         i32 ent_idx = w->entity_count;
-        w->entities[ent_idx] = *src;
+        w->entities[ent_idx] = src; /* Point directly to tag data */
 
         if (src->rigid_body.handle >= 0) {
             physics_add_entity(&w->physics, ent_idx);
         }
-
-        if (src->model.handle >= 0 && w->render_count < SCENARIO_MAX_ENTITIES) {
-            w->render_list[w->render_count].model_handle = src->model.handle;
-            w->render_list[w->render_count].entity_index = ent_idx;
-            w->render_list[w->render_count].position     = src->position;
-            w->render_list[w->render_count].orientation  = src->orientation;
-            w->render_count++;
-        }
-
         w->entity_count++;
     }
     return scn_handle;
-}
-
-/* ------------------------------------------------------------------------
-   Update all render‑list transforms from their entities
-   (called after physics step, which already updated entity transforms)
-   ------------------------------------------------------------------------ */
-static void scenario_update_render_transforms(scenario_world *w) {
-    i32 i;
-    for (i = 0; i < w->render_count; ++i) {
-        i32 ent_idx = w->render_list[i].entity_index;
-        w->render_list[i].position    = w->entities[ent_idx].position;
-        w->render_list[i].orientation = w->entities[ent_idx].orientation;
-    }
 }
 
 /* ------------------------------------------------------------------------
@@ -173,18 +155,20 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     if (prim->vertices.count == 0 || prim->indices.count == 0) return;
 
     material_definition *mat = NULL;
+    i32 resolved_mat_handle = -1;
+
     if (prim->material_index >= 0 && mod->materials.address) {
         tag_reference *refs = (tag_reference*)mod->materials.address;
         i32 mat_handle = refs[prim->material_index].handle;
+        resolved_mat_handle = mat_handle;
         if (mat_handle >= 0)
             mat = (material_definition*)tag_get(mat_handle, TAG_material);
     }
+
     if (!mat) {
         static material_definition fallback = DEFAULT_MATERIAL_FLAT;
         mat = &fallback;
     }
-
-    render_set_shading_mode((shading_mode)mat->mode);
 
     model_vertex *verts = (model_vertex*)prim->vertices.address;
     u16 *indices = (u16*)prim->indices.address;
@@ -193,7 +177,8 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     u32 t;
     for (t = 0; t < tri_count; ++t) {
         u16 i0 = indices[t*3+0], i1 = indices[t*3+1], i2 = indices[t*3+2];
-        vec3 v0 = verts[i0].position, v1 = verts[i1].position, v2 = verts[i2].position;
+        vec3 local_v0 = verts[i0].position, local_v1 = verts[i1].position, local_v2 = verts[i2].position;
+        vec3 v0 = local_v0, v1 = local_v1, v2 = local_v2;
         vec3 n0 = verts[i0].normal,   n1 = verts[i1].normal,   n2 = verts[i2].normal;
 
         /* Apply entity transform */
@@ -204,7 +189,9 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
         n1 = quat_rotate_vec3(orient, n1);
         n2 = quat_rotate_vec3(orient, n2);
 
-        draw_triangle_shaded(v0, v1, v2, n0, n1, n2, mat, mat->mode);
+        draw_triangle_shaded(v0, v1, v2, n0, n1, n2,
+                             local_v0, local_v1, local_v2,
+                             mat);
     }
 }
 
@@ -212,7 +199,6 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
    Main render call
    ------------------------------------------------------------------------ */
 static void scenario_render(scenario_world *w) {
-    shading_mode saved_mode = render_get_shading_mode();
     real aspect = (real)w->width / (real)w->height;
     i32 i;
 
@@ -221,19 +207,20 @@ static void scenario_render(scenario_world *w) {
     render_set_light(light_dir, light_col, ambient_col);
     render_clear(sc_clear_r, sc_clear_g, sc_clear_b);
 
-    for (i = 0; i < w->render_count; i++) {
-        entity_render_info *rinfo = &w->render_list[i];
-        model_definition *mod = (model_definition*)tag_get(rinfo->model_handle, TAG_model);
+    for (i = 0; i < w->entity_count; ++i) {
+        entity_definition *ent = w->entities[i];
+        if (ent->model.handle < 0) continue;
+
+        model_definition *mod = (model_definition*)tag_get(ent->model.handle, TAG_model);
         if (!mod) continue;
 
         u32 p;
         for (p = 0; p < mod->primitives.count; ++p) {
             model_primitive *prim = TAG_BLOCK_GET_ELEMENT(&mod->primitives, p, model_primitive);
-            scenario_draw_primitive(prim, mod, rinfo->position, rinfo->orientation);
+            scenario_draw_primitive(prim, mod, ent->position, ent->orientation);
         }
     }
 
-    render_set_shading_mode(saved_mode);
     render_finish();   /* sorts & draws transparent, swaps buffers */
 }
 
@@ -265,6 +252,7 @@ static i32 lua_to_vec3_or_error(lua_State *L, i32 index, vec3 *out, const char *
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_get_block_field. */
 static i32 lua_check_entity_id(lua_State *L, i32 index) {
     i32 id = (i32)luaL_checkinteger(L, index);
     if (id < 0 || id >= g_scene_world->entity_count)
@@ -305,177 +293,6 @@ static i32 lua_builtin_vec4(lua_State *L) {
     return 1;
 }
 
-static i32 lua_sphere(lua_State *L) {
-    i32 argc = lua_gettop(L);
-    if (g_scene_world->entity_count >= SCENARIO_MAX_ENTITIES)
-        return luaL_error(L, "too many entities");
-    i32 ent_idx = g_scene_world->entity_count++;
-    entity_definition *ent = &g_scene_world->entities[ent_idx];
-    memset(ent, 0, sizeof(*ent));
-    ent->type = ENTITY_DYNAMIC;
-    ent->orientation = quat_identity();
-    real radius;
-
-    if (argc == 2) {
-        lua_to_vec3_or_error(L, 1, &ent->position, "sphere(center, radius) requires a vec3 center");
-        radius = (real)luaL_checknumber(L, 2);
-    } else if (argc == 4) {
-        ent->position = vec3_init_from_3((real)luaL_checknumber(L, 1),
-                                         (real)luaL_checknumber(L, 2),
-                                         (real)luaL_checknumber(L, 3));
-        radius = (real)luaL_checknumber(L, 4);
-    } else {
-        g_scene_world->entity_count--;
-        return luaL_error(L, "sphere(center, radius) or sphere(x,y,z,radius)");
-    }
-
-    physics_add_simple_sphere(&g_scene_world->physics, ent_idx, radius, 1.0f);
-    lua_pushinteger(L, ent_idx);
-    return 1;
-}
-
-static i32 lua_box(lua_State *L) {
-    i32 argc = lua_gettop(L);
-    if (g_scene_world->entity_count >= SCENARIO_MAX_ENTITIES)
-        return luaL_error(L, "too many entities");
-    i32 ent_idx = g_scene_world->entity_count++;
-    entity_definition *ent = &g_scene_world->entities[ent_idx];
-    memset(ent, 0, sizeof(*ent));
-    ent->type = ENTITY_DYNAMIC;
-    ent->orientation = quat_identity();
-    vec3 half_ext;
-
-    if (argc == 2) {
-        lua_to_vec3_or_error(L, 1, &ent->position, "box(center, half_ext) requires a vec3 center");
-        lua_to_vec3_or_error(L, 2, &half_ext, "box(center, half_ext) requires a vec3 half_ext");
-    } else if (argc == 6) {
-        ent->position = vec3_init_from_3((real)luaL_checknumber(L, 1),
-                                         (real)luaL_checknumber(L, 2),
-                                         (real)luaL_checknumber(L, 3));
-        half_ext = vec3_init_from_3((real)luaL_checknumber(L, 4),
-                                    (real)luaL_checknumber(L, 5),
-                                    (real)luaL_checknumber(L, 6));
-    } else {
-        g_scene_world->entity_count--;
-        return luaL_error(L, "box(center, half_ext) or box(x,y,z, halfX, halfY, halfZ)");
-    }
-
-    physics_add_simple_box(&g_scene_world->physics, ent_idx, half_ext, 0.0f);
-    lua_pushinteger(L, ent_idx);
-    return 1;
-}
-
-static i32 lua_dynamic_box(lua_State *L) {
-    i32 argc = lua_gettop(L);
-    if (g_scene_world->entity_count >= SCENARIO_MAX_ENTITIES)
-        return luaL_error(L, "too many entities");
-    i32 ent_idx = g_scene_world->entity_count++;
-    entity_definition *ent = &g_scene_world->entities[ent_idx];
-    memset(ent, 0, sizeof(*ent));
-    ent->type = ENTITY_DYNAMIC;
-    ent->orientation = quat_identity();
-    vec3 half_ext;
-    real mass_val;
-
-    if (argc == 3) {
-        lua_to_vec3_or_error(L, 1, &ent->position, "dynamic_box(center, half_ext, mass) requires a vec3 center");
-        lua_to_vec3_or_error(L, 2, &half_ext, "dynamic_box(center, half_ext, mass) requires a vec3 half_ext");
-        mass_val = (real)luaL_checknumber(L, 3);
-    } else if (argc == 7) {
-        ent->position = vec3_init_from_3((real)luaL_checknumber(L, 1),
-                                         (real)luaL_checknumber(L, 2),
-                                         (real)luaL_checknumber(L, 3));
-        half_ext = vec3_init_from_3((real)luaL_checknumber(L, 4),
-                                    (real)luaL_checknumber(L, 5),
-                                    (real)luaL_checknumber(L, 6));
-        mass_val = (real)luaL_checknumber(L, 7);
-    } else {
-        g_scene_world->entity_count--;
-        return luaL_error(L, "dynamic_box(center, half_ext, mass) or dynamic_box(x,y,z, halfX, halfY, halfZ, mass)");
-    }
-
-    physics_add_simple_box(&g_scene_world->physics, ent_idx, half_ext, mass_val);
-    lua_pushinteger(L, ent_idx);
-    return 1;
-}
-
-/* These operate on the physics body fields using the entity index */
-static i32 lua_impulse(lua_State *L) {
-    i32 id = lua_check_entity_id(L, 1);
-    physics_body *b = scenario_get_physics_body(g_scene_world, id);
-    if (!b || b->inverse_mass <= 0.0f) return 0;
-    vec3 impulse;
-    if (lua_gettop(L) == 2) {
-        lua_to_vec3_or_error(L, 2, &impulse, "impulse(id, vec3) requires a vec3 impulse");
-    } else {
-        impulse = vec3_init_from_3((real)luaL_checknumber(L, 2),
-                                   (real)luaL_checknumber(L, 3),
-                                   (real)luaL_checknumber(L, 4));
-    }
-    b->velocity = vec3_add(b->velocity, vec3_mul_scalar(impulse, b->inverse_mass));
-    return 0;
-}
-
-static i32 lua_velocity(lua_State *L) {
-    i32 id = lua_check_entity_id(L, 1);
-    physics_body *b = scenario_get_physics_body(g_scene_world, id);
-    if (!b) return luaL_error(L, "entity has no physics body");
-    if (lua_gettop(L) == 2) {
-        lua_to_vec3_or_error(L, 2, &b->velocity, "velocity(id, vec3) requires a vec3");
-    } else {
-        b->velocity = vec3_init_from_3((real)luaL_checknumber(L, 2),
-                                       (real)luaL_checknumber(L, 3),
-                                       (real)luaL_checknumber(L, 4));
-    }
-    return 0;
-}
-
-static i32 lua_mass(lua_State *L) {
-    i32 id = lua_check_entity_id(L, 1);
-    physics_body *b = scenario_get_physics_body(g_scene_world, id);
-    if (!b) return luaL_error(L, "entity has no physics body");
-    real new_mass = (real)luaL_checknumber(L, 2);
-    if (new_mass <= 0.0f) {
-        b->mass = 0.0f;
-        b->inverse_mass = 0.0f;
-    } else {
-        b->mass = new_mass;
-        b->inverse_mass = 1.0f / new_mass;
-    }
-    return 0;
-}
-
-static i32 lua_restitution(lua_State *L) {
-    i32 id = lua_check_entity_id(L, 1);
-    physics_body *b = scenario_get_physics_body(g_scene_world, id);
-    if (!b) return luaL_error(L, "entity has no physics body");
-    b->restitution = (real)luaL_checknumber(L, 2);
-    return 0;
-}
-
-static i32 lua_friction(lua_State *L) {
-    i32 id = lua_check_entity_id(L, 1);
-    physics_body *b = scenario_get_physics_body(g_scene_world, id);
-    if (!b) return luaL_error(L, "entity has no physics body");
-    b->friction = (real)luaL_checknumber(L, 2);
-    return 0;
-}
-
-static i32 lua_gravity(lua_State *L) {
-    i32 argc = lua_gettop(L);
-    if (argc == 1) {
-        lua_to_vec3_or_error(L, 1, &g_scene_world->physics.gravity, "gravity(vec3) requires a vec3");
-    } else if (argc == 3) {
-        g_scene_world->physics.gravity = vec3_init_from_3(
-            (real)luaL_checknumber(L, 1),
-            (real)luaL_checknumber(L, 2),
-            (real)luaL_checknumber(L, 3));
-    } else {
-        return luaL_error(L, "gravity(vec3) or gravity(x,y,z)");
-    }
-    return 0;
-}
-
 static i32 lua_clear(lua_State *L) {
     (void)L;
     g_scene_world->physics.body_count = 0;
@@ -483,6 +300,7 @@ static i32 lua_clear(lua_State *L) {
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_camera_eye(lua_State *L) {
     i32 argc = lua_gettop(L);
     if (argc == 1) {
@@ -497,6 +315,7 @@ static i32 lua_camera_eye(lua_State *L) {
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_camera_lookat(lua_State *L) {
     i32 argc = lua_gettop(L);
     if (argc == 2) {
@@ -515,11 +334,13 @@ static i32 lua_camera_lookat(lua_State *L) {
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_camera_fov(lua_State *L) {
     sc_cam_fov = (real)luaL_checknumber(L, 1);
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 dir, col, amb;
@@ -544,6 +365,7 @@ static i32 lua_light(lua_State *L) {
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light_direction(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 dir;
@@ -560,6 +382,7 @@ static i32 lua_light_direction(lua_State *L) {
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light_color(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 col;
@@ -576,6 +399,7 @@ static i32 lua_light_color(lua_State *L) {
     return 0;
 }
 
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light_ambient(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 amb;
@@ -592,14 +416,7 @@ static i32 lua_light_ambient(lua_State *L) {
     return 0;
 }
 
-static i32 lua_shading_mode(lua_State *L) {
-    i32 mode = (i32)luaL_checkinteger(L, 1);
-    if (mode < (i32)SHADE_WIREFRAME || mode > (i32)SHADE_PHONG)
-        return luaL_error(L, "invalid shading mode");
-    render_set_shading_mode((shading_mode)mode);
-    return 0;
-}
-
+/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_clear_color(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 color;
@@ -618,18 +435,7 @@ static i32 lua_clear_color(lua_State *L) {
     return 0;
 }
 
-static i32 lua_pause_physics(lua_State *L) {
-    sc_pause_physics = lua_toboolean(L, 1) ? 1 : 0;
-    return 0;
-}
-
-static i32 lua_physics_rate(lua_State *L) {
-    real hz = (real)luaL_checknumber(L, 1);
-    if (hz <= 0.0f) return luaL_error(L, "physics_rate must be > 0");
-    sc_fixed_dt = 1.0f / hz;
-    return 0;
-}
-
+/* TODO: consider making this work using tag_load instead of having it's own function. */
 static i32 lua_load_scenario(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
     i32 handle = scenario_load_tag(g_scene_world, name);
@@ -701,7 +507,7 @@ static void push_field_value(lua_State *L, const tag_field_definition *f, void *
 static void set_field_from_lua(lua_State *L, const tag_field_definition *f,
                                void *field_ptr, i32 value_index)
 {
-    void *ptr = field_ptr;   /* fix: was missing assignment */
+    void *ptr = field_ptr;
     switch (f->type) {
         case TAG_FIELD_BOOL:    *(bool*)ptr = (bool)lua_toboolean(L, value_index); break;
         case TAG_FIELD_I8:      *(i8*)ptr = (i8)luaL_checkinteger(L, value_index); break;
@@ -753,7 +559,15 @@ static void set_field_from_lua(lua_State *L, const tag_field_definition *f,
             break;
         }
         case TAG_FIELD_STRING_ID:   /* cannot set via Lua yet */   break;
-        case TAG_FIELD_REFERENCE:   /* read‑only from Lua */     break;
+        case TAG_FIELD_REFERENCE: {
+            i32 ref_handle = (i32)luaL_checkinteger(L, value_index);
+            tag_reference_definition *ref_def = (tag_reference_definition*)f->extra;
+            if (ref_handle >= 0 && ref_def && !tag_get(ref_handle, ref_def->allowed_group_tag)) {
+                luaL_error(L, "invalid reference handle for field '%s'", f->name);
+            }
+            ((tag_reference*)ptr)->handle = ref_handle;
+            break;
+        }
         default: break;
     }
 }
@@ -779,6 +593,8 @@ static i32 lua_tag_get_field(lua_State *L)
     u8 *ptr = (u8*)inst->data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         if (strcmp(f->name, field_name) == 0) {
             push_field_value(L, f, ptr);
             return 1;
@@ -798,6 +614,8 @@ static i32 lua_tag_set_field(lua_State *L)
     u8 *ptr = (u8*)inst->data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         if (strcmp(f->name, field_name) == 0) {
             set_field_from_lua(L, f, ptr, 3);
             return 0;
@@ -817,6 +635,8 @@ static i32 lua_tag_get_script(lua_State *L)
     u8 *ptr = (u8*)inst->data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         if (f->type == TAG_FIELD_REFERENCE && strcmp(f->name, "script") == 0) {
             tag_reference *ref = (tag_reference*)ptr;
             if (ref->handle < 0) { lua_pushnil(L); return 1; }
@@ -853,6 +673,8 @@ static i32 lua_tag_get_block_count(lua_State *L)
     u8 *ptr = (u8*)inst->data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         if (f->type == TAG_FIELD_BLOCK && strcmp(f->name, block_name) == 0) {
             tag_block *blk = (tag_block*)ptr;
             lua_pushinteger(L, blk->count);
@@ -879,6 +701,8 @@ static i32 lua_tag_get_block_field(lua_State *L)
     const tag_block_definition *block_def = NULL;
     tag_block *blk = NULL;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         if (f->type == TAG_FIELD_BLOCK && strcmp(f->name, block_name) == 0) {
             blk = (tag_block*)ptr;
             block_def = (const tag_block_definition*)f->extra;
@@ -892,6 +716,8 @@ static i32 lua_tag_get_block_field(lua_State *L)
     u8 *elem = (u8*)blk->address + index * block_def->element_size;
     const tag_field_definition *bf;
     for (bf = block_def->fields; bf->type != TAG_FIELD_TERMINATOR; ++bf) {
+        u32 balign = tag_field_alignment(bf);
+        elem = (u8*)(((size_t)elem + balign - 1) & ~(size_t)(balign - 1));
         if (strcmp(bf->name, field_name) == 0) {
             push_field_value(L, bf, elem);
             return 1;
@@ -917,6 +743,8 @@ static i32 lua_tag_set_block_field(lua_State *L)
     const tag_block_definition *block_def = NULL;
     tag_block *blk = NULL;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8*)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         if (f->type == TAG_FIELD_BLOCK && strcmp(f->name, block_name) == 0) {
             blk = (tag_block*)ptr;
             block_def = (const tag_block_definition*)f->extra;
@@ -930,6 +758,8 @@ static i32 lua_tag_set_block_field(lua_State *L)
     u8 *elem = (u8*)blk->address + index * block_def->element_size;
     const tag_field_definition *bf;
     for (bf = block_def->fields; bf->type != TAG_FIELD_TERMINATOR; ++bf) {
+        u32 balign = tag_field_alignment(bf);
+        elem = (u8*)(((size_t)elem + balign - 1) & ~(size_t)(balign - 1));
         if (strcmp(bf->name, field_name) == 0) {
             set_field_from_lua(L, bf, elem, 5);
             return 0;
@@ -940,16 +770,12 @@ static i32 lua_tag_set_block_field(lua_State *L)
 }
 
 /* ------------------------------------------------------------------------
-   Lua registration (add new functions, remove old object_color/shader)
+   Lua registration
    ------------------------------------------------------------------------ */
 static void scenario_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "vec2",            lua_builtin_vec2);
     lua_register_builtin(state, "vec3",            lua_builtin_vec3);
     lua_register_builtin(state, "vec4",            lua_builtin_vec4);
-    lua_register_builtin(state, "sphere",          lua_sphere);
-    lua_register_builtin(state, "box",             lua_box);
-    lua_register_builtin(state, "dynamic_box",     lua_dynamic_box);
-    lua_register_builtin(state, "gravity",         lua_gravity);
     lua_register_builtin(state, "clear",           lua_clear);
     lua_register_builtin(state, "camera_eye",      lua_camera_eye);
     lua_register_builtin(state, "camera_lookat",   lua_camera_lookat);
@@ -958,15 +784,7 @@ static void scenario_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "light_direction", lua_light_direction);
     lua_register_builtin(state, "light_color",     lua_light_color);
     lua_register_builtin(state, "light_ambient",   lua_light_ambient);
-    lua_register_builtin(state, "shading_mode",    lua_shading_mode);
     lua_register_builtin(state, "clear_color",     lua_clear_color);
-    lua_register_builtin(state, "pause_physics",   lua_pause_physics);
-    lua_register_builtin(state, "physics_rate",    lua_physics_rate);
-    lua_register_builtin(state, "impulse",         lua_impulse);
-    lua_register_builtin(state, "velocity",        lua_velocity);
-    lua_register_builtin(state, "mass",            lua_mass);
-    lua_register_builtin(state, "restitution",     lua_restitution);
-    lua_register_builtin(state, "friction",        lua_friction);
     lua_register_builtin(state, "load_scenario",   lua_load_scenario);
     lua_register_builtin(state, "tag_load",        lua_tag_load);
     lua_register_builtin(state, "tag_get_field",   lua_tag_get_field);
@@ -1003,7 +821,6 @@ static void scenario_init(scenario_world *w, i32 width, i32 height) {
     w->width = width;
     w->height = height;
     w->entity_count = 0;
-    w->render_count = 0;
     physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
     scripts_init();
@@ -1017,9 +834,6 @@ static void scenario_update(scenario_world *w, real dt) {
     scripts_update(dt);
     if (!sc_pause_physics) {
         physics_step(&w->physics, dt);
-        /* physics_step already updates entity transforms directly;
-           we just need to refresh the render list */
-        scenario_update_render_transforms(w);
     }
 }
 

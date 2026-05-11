@@ -406,7 +406,7 @@ STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
 #define MASK_TPQ    MASK_123 
 #define MASK_STPQ   MASK_0123
 
-/* 2-component realing point vector. */
+/* 2-component floating point vector. */
 typedef union vec2
 {
     real components[2];
@@ -421,7 +421,7 @@ typedef union vec2
 } vec2;
 STATIC_ASSERT(sizeof(vec2) == 0x8, vec2_size_wrong);
 
-/* 3-component realing point vector. */
+/* 3-component floating point vector. */
 typedef union vec3
 {
     real components[3];
@@ -432,7 +432,7 @@ typedef union vec3
 } vec3;
 STATIC_ASSERT(sizeof(vec3) == 0xC, vec3_size_wrong);
 
-/* 4-component realing point vector. */
+/* 4-component floating point vector. */
 typedef union vec4
 {
     real components[4];
@@ -1344,7 +1344,6 @@ static vec3 vec3_lerp(vec3 src0, vec3 src1, real t)
          |                \|/                |
          |   surface ------*------           |
          |___________________________________|
-   http://developer.download.nvidia.com/CgTutorial/cg_tutorial_chapter07.html
 */
 static vec3 vec3_reflect(vec3 incident, vec3 surface_normal)
 {
@@ -2115,89 +2114,91 @@ static vec4 vec4_invert_color(vec4 color)
    ------------------------------------------------------------------------- */
 
 /* Construct a mat3 from a quaternion. */
-static mat3 mat3_from_quat(vec4 q)
+static mat3 mat3_from_quat(vec4 quaternion)
 {
-    real xx = q.position.x * q.position.x;
-    real yy = q.position.y * q.position.y;
-    real zz = q.position.z * q.position.z;
-    real xy = q.position.x * q.position.y;
-    real xz = q.position.x * q.position.z;
-    real yz = q.position.y * q.position.z;
-    real wx = q.rotation.w * q.position.x;
-    real wy = q.rotation.w * q.position.y;
-    real wz = q.rotation.w * q.position.z;
-    mat3 m;
-    m.data[0] = 1.0f - 2.0f * (yy + zz);
-    m.data[1] = 2.0f * (xy - wz);
-    m.data[2] = 2.0f * (xz + wy);
-    m.data[3] = 2.0f * (xy + wz);
-    m.data[4] = 1.0f - 2.0f * (xx + zz);
-    m.data[5] = 2.0f * (yz - wx);
-    m.data[6] = 2.0f * (xz - wy);
-    m.data[7] = 2.0f * (yz + wx);
-    m.data[8] = 1.0f - 2.0f * (xx + yy);
-    return m;
+    vec3 imaginary = quaternion.quaternion.imaginary;
+    
+    real ii = imaginary.rotation.i * imaginary.rotation.i;
+    real jj = imaginary.rotation.j * imaginary.rotation.j;
+    real kk = imaginary.rotation.k * imaginary.rotation.k;
+    real ij = imaginary.rotation.i * imaginary.rotation.j;
+    real ik = imaginary.rotation.i * imaginary.rotation.k;
+    real jk = imaginary.rotation.j * imaginary.rotation.k;
+    real wi = quaternion.quaternion.real * quaternion.quaternion.imaginary.rotation.i;
+    real wj = quaternion.quaternion.real * quaternion.quaternion.imaginary.rotation.j;
+    real wk = quaternion.quaternion.real * quaternion.quaternion.imaginary.rotation.k;
+    mat3 mat;
+    mat.data[0] = 1.0f - 2.0f * (jj + kk);
+    mat.data[1] = 2.0f * (ij - wk);
+    mat.data[2] = 2.0f * (ik + wj);
+    mat.data[3] = 2.0f * (ij + wk);
+    mat.data[4] = 1.0f - 2.0f * (ii + kk);
+    mat.data[5] = 2.0f * (jk - wi);
+    mat.data[6] = 2.0f * (ik - wj);
+    mat.data[7] = 2.0f * (jk + wi);
+    mat.data[8] = 1.0f - 2.0f * (ii + kk);
+    return mat;
 }
 
 /* Transpose a mat3 (swap rows and columns). */
-static mat3 mat3_transpose(mat3 m)
+static mat3 mat3_transpose(mat3 matrix)
 {
-    mat3 t;
-    t.data[0] = m.data[0];
-    t.data[1] = m.data[3];
-    t.data[2] = m.data[6];
-    t.data[3] = m.data[1];
-    t.data[4] = m.data[4];
-    t.data[5] = m.data[7];
-    t.data[6] = m.data[2];
-    t.data[7] = m.data[5];
-    t.data[8] = m.data[8];
-    return t;
+    mat3 transposed;
+    transposed.data[0] = matrix.data[0];
+    transposed.data[1] = matrix.data[3];
+    transposed.data[2] = matrix.data[6];
+    transposed.data[3] = matrix.data[1];
+    transposed.data[4] = matrix.data[4];
+    transposed.data[5] = matrix.data[7];
+    transposed.data[6] = matrix.data[2];
+    transposed.data[7] = matrix.data[5];
+    transposed.data[8] = matrix.data[8];
+    return transposed;
 }
 
 /* Multiply two mat3 matrices. */
-static mat3 mat3_mul(mat3 a, mat3 b)
+static mat3 mat3_mul(mat3 src0, mat3 src1)
 {
     mat3 r;
     i32 i, j, k;
     for (i = 0; i < 3; i++)
-    {
         for (j = 0; j < 3; j++)
         {
             real sum = 0;
             for (k = 0; k < 3; k++)
-            {
-                sum += a.data[i * 3 + k] * b.data[k * 3 + j];
-            }
+                sum += src0.data[i * 3 + k] * src1.data[k * 3 + j];
+
             r.data[i * 3 + j] = sum;
         }
-    }
+
     return r;
 }
 
 /* Multiply a mat3 by a vec3. */
-static vec3 mat3_mul_vec3(mat3 m, vec3 v)
+static vec3 mat3_mul_vec3(mat3 matrix, vec3 vector)
 {
     vec3 result;
-    result.position.x = m.data[0] * v.position.x + m.data[1] * v.position.y + m.data[2] * v.position.z;
-    result.position.y = m.data[3] * v.position.x + m.data[4] * v.position.y + m.data[5] * v.position.z;
-    result.position.z = m.data[6] * v.position.x + m.data[7] * v.position.y + m.data[8] * v.position.z;
+    result.position.x = matrix.data[0] * vector.position.x + matrix.data[1] * vector.position.y + matrix.data[2] * vector.position.z;
+    result.position.y = matrix.data[3] * vector.position.x + matrix.data[4] * vector.position.y + matrix.data[5] * vector.position.z;
+    result.position.z = matrix.data[6] * vector.position.x + matrix.data[7] * vector.position.y + matrix.data[8] * vector.position.z;
     return result;
 }
 
 /* Inverse of a diagonal 3x3 matrix.
    Assumes data[1],data[2],data[3],data[5],data[6],data[7] are zero.
    Returns a mat3 with reciprocals on the diagonal (or zero where original is zero). */
-static mat3 mat3_inverse_diagonal(mat3 m) {
-    mat3 r;
-    r.data[0] = m.data[0] != 0.0f ? 1.0f / m.data[0] : 0.0f;
-    r.data[1] = 0.0f; r.data[2] = 0.0f;
-    r.data[3] = 0.0f;
-    r.data[4] = m.data[4] != 0.0f ? 1.0f / m.data[4] : 0.0f;
-    r.data[5] = 0.0f;
-    r.data[6] = 0.0f; r.data[7] = 0.0f;
-    r.data[8] = m.data[8] != 0.0f ? 1.0f / m.data[8] : 0.0f;
-    return r;
+static mat3 mat3_inverse_diagonal(mat3 matrix) {
+    mat3 reciprocal;
+    reciprocal.data[0] = matrix.data[0] != 0.0f ? 1.0f / matrix.data[0] : 0.0f;
+    reciprocal.data[1] = 0.0f;
+    reciprocal.data[2] = 0.0f;
+    reciprocal.data[3] = 0.0f;
+    reciprocal.data[4] = matrix.data[4] != 0.0f ? 1.0f / matrix.data[4] : 0.0f;
+    reciprocal.data[5] = 0.0f;
+    reciprocal.data[6] = 0.0f;
+    reciprocal.data[7] = 0.0f;
+    reciprocal.data[8] = matrix.data[8] != 0.0f ? 1.0f / matrix.data[8] : 0.0f;
+    return reciprocal;
 }
 
 /* -------------------------------------------------------------------------
@@ -2207,35 +2208,31 @@ static mat3 mat3_inverse_diagonal(mat3 m) {
 /* Create an identity mat4 (1's on diagonal, 0's elsewhere). */
 static mat4 mat4_identity(void)
 {
-    mat4 r;
+    mat4 identity;
     i32 i;
     for (i = 0; i < 16; i++)
-    {
-        r.data[i] = 0;
-    }
-    r.transpose[0][0] = 1;
-    r.transpose[1][1] = 1;
-    r.transpose[2][2] = 1;
-    r.transpose[3][3] = 1;
-    return r;
+        identity.data[i] = 0;
+
+    identity.transpose[0][0] = 1;
+    identity.transpose[1][1] = 1;
+    identity.transpose[2][2] = 1;
+    identity.transpose[3][3] = 1;
+    return identity;
 }
 
 /* Multiply two mat4 matrices. */
-static mat4 mat4_mul(mat4 a, mat4 b)
+static mat4 mat4_mul(mat4 src0, mat4 src1)
 {
     mat4 r;
     i32 i, j, k;
     for (i = 0; i < 4; i++)
-    {
         for (j = 0; j < 4; j++)
         {
             r.transpose[i][j] = 0;
             for (k = 0; k < 4; k++)
-            {
-                r.transpose[i][j] += a.transpose[i][k] * b.transpose[k][j];
-            }
+                r.transpose[i][j] += src0.transpose[i][k] * src1.transpose[k][j];
         }
-    }
+
     return r;
 }
 
@@ -2254,15 +2251,12 @@ static vec4 mat4_mul_vec4(mat4 m, vec4 v)
 static mat4 mat4_perspective(real fov_y, real aspect, real near_plane, real far_plane)
 {
     mat4 r;
-    real tan_half_fov;
     i32 i, j;
     for (i = 0; i < 4; i++)
-    {
-        for (j = 0; j < 4; j++)
-        {
-            r.transpose[i][j] = 0;
-        }
-    }
+    for (j = 0; j < 4; j++)
+    r.transpose[i][j] = 0;
+    
+    real tan_half_fov;
     tan_half_fov = real_tan(fov_y * 0.5f);
     r.transpose[0][0] = 1.0f / (aspect * tan_half_fov);
     r.transpose[1][1] = 1.0f / tan_half_fov;

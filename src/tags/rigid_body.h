@@ -100,19 +100,19 @@ static const struct rigid_body_definition DEFAULT_RIGID_BODY_SPHERE = {
     /* cylinder_height */  0.0f,
     /* convex_hull_vertices */ { 0u, NULL },
 
-    /* velocity */          { 0.0f, 5.0f, 0.0f },
-    /* angular_velocity */ { 3.0f, 4.0f, 5.0f },
+    /* velocity */          { 0.0f, 0.0f, 0.0f },
+    /* angular_velocity */ { -10.0f, 0.0f, 0.0f },
     /* restitution */       0.6f,
-    /* friction */          0.0f,
+    /* friction */          0.5f,
     /* linear_damping */   0.0f,
-    /* angular_damping */  0.5f
+    /* angular_damping */  0.0f
 };
 
 static const struct rigid_body_definition DEFAULT_RIGID_BODY_BOX = {
     /* shape */            RIGID_SHAPE_BOX,
     /* mass */             1.0f,
     /* sphere_radius */    0.0f,
-    /* box_half_extents */ { 10.0f, 1.0f, 10.0f },
+    /* box_half_extents */ { 5.0f, 1.0f, 5.0f },
     /* plane_normal */     { 0.0f, 1.0f, 0.0f },
     /* capsule_radius */   0.0f,
     /* capsule_height */   0.0f,
@@ -121,7 +121,7 @@ static const struct rigid_body_definition DEFAULT_RIGID_BODY_BOX = {
     /* convex_hull_vertices */ { 0u, NULL },
 
     /* velocity */          { 0.0f, 0.0f, 0.0f },
-    /* angular_velocity */ { 0.0f, 10.0f, 0.0f },
+    /* angular_velocity */ { 0.0f, 0.0f, 0.0f },
     /* restitution */       0.3f,
     /* friction */          0.8f,
     /* linear_damping */   0.0f,

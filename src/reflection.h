@@ -225,7 +225,7 @@ typedef struct tag_enum_definition {
 #define TAG_BLOCK_END(name_, max_count, elem_size)                        \
     };                                                                     \
     static const tag_block_definition name_ = {                            \
-        "", (u32)(max_count), (u32)(elem_size), name_##_fields, NULL       \
+        "", (u32)(elem_size), (u32)(max_count), name_##_fields, NULL       \
     };
 
 /* ------------------------------------------------------------------------
@@ -338,6 +338,16 @@ typedef struct {
 /* ------------------------------------------------------------------------
  * Global state
  * ------------------------------------------------------------------------ */
+/* TODO: Consider keeping a second copy of tag_sys or the instances[] array
+so once we've loaded a tag we can modify it through other systems while still keeping
+a clean copy in memory. This way we can do something like reload a tag, or load multiple
+instances of the same tag. Maybe add a tag_sys_virgin. We basically need our physics engine,
+rendering engine, and scripting engine to all be able to access the tag_sys through a pointer
+and modify the data there so that updates through tag_set_field are automatically shared
+with other systems without needing to have unique functions for every single tag that passes
+the changes around. What we don;t have is the backup instances - once one of our systems has
+modified a tag, it becomes tricky to reload it it to the normal state or make duplicates
+without affecting the original. */
 static struct {
     i32                    initialized;
     tag_instance           instances[TAG_SYSTEM_MAX_TAGS];
@@ -408,36 +418,72 @@ static void tag_free_instance_data(i32 idx) {
 }
 
 /* ------------------------------------------------------------------------
+ * Return the alignment requirement of a field type.
+ * ------------------------------------------------------------------------ */
+static u32 tag_field_alignment(const tag_field_definition *def) {
+    switch (def->type) {
+        case TAG_FIELD_I16:
+        case TAG_FIELD_U16:
+            return 2;
+        case TAG_FIELD_I32:
+        case TAG_FIELD_U32:
+        case TAG_FIELD_REAL:
+        case TAG_FIELD_ENUM:
+        case TAG_FIELD_FLAGS:
+        case TAG_FIELD_VEC2:
+        case TAG_FIELD_VEC3:
+        case TAG_FIELD_VEC4:
+        case TAG_FIELD_REAL_BOUNDS:
+        case TAG_FIELD_REAL_BOUNDING_BOX:
+        case TAG_FIELD_MAT2:
+        case TAG_FIELD_MAT3:
+        case TAG_FIELD_MAT4:
+        case TAG_FIELD_STRING_ID:
+        case TAG_FIELD_REFERENCE:
+            return 4;
+        case TAG_FIELD_I64:
+        case TAG_FIELD_U64:
+            return 8;
+        case TAG_FIELD_BLOCK:
+            return sizeof(void*); /* 4 on 32-bit, 8 on 64-bit */
+        case TAG_FIELD_BOOL:
+            return sizeof(bool);
+        default:
+            return 1;
+    }
+}
+
+/* ------------------------------------------------------------------------
  * Return the byte size of a single field described by `def`
  * ------------------------------------------------------------------------ */
 static u32 tag_field_size(const tag_field_definition *def) {
     switch (def->type) {
-        case TAG_FIELD_TERMINATOR:   return 0;
-        case TAG_FIELD_BOOL:        return sizeof(bool);
-        case TAG_FIELD_I8:          return sizeof(i8);
-        case TAG_FIELD_U8:          return sizeof(u8);
-        case TAG_FIELD_I16:         return sizeof(i16);
-        case TAG_FIELD_U16:         return sizeof(u16);
-        case TAG_FIELD_I32:         return sizeof(i32);
-        case TAG_FIELD_U32:         return sizeof(u32);
-        case TAG_FIELD_I64:         return sizeof(i64);
-        case TAG_FIELD_U64:         return sizeof(u64);
-        case TAG_FIELD_REAL:        return sizeof(real);
-        case TAG_FIELD_ENUM:        return sizeof(i32);
-        case TAG_FIELD_FLAGS:       return sizeof(i32);
-        case TAG_FIELD_VEC2:        return sizeof(vec2);
-        case TAG_FIELD_VEC3:        return sizeof(vec3);
-        case TAG_FIELD_VEC4:        return sizeof(vec4);
+        case TAG_FIELD_TERMINATOR:          return 0;
+        case TAG_FIELD_BOOL:                return sizeof(bool);
+        case TAG_FIELD_I8:                  return sizeof(i8);
+        case TAG_FIELD_U8:                  return sizeof(u8);
+        case TAG_FIELD_I16:                 return sizeof(i16);
+        case TAG_FIELD_U16:                 return sizeof(u16);
+        case TAG_FIELD_I32:                 return sizeof(i32);
+        case TAG_FIELD_U32:                 return sizeof(u32);
+        case TAG_FIELD_I64:                 return sizeof(i64);
+        case TAG_FIELD_U64:                 return sizeof(u64);
+        case TAG_FIELD_REAL:                return sizeof(real);
+        case TAG_FIELD_ENUM:                return sizeof(i32);
+        case TAG_FIELD_FLAGS:               return sizeof(i32);
+        case TAG_FIELD_VEC2:                return sizeof(vec2);
+        case TAG_FIELD_VEC3:                return sizeof(vec3);
+        case TAG_FIELD_VEC4:                return sizeof(vec4);
         case TAG_FIELD_REAL_BOUNDS:         return sizeof(real_bounds);
         case TAG_FIELD_REAL_BOUNDING_BOX:   return sizeof(real_bounding_box);
-        case TAG_FIELD_MAT2:        return sizeof(mat2);
-        case TAG_FIELD_MAT3:        return sizeof(mat3);
-        case TAG_FIELD_MAT4:        return sizeof(mat4);
-        case TAG_FIELD_STRING_ID:   return sizeof(string_id);
-        case TAG_FIELD_BLOCK:       return sizeof(tag_block);
-        case TAG_FIELD_REFERENCE:   return sizeof(tag_reference);
-        case TAG_FIELD_PAD:         return def->pad_data;
-        default:                    return 0xFFFFFFFF;
+        case TAG_FIELD_MAT2:                return sizeof(mat2);
+        case TAG_FIELD_MAT3:                return sizeof(mat3);
+        case TAG_FIELD_MAT4:                return sizeof(mat4);
+        case TAG_FIELD_STRING_ID:           return sizeof(string_id);
+        case TAG_FIELD_BLOCK:               return sizeof(tag_block);
+        case TAG_FIELD_REFERENCE:           return sizeof(tag_reference);
+        case TAG_FIELD_PAD:                 return def->pad_data;
+        default:                            return 0xFFFFFFFF;
     }
 }
 
@@ -456,6 +502,8 @@ static void tag_walk_fields(
     u8 *ptr = (u8 *)base;
     const tag_field_definition *f;
     for (f = fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        ptr = (u8 *)(((size_t)ptr + align - 1) & ~(size_t)(align - 1));
         callback(f, ptr, user);
         ptr += tag_field_size(f);
     }
@@ -609,85 +657,85 @@ static i32 tag_load_from(
     memset(data, 0, group->total_size);
     inst->data = data;
 
-    /* raw struct – read scalar fields only, padding‑free */
+    /* Single sequential pass to read scalars, block counts, and reference paths */
     u32 off = 0;
-    for (; f->type != TAG_FIELD_TERMINATOR; ++f) {
+    for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        off = (off + align - 1) & ~(align - 1);
         u32 fsize = tag_field_size(f);
-        if (f->type != TAG_FIELD_BLOCK && f->type != TAG_FIELD_REFERENCE) {
-            if (read_fn((u8*)data + off, fsize, read_ctx) != fsize) {
-                tag_free_instance_data(idx); tag_sys.instance_count--;
-                return -1;
+
+        if (f->type == TAG_FIELD_BLOCK) {
+            tag_block *blk = (tag_block*)((u8*)data + off);
+            u32 count;
+            if (read_fn(&count, sizeof(count), read_ctx) != sizeof(count)) goto load_fail;
+            blk->count = count;
+        } else if (f->type == TAG_FIELD_REFERENCE) {
+            /* We read the path later or here? Let's read the handle placeholder */
+            /* File contains the path string; we consume it and load the tag */
+            tag_reference *ref = (tag_reference*)((u8*)data + off);
+            char path_buf[TAG_SYSTEM_MAX_PATH];
+            i32 i = 0; char ch;
+            while (i < TAG_SYSTEM_MAX_PATH - 1 && read_fn(&ch, 1, read_ctx) == 1 && ch != 0)
+                path_buf[i++] = ch;
+            path_buf[i] = '\0';
+
+            if (path_buf[0]) {
+                ref->handle = tag_load(path_buf, f->extra ? ((tag_reference_definition*)f->extra)->allowed_group_tag : 0);
+            } else {
+                ref->handle = -1;
             }
+        } else {
+            /* Ordinary scalar field */
+            if (read_fn((u8*)data + off, fsize, read_ctx) != fsize) goto load_fail;
         }
         off += fsize;
     }
 
-    /* blocks */
-    offset = 0;
+    /* Second pass: Read block contents (located at end of struct data in file) */
+    off = 0;
     for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        off = (off + align - 1) & ~(align - 1);
         if (f->type == TAG_FIELD_BLOCK) {
-            tag_block *blk = (tag_block*)((u8*)data + offset);
-            u32 count;
-            if (read_fn(&count, sizeof(count), read_ctx) != sizeof(count)) {
-                tag_free_instance_data(idx); tag_sys.instance_count--; return -1;
-            }
-            blk->count = count;
-            if (count > 0) {
+            tag_block *blk = (tag_block*)((u8*)data + off);
+            if (blk->count > 0) {
                 const tag_block_definition *bdef =
                     (const tag_block_definition*)f->extra;
                 u32 esize = bdef->element_size;
-                void *block_data = TAG_MALLOC(count * esize);
+                void *block_data = TAG_MALLOC(blk->count * esize);
                 if (!block_data ||
-                    read_fn(block_data, esize * count, read_ctx) != esize * count) {
-                    tag_free_instance_data(idx); tag_sys.instance_count--; return -1;
-                }
+                    read_fn(block_data, esize * blk->count, read_ctx) != esize * blk->count) goto load_fail;
                 blk->address = block_data;
             } else {
                 blk->address = NULL;
             }
         }
-        offset += tag_field_size(f);
-    }
-
-    /* references */
-    offset = 0;
-    for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
-        if (f->type == TAG_FIELD_REFERENCE) {
-            tag_reference *ref = (tag_reference*)((u8*)data + offset);
-            char path_buf[TAG_SYSTEM_MAX_PATH];
-            i32 i = 0;
-            char ch;
-            while (i < TAG_SYSTEM_MAX_PATH-1 &&
-                   read_fn(&ch,1,read_ctx)==1 && ch!=0)
-                path_buf[i++] = ch;
-            path_buf[i] = '\0';
-            if (path_buf[0]) {
-                i32 ref_idx = tag_load(path_buf,
-                    f->extra ? ((tag_reference_definition*)f->extra)->allowed_group_tag : 0);
-                ref->handle = ref_idx;
-            } else {
-                ref->handle = -1;
-            }
-        }
-        offset += tag_field_size(f);
+        off += tag_field_size(f);
     }
 
     inst->loaded = 1;
 
     /* postprocess block elements */
-    offset = 0;
+    off = 0;
     for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        off = (off + align - 1) & ~(align - 1);
         if (f->type == TAG_FIELD_BLOCK) {
-            tag_block *blk = (tag_block*)((u8*)data + offset);
+            tag_block *blk = (tag_block*)((u8*)data + off);
             if (blk->address)
                 tag_postprocess_block_elements(blk, f->extra);
         }
-        offset += tag_field_size(f);
+        off += tag_field_size(f);
     }
 
     /* group postprocess */
     tag_postprocess_tag(idx);
     return idx;
+
+load_fail:
+    tag_free_instance_data(idx);
+    tag_sys.instance_count--;
+    return -1;
 }
 
 /* ------------------------------------------------------------------------
@@ -713,7 +761,7 @@ static u32 mem_read_fn(void *dest, u32 size, void *ctx) {
 /* ------------------------------------------------------------------------
  * Public API implementation
  * ------------------------------------------------------------------------ */
-void                        tag_system_init(void) {
+void tag_system_init(void) {
     if (tag_sys.initialized) return;
     fprintf(stderr, "[tag] tag_system_init\n");
     memset(&tag_sys, 0, sizeof(tag_sys));

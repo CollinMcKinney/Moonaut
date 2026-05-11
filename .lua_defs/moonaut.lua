@@ -37,43 +37,6 @@ function vec3(x, y, z) end
 ---@return vec4
 function vec4(x, y, z, w) end
 
----@param x number
----@param y number
----@param z number
----@param radius number
----@return body_id
-function sphere(x, y, z, radius) end
-
----@overload fun(center: vec3, radius: number): body_id
-
----@param x number
----@param y number
----@param z number
----@param half_x number
----@param half_y number
----@param half_z number
----@return body_id
-function box(x, y, z, half_x, half_y, half_z) end
-
----@overload fun(center: vec3, half_ext: vec3): body_id
-
----@param x number
----@param y number
----@param z number
----@param half_x number
----@param half_y number
----@param half_z number
----@param mass_value number
----@return body_id
-function dynamic_box(x, y, z, half_x, half_y, half_z, mass_value) end
-
----@overload fun(center: vec3, half_ext: vec3, mass_value: number): body_id
-
----@param x number
----@param y number
----@param z number
-function gravity(x, y, z) end
-
 ---@overload fun(v: vec3)
 function clear() end
 
@@ -131,21 +94,12 @@ function light_ambient(r, g, b) end
 
 ---@overload fun(v: vec3)
 
----@param mode shading_mode
-function shading_mode(mode) end
-
 ---@param r number
 ---@param g number
 ---@param b number
 function clear_color(r, g, b) end
 
 ---@overload fun(v: vec3)
-
----@param on number|boolean
-function pause_physics(on) end
-
----@param hz number
-function physics_rate(hz) end
 
 ---@param name string
 ---@return number
@@ -188,34 +142,6 @@ function tag_set_block_field(handle, block_name, index, field_name, value) end
 ---@param handle number
 ---@return function
 function tag_get_script(handle) end
-
----@param id body_id
----@param x number
----@param y number
----@param z number
-function velocity(id, x, y, z) end
-
----@overload fun(id: body_id, v: vec3)
-
----@param id body_id
----@param x number
----@param y number
----@param z number
-function impulse(id, x, y, z) end
-
----@overload fun(id: body_id, v: vec3)
-
----@param id body_id
----@param value number
-function mass(id, value) end
-
----@param id body_id
----@param value number
-function restitution(id, value) end
-
----@param id body_id
----@param value number
-function friction(id, value) end
 
 ---@param dt number
 function update(dt) end

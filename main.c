@@ -251,10 +251,11 @@ int main(void) {
         real fixed_dt;
         double now;
         double frame_time;
-        int step_count;
+        i32 step_count;
 
         running = is_running();
-        if (!running) break;
+        if (!running)
+            break;
 
         now = app_time_seconds();
         frame_time = now - last_time;
@@ -265,9 +266,9 @@ int main(void) {
         fixed_dt = scenario_get_fixed_dt();
         accumulator += frame_time;
         step_count = 0;
-        while (accumulator >= (double)fixed_dt) {
+        while (accumulator >= fixed_dt) {
             scenario_update(&world, fixed_dt);
-            accumulator -= (double)fixed_dt;
+            accumulator -= fixed_dt;
             step_count++;
             if (step_count >= 15) {
                 accumulator = 0.0;

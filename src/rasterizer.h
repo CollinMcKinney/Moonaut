@@ -37,17 +37,6 @@ static vec3 fog_color;
 static real fog_start;
 static real fog_end;
 
-/* Current global shading mode (overridden per‑primitive by materials later) */
-static shading_mode current_shade_mode = SHADE_FLAT;   /* safe default, not CEL */
-
-static void render_set_shading_mode(shading_mode mode) {
-    current_shade_mode = mode;
-}
-
-static shading_mode render_get_shading_mode(void) {
-    return current_shade_mode;
-}
-
 /* -------------------------------------------------------------------------
    Transparent triangle sorting
    ------------------------------------------------------------------------- */
@@ -56,6 +45,7 @@ static shading_mode render_get_shading_mode(void) {
 typedef struct transparent_tri {
     vec3 v0, v1, v2;
     vec3 n0, n1, n2;
+    vec3 l0, l1, l2;
     const struct material_definition *mat;
     shading_mode mode;
     real  depth;
@@ -208,7 +198,7 @@ static real render_time = 0.0f;
 static void render_set_time(real t) { render_time = t; }
 
 /* - The unified shading function - */
-static vec3 shade_surface(vec3 normal, vec3 world_pos,
+static vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
                           const struct material_definition *mat)
 {
     vec3 N = normal;   /* raw un‑normalised normal */
@@ -226,10 +216,12 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
 
     /* Normalise now so all further calculations use the bumped normal */
     N = vec3_normalize(N);
-
+    
     vec3 V = vec3_normalize(vec3_sub(cam_eye, world_pos));
     real ndotl = saturate(vec3_dot(N, light_dir));
     real ndotv = saturate(vec3_dot(N, V));
+    real diffuse_term = ndotl;
+    vec3 color = mat->color;
 
     /* - Diffuse wrap (soft light falloff) - */
     if (mat->diffuse_wrap) {
@@ -247,7 +239,6 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
     }
 
     /* - Minnaert limb darkening - */
-    real diffuse_term = ndotl;
     if (mat->minnaert_k > 0.0f) {
         diffuse_term = real_pow(ndotl, mat->minnaert_k) *
                        real_pow(ndotv, 1.0f - mat->minnaert_k);
@@ -297,9 +288,11 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
         diffuse_term = saturate(diffuse_term);
     }
 
-    /* - Base colour accumulation - */
-    vec3 color = ambient_col;
-    color = vec3_add(color, vec3_mul_scalar(light_col, diffuse_term));
+    /* - Ambient lighting factor (multiplicative darkening) - */
+    if (mat->ambient_light_factor > 0.0f) {
+        color = vec3_add(ambient_col, vec3_mul_scalar(light_col, diffuse_term));
+        color = vec3_mul_scalar(color, mat->ambient_light_factor);
+    }
 
     /* - Gooch colour blending - */
     if (vec3_dot(mat->gooch_cool, mat->gooch_cool) > 0.0001f ||
@@ -367,11 +360,6 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
         color = vec3_add(color, vec3_mul_scalar(mat->specular_color, spec));
     }
 
-    /* - Ambient lighting factor (multiplicative darkening) - */
-    if (mat->ambient_light_factor < 1.0f) {
-        color = vec3_mul_scalar(color, mat->ambient_light_factor);
-    }
-
     /* - Saturation control (C89‑friendly) - */
     if (mat->saturation != 1.0f) {
         real luma = color.color.r * 0.299f +
@@ -407,15 +395,52 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos,
         color = vec3_mul(color, mat->tint);
     }
 
-    /* - Glitch (noise overlay) - */
+    /* - Glitch (time-varying hologram noise overlay) - */
     if (mat->glitch_intensity > 0.0f) {
-        real hash = real_sin(vec3_dot(world_pos, 
-            vec3_init_from_3(12.9898f, 78.233f, 45.164f)) * 43758.5453f);
-        hash = hash - real_floor(hash);   /* fractional part */
+        /* Quantized hash so it changes every frame and is spatially unique per shade_surface call. */
+        u32 x = (u32)(render_time * 60.0f); /* ~60Hz frame quantization */
+        vec3 wp_q = vec3_mul_scalar(world_pos, 4096.0f);
+        wp_q = vec3_floor(wp_q);
+        x ^= (u32)wp_q.components[0];
+        x = x * 1664525u + 1013904223u;
+        x ^= (u32)wp_q.components[1];
+        x = x * 1664525u + 1013904223u;
+        x ^= (u32)wp_q.components[2];
+        x = x * 1664525u + 1013904223u;
+
+        /* Convert to [0,1) */
+        real hash = (real)x * (1.0f / 4294967296.0f);
+
         real offset = (hash - 0.5f) * mat->glitch_intensity;
         color.color.r += offset;
         color.color.g += offset * 0.7f;
         color.color.b -= offset;
+    }
+
+    /* - Roughness tint noise (time-stable brick/stone static) - */
+    if (mat->roughness > 0.0f) {
+        /* Deterministic noise anchored to model space, so it follows moving entities. */
+        u32 x = 2166136261u; /* FNV-1a basis */
+
+        /* Use a coarse quantization so small interpolation changes don't reshuffle the hash. */
+        vec3 q = vec3_mul_scalar(local_pos, 256.0f);
+        q = vec3_floor(q);
+
+        u32 qx = (u32)q.components[0];
+        u32 qy = (u32)q.components[1];
+        u32 qz = (u32)q.components[2];
+
+        x ^= qx; x *= 16777619u;
+        x ^= qy; x *= 16777619u;
+        x ^= qz; x *= 16777619u;
+
+        real hash = (real)x * (1.0f / 4294967296.0f); /* [0,1) */
+        real offset = (hash - 0.5f) * mat->roughness;
+
+        /* Subtle high-frequency tint variation (acts like micro-roughness). */
+        color.color.r += offset;
+        color.color.g += offset * 0.5f;
+        color.color.b -= offset * 0.25f;
     }
 
     /* - Chromatic aberration (color fringing) - */
@@ -607,6 +632,7 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
 static void raster_triangle_phong(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
+    vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat)
 {
     /* Backface culling in 3D space */
@@ -622,69 +648,84 @@ static void raster_triangle_phong(
 
     vec3 n0w=vec3_mul_scalar(n0,iw0), n1w=vec3_mul_scalar(n1,iw1), n2w=vec3_mul_scalar(n2,iw2);
     vec3 wp0w=vec3_mul_scalar(v0,iw0), wp1w=vec3_mul_scalar(v1,iw1), wp2w=vec3_mul_scalar(v2,iw2);
+    vec3 lp0w=vec3_mul_scalar(l0,iw0), lp1w=vec3_mul_scalar(l1,iw1), lp2w=vec3_mul_scalar(l2,iw2);
 
-    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&n0w,&n1w);swapv(&wp0w,&wp1w);}
-    if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&n1w,&n2w);swapv(&wp1w,&wp2w);}
-    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&n0w,&n1w);swapv(&wp0w,&wp1w);}
+    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&n0w,&n1w);swapv(&wp0w,&wp1w);swapv(&lp0w,&lp1w);}
+    if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&n1w,&n2w);swapv(&wp1w,&wp2w);swapv(&lp1w,&lp2w);}
+    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&n0w,&n1w);swapv(&wp0w,&wp1w);swapv(&lp0w,&lp1w);}
 
     real dx0=0,diw0=0, dx1=0,diw1=0, dx2=0,diw2=0;
-    vec3 dnw0,dnw1,dnw2, dwpw0,dwpw1,dwpw2;
+    vec3 dnw0,dnw1,dnw2, dwpw0,dwpw1,dwpw2, dlpw0,dlpw1,dlpw2;
     dnw0=vec3_init_from_3(0,0,0); dnw1=vec3_init_from_3(0,0,0); dnw2=vec3_init_from_3(0,0,0);
     dwpw0=vec3_init_from_3(0,0,0); dwpw1=vec3_init_from_3(0,0,0); dwpw2=vec3_init_from_3(0,0,0);
+    dlpw0=vec3_init_from_3(0,0,0); dlpw1=vec3_init_from_3(0,0,0); dlpw2=vec3_init_from_3(0,0,0);
 
     if(y1>y0){ real idy=1.0f/(y1-y0); dx0=(x1-x0)*idy; diw0=(iw1-iw0)*idy;
         dnw0.position.x=(n1w.position.x-n0w.position.x)*idy; dnw0.position.y=(n1w.position.y-n0w.position.y)*idy; dnw0.position.z=(n1w.position.z-n0w.position.z)*idy;
-        dwpw0.position.x=(wp1w.position.x-wp0w.position.x)*idy; dwpw0.position.y=(wp1w.position.y-wp0w.position.y)*idy; dwpw0.position.z=(wp1w.position.z-wp0w.position.z)*idy; }
+        dwpw0.position.x=(wp1w.position.x-wp0w.position.x)*idy; dwpw0.position.y=(wp1w.position.y-wp0w.position.y)*idy; dwpw0.position.z=(wp1w.position.z-wp0w.position.z)*idy;
+        dlpw0.position.x=(lp1w.position.x-lp0w.position.x)*idy; dlpw0.position.y=(lp1w.position.y-lp0w.position.y)*idy; dlpw0.position.z=(lp1w.position.z-lp0w.position.z)*idy; }
     if(y2>y1){ real idy=1.0f/(y2-y1); dx1=(x2-x1)*idy; diw1=(iw2-iw1)*idy;
         dnw1.position.x=(n2w.position.x-n1w.position.x)*idy; dnw1.position.y=(n2w.position.y-n1w.position.y)*idy; dnw1.position.z=(n2w.position.z-n1w.position.z)*idy;
-        dwpw1.position.x=(wp2w.position.x-wp1w.position.x)*idy; dwpw1.position.y=(wp2w.position.y-wp1w.position.y)*idy; dwpw1.position.z=(wp2w.position.z-wp1w.position.z)*idy; }
+        dwpw1.position.x=(wp2w.position.x-wp1w.position.x)*idy; dwpw1.position.y=(wp2w.position.y-wp1w.position.y)*idy; dwpw1.position.z=(wp2w.position.z-wp1w.position.z)*idy;
+        dlpw1.position.x=(lp2w.position.x-lp1w.position.x)*idy; dlpw1.position.y=(lp2w.position.y-lp1w.position.y)*idy; dlpw1.position.z=(lp2w.position.z-lp1w.position.z)*idy; }
     if(y2>y0){ real idy=1.0f/(y2-y0); dx2=(x2-x0)*idy; diw2=(iw2-iw0)*idy;
         dnw2.position.x=(n2w.position.x-n0w.position.x)*idy; dnw2.position.y=(n2w.position.y-n0w.position.y)*idy; dnw2.position.z=(n2w.position.z-n0w.position.z)*idy;
-        dwpw2.position.x=(wp2w.position.x-wp0w.position.x)*idy; dwpw2.position.y=(wp2w.position.y-wp0w.position.y)*idy; dwpw2.position.z=(wp2w.position.z-wp0w.position.z)*idy; }
+        dwpw2.position.x=(wp2w.position.x-wp0w.position.x)*idy; dwpw2.position.y=(wp2w.position.y-wp0w.position.y)*idy; dwpw2.position.z=(wp2w.position.z-wp0w.position.z)*idy;
+        dlpw2.position.x=(lp2w.position.x-lp0w.position.x)*idy; dlpw2.position.y=(lp2w.position.y-lp0w.position.y)*idy; dlpw2.position.z=(lp2w.position.z-lp0w.position.z)*idy; }
 
     i32 y_start=y0<0?0:y0, y_end=y2>fh?fh:y2;
     i32 y,sx,ex,x; real siw,eiw,iw_step,iw;
     vec3 nws,nwe,nw_val,dnw_step;
     vec3 wps,wpe,wp_val,dwp_step;
+    vec3 lps,lpe,lp_val,dlp_step;
 
     for(y=y_start;y<y_end;y++){
         if(y<y1){ real t=(real)(y-y0); sx=x0+raster_round(dx0*t); ex=x0+raster_round(dx2*t); siw=iw0+diw0*t; eiw=iw0+diw2*t;
             nws.position.x=n0w.position.x+dnw0.position.x*t; nws.position.y=n0w.position.y+dnw0.position.y*t; nws.position.z=n0w.position.z+dnw0.position.z*t;
             nwe.position.x=n0w.position.x+dnw2.position.x*t; nwe.position.y=n0w.position.y+dnw2.position.y*t; nwe.position.z=n0w.position.z+dnw2.position.z*t;
             wps.position.x=wp0w.position.x+dwpw0.position.x*t; wps.position.y=wp0w.position.y+dwpw0.position.y*t; wps.position.z=wp0w.position.z+dwpw0.position.z*t;
-            wpe.position.x=wp0w.position.x+dwpw2.position.x*t; wpe.position.y=wp0w.position.y+dwpw2.position.y*t; wpe.position.z=wp0w.position.z+dwpw2.position.z*t; }
+            wpe.position.x=wp0w.position.x+dwpw2.position.x*t; wpe.position.y=wp0w.position.y+dwpw2.position.y*t; wpe.position.z=wp0w.position.z+dwpw2.position.z*t;
+            lps.position.x=lp0w.position.x+dlpw0.position.x*t; lps.position.y=lp0w.position.y+dlpw0.position.y*t; lps.position.z=lp0w.position.z+dlpw0.position.z*t;
+            lpe.position.x=lp0w.position.x+dlpw2.position.x*t; lpe.position.y=lp0w.position.y+dlpw2.position.y*t; lpe.position.z=lp0w.position.z+dlpw2.position.z*t; }
         else { real t=(real)(y-y1); sx=x1+raster_round(dx1*t); ex=x0+raster_round(dx2*(y-y0)); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
             nws.position.x=n1w.position.x+dnw1.position.x*t; nws.position.y=n1w.position.y+dnw1.position.y*t; nws.position.z=n1w.position.z+dnw1.position.z*t;
             nwe.position.x=n0w.position.x+dnw2.position.x*(y-y0); nwe.position.y=n0w.position.y+dnw2.position.y*(y-y0); nwe.position.z=n0w.position.z+dnw2.position.z*(y-y0);
             wps.position.x=wp1w.position.x+dwpw1.position.x*t; wps.position.y=wp1w.position.y+dwpw1.position.y*t; wps.position.z=wp1w.position.z+dwpw1.position.z*t;
-            wpe.position.x=wp0w.position.x+dwpw2.position.x*(y-y0); wpe.position.y=wp0w.position.y+dwpw2.position.y*(y-y0); wpe.position.z=wp0w.position.z+dwpw2.position.z*(y-y0); }
-        if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);swapv(&nws,&nwe);swapv(&wps,&wpe);}
+            wpe.position.x=wp0w.position.x+dwpw2.position.x*(y-y0); wpe.position.y=wp0w.position.y+dwpw2.position.y*(y-y0); wpe.position.z=wp0w.position.z+dwpw2.position.z*(y-y0);
+            lps.position.x=lp1w.position.x+dlpw1.position.x*t; lps.position.y=lp1w.position.y+dlpw1.position.y*t; lps.position.z=lp1w.position.z+dlpw1.position.z*t;
+            lpe.position.x=lp0w.position.x+dlpw2.position.x*(y-y0); lpe.position.y=lp0w.position.y+dlpw2.position.y*(y-y0); lpe.position.z=lp0w.position.z+dlpw2.position.z*(y-y0); }
+        if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);swapv(&nws,&nwe);swapv(&wps,&wpe);swapv(&lps,&lpe);}
         if(sx<0)sx=0; if(ex>fw)ex=fw;
         if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
         if(ex>sx){
             dnw_step.position.x=(nwe.position.x-nws.position.x)/(ex-sx); dnw_step.position.y=(nwe.position.y-nws.position.y)/(ex-sx); dnw_step.position.z=(nwe.position.z-nws.position.z)/(ex-sx);
             dwp_step.position.x=(wpe.position.x-wps.position.x)/(ex-sx); dwp_step.position.y=(wpe.position.y-wps.position.y)/(ex-sx); dwp_step.position.z=(wpe.position.z-wps.position.z)/(ex-sx);
-        } else { dnw_step=vec3_init_from_3(0,0,0); dwp_step=vec3_init_from_3(0,0,0); }
-        iw=siw; nw_val=nws; wp_val=wps;
+            dlp_step.position.x=(lpe.position.x-lps.position.x)/(ex-sx); dlp_step.position.y=(lpe.position.y-lps.position.y)/(ex-sx); dlp_step.position.z=(lpe.position.z-lps.position.z)/(ex-sx);
+        } else { dnw_step=vec3_init_from_3(0,0,0); dwp_step=vec3_init_from_3(0,0,0); dlp_step=vec3_init_from_3(0,0,0); }
+        iw=siw; nw_val=nws; wp_val=wps; lp_val=lps;
         for(x=sx;x<ex;x++){
             i32 idx=y*fw+x;
             if(iw > 0.0f && (iw>zbuf[idx] || (mat->alpha < 1.0f && iw >= zbuf[idx]))){
                 real inv_w = 1.0f / iw;
-                vec3 normal, world_pos;
+                vec3 normal, world_pos, local_pos;
                 normal.position.x = nw_val.position.x * inv_w;
                 normal.position.y = nw_val.position.y * inv_w;
                 normal.position.z = nw_val.position.z * inv_w;
                 world_pos.position.x = wp_val.position.x * inv_w;
                 world_pos.position.y = wp_val.position.y * inv_w;
                 world_pos.position.z = wp_val.position.z * inv_w;
+                local_pos.position.x = lp_val.position.x * inv_w;
+                local_pos.position.y = lp_val.position.y * inv_w;
+                local_pos.position.z = lp_val.position.z * inv_w;
 
-                vec3 color = shade_surface(normal, world_pos, mat);
+                vec3 color = shade_surface(normal, world_pos, local_pos, mat);
                 write_pixel(idx, iw, color, mat->alpha);
             }
             iw+=iw_step;
             nw_val.position.x+=dnw_step.position.x; nw_val.position.y+=dnw_step.position.y; nw_val.position.z+=dnw_step.position.z;
             wp_val.position.x+=dwp_step.position.x; wp_val.position.y+=dwp_step.position.y; wp_val.position.z+=dwp_step.position.z;
+            lp_val.position.x+=dlp_step.position.x; lp_val.position.y+=dlp_step.position.y; lp_val.position.z+=dlp_step.position.z;
         }
     }
 }
@@ -695,8 +736,8 @@ static void raster_triangle_phong(
 static void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
-    const struct material_definition *mat,
-    shading_mode mode)
+    vec3 l0, vec3 l1, vec3 l2,
+    const struct material_definition *mat)
 {
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
     if (mat->alpha < 1.0f) {
@@ -710,8 +751,11 @@ static void draw_triangle_shaded(
             transparent_queue[transparent_count].n0   = n0;
             transparent_queue[transparent_count].n1   = n1;
             transparent_queue[transparent_count].n2   = n2;
+            transparent_queue[transparent_count].l0   = l0;
+            transparent_queue[transparent_count].l1   = l1;
+            transparent_queue[transparent_count].l2   = l2;
             transparent_queue[transparent_count].mat  = mat;
-            transparent_queue[transparent_count].mode = mode;
+            transparent_queue[transparent_count].mode = mat->mode;
             transparent_queue[transparent_count].depth = (d0 + d1 + d2) * 0.33333333f;
             transparent_count++;
             return;   /* deferred */
@@ -720,33 +764,35 @@ static void draw_triangle_shaded(
     }
 
     /* Wireframe */
-    if (mode == SHADE_WIREFRAME) {
+    if (mat->mode == SHADE_WIREFRAME) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 color = shade_surface(face_normal, face_center, mat);
+        vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+        vec3 color = shade_surface(face_normal, face_center, local_center, mat);
         raster_triangle_wireframe(v0, v1, v2, color, mat->alpha);
         return;
     }
 
     /* Flat */
-    if (mode == SHADE_FLAT) {
+    if (mat->mode == SHADE_FLAT) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 color = shade_surface(face_normal, face_center, mat);
+        vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+        vec3 color = shade_surface(face_normal, face_center, local_center, mat);
         raster_triangle_flat(v0, v1, v2, color, mat);
         return;
     }
 
     /* Per‑pixel NPR (Phong mode) */
-    if (mode == SHADE_PHONG) {
-        raster_triangle_phong(v0, v1, v2, n0, n1, n2, mat);
+    if (mat->mode == SHADE_PHONG) {
+        raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
         return;
     }
 
     /* Gouraud (fallback) */
-    vec3 c0 = shade_surface(n0, v0, mat);
-    vec3 c1 = shade_surface(n1, v1, mat);
-    vec3 c2 = shade_surface(n2, v2, mat);
+    vec3 c0 = shade_surface(n0, v0, l0, mat);
+    vec3 c1 = shade_surface(n1, v1, l1, mat);
+    vec3 c2 = shade_surface(n2, v2, l2, mat);
     raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
 }
 
@@ -775,9 +821,8 @@ static void render_finish(void)
             draw_triangle_shaded(
                 transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
                 transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
-                transparent_queue[i].mat,
-                transparent_queue[i].mode
-            );
+                transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                transparent_queue[i].mat);
         }
 
         transparent_count = 0;

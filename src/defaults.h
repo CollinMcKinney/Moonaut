@@ -43,6 +43,8 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
         u8 *base = (u8*)loaded;
         const tag_field_definition *f;
         for (f = group->fields; f && f->type != TAG_FIELD_TERMINATOR; ++f) {
+            u32 align = tag_field_alignment(f);
+            base = (u8*)(((size_t)base + align - 1) & ~(size_t)(align - 1));
             if (f->type != TAG_FIELD_REFERENCE) {
                 base += tag_field_size(f);
                 continue;
@@ -73,6 +75,7 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
     /* Special fix-up for scenario entities block */
     if (group_tag == TAG_scenario) {
         scenario_definition *scn = (scenario_definition*)loaded;
+        scn->entities.count = 2; /* Explicitly set the count for the default scenario */
         tag_reference *refs = (tag_reference*)scn->entities.address;
         refs[0].handle = tag_load("default_entity_sphere", TAG_entity);
         refs[1].handle = tag_load("default_entity_box", TAG_entity);
@@ -81,11 +84,12 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
     /* Special fix-up for model materials block */
     if (group_tag == TAG_model) {
         model_definition *mdl = (model_definition*)loaded;
+        mdl->materials.count = 1; /* Explicitly set the count for default models */
         tag_reference *refs = (tag_reference*)mdl->materials.address;
         if (name && strstr(name, "sphere"))
-            refs[0].handle = tag_load("default_material_water", TAG_material);
+            refs[0].handle = tag_load("default_material_metal", TAG_material);
         else if (name && strstr(name, "box"))
-            refs[0].handle = tag_load("default_material_grass", TAG_material);
+            refs[0].handle = tag_load("default_material_rubber", TAG_material);
     }
 
     tag_postprocess_tag(handle);

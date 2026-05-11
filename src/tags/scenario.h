@@ -15,7 +15,7 @@ typedef struct scenario_definition {
     struct tag_reference globals;           /* link to 'glbl' */
     struct tag_reference camera;            /* link to 'cmra' */
     struct tag_reference map_collision_bsp; /* cbsp – optional static world collision */
-    struct tag_block entities;              /* array of entity_definition */
+    struct tag_block entities;              /* array of tag_reference to entity_definition */
 } scenario_definition;
 
 TAG_REFERENCE(scenario_globals_ref, TAG_globals)
@@ -32,7 +32,7 @@ TAG_BLOCK_END(scenario_entity_block, 65535, sizeof(tag_reference))
 TAG_GROUP_BEGIN(scenario, 'scnr', sizeof(struct scenario_definition))
     FIELD_REFERENCE("globals", scenario_globals_ref),
     FIELD_REFERENCE("camera", scenario_camera_ref),
-    FIELD_REFERENCE("map_collision_bsp", scenario_camera_ref),
+    FIELD_REFERENCE("map_collision_bsp", map_collision_bsp_ref),
     FIELD_BLOCK("entities", scenario_entity_block),
     FIELD_TERMINATOR
 TAG_GROUP_END(scenario, sizeof(struct scenario_definition))
