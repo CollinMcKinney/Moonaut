@@ -302,6 +302,8 @@ void                       *tag_get(i32 tag_index, tag group_tag);
 void                        tag_release(i32 tag_index);
 i32                         tag_reload(i32 tag_index);
 void                        tag_poll_reloads(void);
+i32                         tag_spawn_instance(i32 backup_index);
+i32                         tag_kill_instance(i32 active_index);
 
 /* Enum helper */
 const char *tag_enum_get_name(const tag_field_definition *field, i32 value);
@@ -325,7 +327,8 @@ u32         string_table_get_count(void);
  * ------------------------------------------------------------------------ */
 typedef struct {
     const tag_group_definition *group;
-    void                       *data;
+    void                       *backup_data;
+    void                       *active_data;
     char                        path[TAG_SYSTEM_MAX_PATH];
     i32                         loaded;
     i32                         postprocessed;
@@ -390,6 +393,18 @@ static i32 tag_find_instance(const char *path) {
 }
 
 /* ------------------------------------------------------------------------
+ * Free the data owned by an instance (but keep the slot)
+ * ------------------------------------------------------------------------ */
+static void tag_free_instance_data(i32 idx) {
+    tag_instance *inst = &tag_sys.instances[idx];
+    if (inst->backup_data) { TAG_FREE(inst->backup_data); inst->backup_data = NULL; }
+    if (inst->active_data) { TAG_FREE(inst->active_data); inst->active_data = NULL; }
+    if (inst->deps)  { TAG_FREE(inst->deps);  inst->deps = NULL; }
+    inst->loaded = 0;
+    inst->postprocessed = 0;
+}
+
+/* ------------------------------------------------------------------------
  * Allocate a new instance slot
  * ------------------------------------------------------------------------ */
 static i32 tag_alloc_instance(const char *path,
@@ -401,20 +416,18 @@ static i32 tag_alloc_instance(const char *path,
     memset(&tag_sys.instances[idx], 0, sizeof(tag_instance));
     tag_sys.instances[idx].group = group;
     tag_sys.instances[idx].ref_count = 1;
+    tag_sys.instances[idx].backup_data = TAG_MALLOC(group->total_size);
+    tag_sys.instances[idx].active_data = TAG_MALLOC(group->total_size);
+    if (!tag_sys.instances[idx].backup_data || !tag_sys.instances[idx].active_data) {
+        tag_free_instance_data(idx);
+        tag_sys.instance_count--;
+        return -1;
+    }
+    memset(tag_sys.instances[idx].backup_data, 0, group->total_size);
+    memset(tag_sys.instances[idx].active_data, 0, group->total_size);
     strncpy(tag_sys.instances[idx].path, path, TAG_SYSTEM_MAX_PATH - 1);
     tag_sys.instances[idx].path[TAG_SYSTEM_MAX_PATH - 1] = '\0';
     return idx;
-}
-
-/* ------------------------------------------------------------------------
- * Free the data owned by an instance (but keep the slot)
- * ------------------------------------------------------------------------ */
-static void tag_free_instance_data(i32 idx) {
-    tag_instance *inst = &tag_sys.instances[idx];
-    if (inst->data) { TAG_FREE(inst->data); inst->data = NULL; }
-    if (inst->deps)  { TAG_FREE(inst->deps);  inst->deps = NULL; }
-    inst->loaded = 0;
-    inst->postprocessed = 0;
 }
 
 /* ------------------------------------------------------------------------
@@ -534,7 +547,7 @@ static void tag_postprocess_tag(i32 idx) {
     tag_instance *inst = &tag_sys.instances[idx];
     if (inst->postprocessed) return;
     if (inst->group->postprocess)
-        inst->group->postprocess(inst->data);
+        inst->group->postprocess(inst->active_data);
     inst->postprocessed = 1;
 }
 
@@ -652,10 +665,7 @@ static i32 tag_load_from(
     if (idx < 0) return -1;
     inst = &tag_sys.instances[idx];
 
-    data = TAG_MALLOC(group->total_size);
-    if (!data) { tag_sys.instance_count--; return -1; }
-    memset(data, 0, group->total_size);
-    inst->data = data;
+    data = inst->backup_data;
 
     /* Single sequential pass to read scalars, block counts, and reference paths */
     u32 off = 0;
@@ -714,6 +724,7 @@ static i32 tag_load_from(
     }
 
     inst->loaded = 1;
+    memcpy(inst->active_data, inst->backup_data, group->total_size);
 
     /* postprocess block elements */
     off = 0;
@@ -756,6 +767,49 @@ static u32 mem_read_fn(void *dest, u32 size, void *ctx) {
     memcpy(dest, m->buf + m->pos, size);
     m->pos += size;
     return size;
+}
+
+/* ------------------------------------------------------------------------
+ * Recursive copy for spawning instances
+ * ------------------------------------------------------------------------ */
+static i32 tag_copy_recursive(i32 source_idx, void *source_data) {
+    tag_instance *source_inst = &tag_sys.instances[source_idx];
+    i32 new_idx = tag_alloc_instance("", source_inst->group);  /* no path for spawned */
+    if (new_idx < 0) return -1;
+    tag_instance *new_inst = &tag_sys.instances[new_idx];
+
+    /* Copy data */
+    memcpy(new_inst->backup_data, source_data, source_inst->group->total_size);
+    memcpy(new_inst->active_data, source_data, source_inst->group->total_size);
+
+    /* Walk fields to handle references */
+    u32 off = 0;
+    const tag_field_definition *f;
+    for (f = source_inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
+        u32 align = tag_field_alignment(f);
+        off = (off + align - 1) & ~(align - 1);
+        if (f->type == TAG_FIELD_REFERENCE) {
+            tag_reference *ref = (tag_reference*)((u8*)new_inst->active_data + off);
+            if (ref->handle >= 0) {
+                /* Recursively spawn the referenced instance */
+                tag_instance *ref_inst = &tag_sys.instances[ref->handle];
+                i32 new_ref_idx = tag_copy_recursive(ref->handle, ref_inst->active_data);
+                if (new_ref_idx < 0) {
+                    tag_free_instance_data(new_idx);
+                    tag_sys.instance_count--;
+                    return -1;
+                }
+                ref->handle = new_ref_idx;
+            }
+        } else if (f->type == TAG_FIELD_BLOCK) {
+            /* TODO: Handle blocks with references inside, but for now assume no */
+        }
+        off += tag_field_size(f);
+    }
+
+    new_inst->loaded = 1;
+    /* No postprocess for spawned, assume already done */
+    return new_idx;
 }
 
 /* ------------------------------------------------------------------------
@@ -815,7 +869,7 @@ void *tag_get(i32 tag_index, tag group_tag) {
     inst = &tag_sys.instances[tag_index];
     if (!inst->loaded || inst->group->group_tag != group_tag)
         return NULL;
-    return inst->data;
+    return inst->active_data;
 }
 
 void tag_release(i32 tag_index) {
@@ -835,12 +889,35 @@ void tag_release(i32 tag_index) {
 }
 
 i32 tag_reload(i32 tag_index) {
-    (void)tag_index;
-    return -1;   /* stub */
+    tag_instance *inst;
+    if (tag_index < 0 || (u32)tag_index >= tag_sys.instance_count) return -1;
+    inst = &tag_sys.instances[tag_index];
+    if (!inst->loaded) return -1;
+    memcpy(inst->active_data, inst->backup_data, inst->group->total_size);
+    /* TODO: Recursively reload references? For now, just copy */
+    return 0;
 }
 
 void tag_poll_reloads(void) {
     /* stub */
+}
+
+i32 tag_spawn_instance(i32 backup_index) {
+    tag_instance *inst;
+    if (backup_index < 0 || (u32)backup_index >= tag_sys.instance_count) return -1;
+    inst = &tag_sys.instances[backup_index];
+    if (!inst->loaded) return -1;
+    return tag_copy_recursive(backup_index, inst->backup_data);
+}
+
+i32 tag_kill_instance(i32 active_index) {
+    tag_instance *inst;
+    if (active_index < 0 || (u32)active_index >= tag_sys.instance_count) return -1;
+    inst = &tag_sys.instances[active_index];
+    if (!inst->loaded) return -1;
+    tag_free_instance_data(active_index);
+    /* Don't remove from array, just mark unloaded */
+    return 0;
 }
 
 #ifdef __cplusplus

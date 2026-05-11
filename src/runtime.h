@@ -590,7 +590,7 @@ static i32 lua_tag_get_field(lua_State *L)
     const char *field_name = luaL_checkstring(L, 2);
     tag_instance *inst = &tag_sys.instances[handle];
     if (!inst->loaded) return luaL_error(L, "tag not loaded");
-    u8 *ptr = (u8*)inst->data;
+    u8 *ptr = (u8*)inst->active_data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -611,7 +611,7 @@ static i32 lua_tag_set_field(lua_State *L)
     const char *field_name = luaL_checkstring(L, 2);
     tag_instance *inst = &tag_sys.instances[handle];
     if (!inst->loaded) return luaL_error(L, "tag not loaded");
-    u8 *ptr = (u8*)inst->data;
+    u8 *ptr = (u8*)inst->active_data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -632,7 +632,7 @@ static i32 lua_tag_get_script(lua_State *L)
     tag_instance *inst = &tag_sys.instances[handle];
     if (!inst->loaded) return luaL_error(L, "tag not loaded");
 
-    u8 *ptr = (u8*)inst->data;
+    u8 *ptr = (u8*)inst->active_data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -670,7 +670,7 @@ static i32 lua_tag_get_block_count(lua_State *L)
     const char *block_name = luaL_checkstring(L, 2);
     tag_instance *inst = &tag_sys.instances[handle];
     if (!inst->loaded) return luaL_error(L, "tag not loaded");
-    u8 *ptr = (u8*)inst->data;
+    u8 *ptr = (u8*)inst->active_data;
     const tag_field_definition *f;
     for (f = inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -696,7 +696,7 @@ static i32 lua_tag_get_block_field(lua_State *L)
     tag_instance *inst = &tag_sys.instances[handle];
     if (!inst->loaded) return luaL_error(L, "tag not loaded");
 
-    u8 *ptr = (u8*)inst->data;
+    u8 *ptr = (u8*)inst->active_data;
     const tag_field_definition *f;
     const tag_block_definition *block_def = NULL;
     tag_block *blk = NULL;
@@ -738,7 +738,7 @@ static i32 lua_tag_set_block_field(lua_State *L)
     tag_instance *inst = &tag_sys.instances[handle];
     if (!inst->loaded) return luaL_error(L, "tag not loaded");
 
-    u8 *ptr = (u8*)inst->data;
+    u8 *ptr = (u8*)inst->active_data;
     const tag_field_definition *f;
     const tag_block_definition *block_def = NULL;
     tag_block *blk = NULL;

@@ -36,26 +36,14 @@ extern "C" {
    ------------------------------------------------------------------------ */
 typedef struct {
     i32   entity_index;               /* which entity in the world */
-    vec3  velocity;
-    vec3  angular_velocity;
+    rigid_body_definition *rigid_body; /* pointer to the tag data */
     vec3  force;
     vec3  torque;
-    real  mass;
     real  inverse_mass;
     mat3  inertia_tensor;             /* local space */
     mat3  inverse_inertia_tensor;
-    real  linear_damping;
-    real  angular_damping;
-    real  restitution;
-    real  friction;
     i32   asleep;                     /* 1 if at rest */
-
-    /* cached collision shape (from rigid_body_definition tag) */
-    enum32 shape;
-    real   sphere_radius;
-    vec3   box_half_extents;
-} physics_body; /* TODO get rid of physics_body and instead keep a pointer to rigid_body  so
-that updates are shared through the reflection system. */
+} physics_body; /* Now uses pointer to rigid_body tag for shared state */
 
 /* ------------------------------------------------------------------------
    Contact between two bodies
@@ -162,27 +150,19 @@ static i32 physics_add_entity(physics_world *w, i32 entity_index) {
     physics_body *b = &w->bodies[idx];
     memset(b, 0, sizeof(*b));
 
-    b->entity_index    = entity_index;
-    b->asleep          = 0;
-    b->velocity        = tag->velocity;
-    b->angular_velocity= tag->angular_velocity;
-    b->restitution     = tag->restitution;
-    b->friction        = tag->friction;
-    b->linear_damping  = tag->linear_damping;
-    b->angular_damping = tag->angular_damping;
-    b->mass            = tag->mass;
-    b->shape           = tag->shape;
-    b->sphere_radius   = tag->sphere_radius;
-    b->box_half_extents= tag->box_half_extents;
+    b->entity_index = entity_index;
+    b->rigid_body   = tag;
+    b->asleep       = 0;
 
-    if (ent->type == ENTITY_STATIC) b->mass = 0.0f;
+    real mass = tag->mass;
+    if (ent->type == ENTITY_STATIC) mass = 0.0f;
 
-    if (b->mass > 0.0f) {
-        b->inverse_mass = 1.0f / b->mass;
-        if (b->shape == RIGID_SHAPE_SPHERE)
-            b->inertia_tensor = inertia_sphere_phys(b->mass, b->sphere_radius);
+    if (mass > 0.0f) {
+        b->inverse_mass = 1.0f / mass;
+        if (tag->shape == RIGID_SHAPE_SPHERE)
+            b->inertia_tensor = inertia_sphere_phys(mass, tag->sphere_radius);
         else
-            b->inertia_tensor = inertia_box_phys(b->mass, b->box_half_extents);
+            b->inertia_tensor = inertia_box_phys(mass, tag->box_half_extents);
         b->inverse_inertia_tensor = mat3_inverse_diagonal(b->inertia_tensor);
     } else {
         b->inverse_mass = 0.0f;
@@ -217,7 +197,7 @@ static i32 sphere_sphere_contact(physics_world *w, i32 ia, i32 ib, contact *c) {
     vec3 pa = phys_ent_pos(w, ia), pb = phys_ent_pos(w, ib);
     vec3 d = vec3_sub(pb, pa);
     real dist = vec3_distance(pa, pb);
-    real sumr = a->sphere_radius + b->sphere_radius;
+    real sumr = a->rigid_body->sphere_radius + b->rigid_body->sphere_radius;
     if (dist >= sumr) return 0;
     if (dist < 1e-6f) {
         c->normal = vec3_init_from_3(0,1,0);
@@ -227,7 +207,7 @@ static i32 sphere_sphere_contact(physics_world *w, i32 ia, i32 ib, contact *c) {
         c->normal = vec3_div_scalar(d, dist);
         c->penetration = sumr - dist;
         c->point = vec3_add(pa, vec3_mul_scalar(c->normal,
-                            a->sphere_radius - c->penetration*0.5f));
+                            a->rigid_body->sphere_radius - c->penetration*0.5f));
     }
     c->body_a = ia; c->body_b = ib;
     return 1;
@@ -246,9 +226,9 @@ static i32 sphere_box_contact(physics_world *w, i32 sphere_idx, i32 box_idx, con
     vec3 sp = phys_ent_pos(w, sphere_idx);
     vec3 bp = phys_ent_pos(w, box_idx);
     vec4 bo = phys_ent_orient(w, box_idx);
-    vec3 closest = closest_point_on_box(bp, bo, box->box_half_extents, sp);
+    vec3 closest = closest_point_on_box(bp, bo, box->rigid_body->box_half_extents, sp);
     real dist = vec3_distance(sp, closest);
-    real r = sphere->sphere_radius;
+    real r = sphere->rigid_body->sphere_radius;
     if (dist > r) return 0;
     if (dist < 1e-6f) {
         c->normal = vec3_init_from_3(0,1,0);
@@ -273,24 +253,24 @@ static void physics_step(physics_world *w, real dt) {
     for (i = 0; i < w->body_count; i++) {
         physics_body *b = &w->bodies[i];
         if (b->inverse_mass <= 0.0f) continue;
-        b->force = vec3_add(b->force, vec3_mul_scalar(w->gravity, b->mass));
-        b->velocity = vec3_mul_scalar(b->velocity,
-                        (real)(1.0 - b->linear_damping*dt));
-        b->angular_velocity = vec3_mul_scalar(b->angular_velocity,
-                                (real)(1.0 - b->angular_damping*dt));
+        b->force = vec3_add(b->force, vec3_mul_scalar(w->gravity, b->rigid_body->mass));
+        b->rigid_body->velocity = vec3_mul_scalar(b->rigid_body->velocity,
+                        (real)(1.0 - b->rigid_body->linear_damping*dt));
+        b->rigid_body->angular_velocity = vec3_mul_scalar(b->rigid_body->angular_velocity,
+                                (real)(1.0 - b->rigid_body->angular_damping*dt));
 
-        /* Set to rest if below thresholds  */ 
-        /*TODO: higher values may be needed to cover all cases. 
+        /* Set to rest if below thresholds  */
+        /*TODO: higher values may be needed to cover all cases.
         This works for the default sphere colliding with the default box in the default scenario
         with default globals. */
         /* real lin_thresh = 0.03770751953125f; */
         /* real ang_thresh = 0.03770751953125f; */
-        real lin_thresh = 0.1;
-        real ang_thresh = 0.1;
-        if (vec3_magnitude(b->velocity) < lin_thresh &&
-            vec3_magnitude(b->angular_velocity) < ang_thresh) {
-            b->velocity = vec3_init_from_3(0,0,0);
-            b->angular_velocity = vec3_init_from_3(0,0,0);
+        real lin_thresh = 0.05;
+        real ang_thresh = 0.05;
+        if (vec3_magnitude(b->rigid_body->velocity) < lin_thresh &&
+            vec3_magnitude(b->rigid_body->angular_velocity) < ang_thresh) {
+            b->rigid_body->velocity = vec3_init_from_3(0,0,0);
+            b->rigid_body->angular_velocity = vec3_init_from_3(0,0,0);
             b->asleep = 1;
         } else {
             b->asleep = 0;
@@ -303,19 +283,19 @@ static void physics_step(physics_world *w, real dt) {
         if (b->inverse_mass <= 0.0f) continue;
         if (b->asleep) continue;
         vec3 accel = vec3_mul_scalar(b->force, b->inverse_mass);
-        b->velocity = vec3_add(b->velocity, vec3_mul_scalar(accel, dt));
+        b->rigid_body->velocity = vec3_add(b->rigid_body->velocity, vec3_mul_scalar(accel, dt));
         vec3 pos = phys_ent_pos(w, i);
-        phys_set_pos(w, i, vec3_add(pos, vec3_mul_scalar(b->velocity, dt)));
+        phys_set_pos(w, i, vec3_add(pos, vec3_mul_scalar(b->rigid_body->velocity, dt)));
 
         vec4 orient = phys_ent_orient(w, i);
         mat3 invI = world_inv_inertia_phys(b, orient);
         vec3 ang_accel = mat3_mul_vec3(invI, b->torque);
-        b->angular_velocity = vec3_add(b->angular_velocity,
+        b->rigid_body->angular_velocity = vec3_add(b->rigid_body->angular_velocity,
                                 vec3_mul_scalar(ang_accel, dt));
 
-        vec4 wq = vec4_init_from_4(b->angular_velocity.position.x,
-                                   b->angular_velocity.position.y,
-                                   b->angular_velocity.position.z, 0);
+        vec4 wq = vec4_init_from_4(b->rigid_body->angular_velocity.position.x,
+                                   b->rigid_body->angular_velocity.position.y,
+                                   b->rigid_body->angular_velocity.position.z, 0);
         vec4 qdot = vec4_mul_scalar(quat_mul(wq, orient), 0.5f);
         orient = vec4_add(orient, vec4_mul_scalar(qdot, dt));
         phys_set_orient(w, i, vec4_normalize(orient));
@@ -333,11 +313,11 @@ static void physics_step(physics_world *w, real dt) {
             if (a->inverse_mass <= 0.0f && b->inverse_mass <= 0.0f) continue;
             contact c;
             i32 hit = 0;
-            if (a->shape == RIGID_SHAPE_SPHERE && b->shape == RIGID_SHAPE_SPHERE)
+            if (a->rigid_body->shape == RIGID_SHAPE_SPHERE && b->rigid_body->shape == RIGID_SHAPE_SPHERE)
                 hit = sphere_sphere_contact(w, i, j, &c);
-            else if (a->shape == RIGID_SHAPE_SPHERE && b->shape == RIGID_SHAPE_BOX)
+            else if (a->rigid_body->shape == RIGID_SHAPE_SPHERE && b->rigid_body->shape == RIGID_SHAPE_BOX)
                 hit = sphere_box_contact(w, i, j, &c);
-            else if (a->shape == RIGID_SHAPE_BOX && b->shape == RIGID_SHAPE_SPHERE) {
+            else if (a->rigid_body->shape == RIGID_SHAPE_BOX && b->rigid_body->shape == RIGID_SHAPE_SPHERE) {
                 hit = sphere_box_contact(w, j, i, &c);
                 if (hit) { i32 tmp = c.body_a; c.body_a = c.body_b; c.body_b = tmp; }
             }
@@ -368,9 +348,9 @@ static void physics_step(physics_world *w, real dt) {
             vec3 ra = vec3_sub(cn->point, pa);
             vec3 rb = vec3_sub(cn->point, pb);
             vec3 vrel = vec3_add(
-                vec3_sub(b->velocity, a->velocity),
-                vec3_sub(vec3_cross(b->angular_velocity, rb),
-                         vec3_cross(a->angular_velocity, ra)));
+                vec3_sub(b->rigid_body->velocity, a->rigid_body->velocity),
+                vec3_sub(vec3_cross(b->rigid_body->angular_velocity, rb),
+                         vec3_cross(a->rigid_body->angular_velocity, ra)));
             real vn = vec3_dot(vrel, cn->normal);
             if (vn > 0.0f) continue;
 
@@ -383,16 +363,16 @@ static void physics_step(physics_world *w, real dt) {
                          vec3_dot(mat3_mul_vec3(invIb, rcn_b), rcn_b);
             if (denom < 1e-6f) continue;
 
-            real e = real_min(a->restitution, b->restitution);
+            real e = (a->rigid_body->restitution + b->rigid_body->restitution) * 0.5f;
             real j = -(1.0f+e)*vn / denom;
             if (j < 0.0f) j = 0.0f;
             vec3 imp = vec3_mul_scalar(cn->normal, j);
-            a->velocity = vec3_sub(a->velocity, vec3_mul_scalar(imp, a->inverse_mass));
-            b->velocity = vec3_add(b->velocity, vec3_mul_scalar(imp, b->inverse_mass));
-            a->angular_velocity = vec3_sub(a->angular_velocity,
-                                    mat3_mul_vec3(invIa, vec3_cross(ra, imp)));
-            b->angular_velocity = vec3_add(b->angular_velocity,
-                                    mat3_mul_vec3(invIb, vec3_cross(rb, imp)));
+            a->rigid_body->velocity = vec3_sub(a->rigid_body->velocity, vec3_mul_scalar(imp, a->inverse_mass));
+            b->rigid_body->velocity = vec3_add(b->rigid_body->velocity, vec3_mul_scalar(imp, b->inverse_mass));
+            a->rigid_body->angular_velocity = vec3_sub(a->rigid_body->angular_velocity,
+                                     mat3_mul_vec3(invIa, vec3_cross(ra, imp)));
+            b->rigid_body->angular_velocity = vec3_add(b->rigid_body->angular_velocity,
+                                     mat3_mul_vec3(invIb, vec3_cross(rb, imp)));
 
             /* friction */
             vec3 tangent = vec3_sub(vrel, vec3_mul_scalar(cn->normal, vn));
@@ -400,17 +380,17 @@ static void physics_step(physics_world *w, real dt) {
             if (tangent_len > 1e-6f) {
                 tangent = vec3_div_scalar(tangent, tangent_len);
                 real jt = -vec3_dot(vrel, tangent) / denom;
-                real mu = real_sqrt(a->friction * b->friction);
+                real mu = real_sqrt(a->rigid_body->friction * b->rigid_body->friction);
                 real jtmax = mu * j;
                 if (jt > jtmax) jt = jtmax;
                 else if (jt < -jtmax) jt = -jtmax;
                 vec3 imp_t = vec3_mul_scalar(tangent, jt);
-                a->velocity = vec3_sub(a->velocity, vec3_mul_scalar(imp_t, a->inverse_mass));
-                b->velocity = vec3_add(b->velocity, vec3_mul_scalar(imp_t, b->inverse_mass));
-                a->angular_velocity = vec3_sub(a->angular_velocity,
-                                        mat3_mul_vec3(invIa, vec3_cross(ra, imp_t)));
-                b->angular_velocity = vec3_add(b->angular_velocity,
-                                        mat3_mul_vec3(invIb, vec3_cross(rb, imp_t)));
+                a->rigid_body->velocity = vec3_sub(a->rigid_body->velocity, vec3_mul_scalar(imp_t, a->inverse_mass));
+                b->rigid_body->velocity = vec3_add(b->rigid_body->velocity, vec3_mul_scalar(imp_t, b->inverse_mass));
+                a->rigid_body->angular_velocity = vec3_sub(a->rigid_body->angular_velocity,
+                                         mat3_mul_vec3(invIa, vec3_cross(ra, imp_t)));
+                b->rigid_body->angular_velocity = vec3_add(b->rigid_body->angular_velocity,
+                                         mat3_mul_vec3(invIb, vec3_cross(rb, imp_t)));
             }
         }
 

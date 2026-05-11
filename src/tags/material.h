@@ -179,7 +179,7 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_WATER = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.10f, 0.35f, 0.65f},  /* brighter tropical blue */
     /*.ambient_light_factor     =*/ 0.80f,  /* shadowed water still looks bright */
     /*.alpha                    =*/ 0.70f,  /* mostly opaque but still translucent */
@@ -216,7 +216,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GRASS = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.0f, 0.24f, 0.08f},     /* bright grass green */
     /*.ambient_light_factor     =*/ 1.0f,
     /*.alpha                    =*/ 1.0f,
@@ -253,7 +253,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_CLOTH = {
-    /*.mode                     =*/ SHADE_GOURAUD,     /* or GOURAUD, depending on your model */
+    /*.mode                     =*/ SHADE_FLAT,     /* or GOURAUD, depending on your model */
     /*.color                    =*/ {0.6f, 0.2f, 0.3f},
     /*.ambient_light_factor     =*/ 1.0f,
     /*.alpha                    =*/ 1.0f,
@@ -293,7 +293,7 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_WOOD = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.55f, 0.32f, 0.12f},   /* warm brown */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
@@ -333,7 +333,7 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_METAL = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.5f, 0.65f, 0.70f},   /* dark base, color from specular */
     /*.ambient_light_factor     =*/ 0.5f,                   /* low ambient for metallic darkness */
     /*.alpha                    =*/ 1.00f,
@@ -371,7 +371,7 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.85f, 0.95f, 1.00f},   /* pale ice blue */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.3f,
@@ -410,7 +410,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.87f, 0.8f, 0.64f},   /* warm peach */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
@@ -448,7 +448,7 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.10f, 0.10f, 0.10f},   /* very dark grey */
     /*.ambient_light_factor     =*/ 0.50f,
     /*.alpha                    =*/ 1.00f,
@@ -486,7 +486,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_ICE = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.65f, 0.85f, 0.95f},   /* pale cyan */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.85f,
@@ -524,7 +524,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_STONE = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.48f, 0.43f, 0.38f},   /* neutral grey‑brown */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
@@ -564,7 +564,7 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.15f, 0.05f, 0.00f},   /* darker black-brown crust */
     /*.ambient_light_factor     =*/ 0.50f,                   /* darker base for deeper shadows */
     /*.alpha                    =*/ 1.00f,
@@ -602,7 +602,7 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_TOON = {
-    /*.mode                     =*/ SHADE_GOURAUD,                  /* flat shading for toon look */
+    /*.mode                     =*/ SHADE_FLAT,                  /* flat shading for toon look */
     /*.color                    =*/ {0.90f, 0.70f, 0.40f},   /* cartoon orange */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
@@ -679,7 +679,7 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {1.00f, 1.00f, 1.00f},   /* pure white base for full rainbow shift */
     /*.ambient_light_factor     =*/ 1.00f,                   /* full ambient to enhance colors */
     /*.alpha                    =*/ 0.90f,                   /* near opaque for visibility */
@@ -717,7 +717,7 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.20f, 0.50f, 0.80f},   /* blue plastic */
     /*.ambient_light_factor     =*/ 0.70f,
     /*.alpha                    =*/ 1.00f,
@@ -755,7 +755,7 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.50f, 0.19f, 0.10f},
     /*.ambient_light_factor     =*/ 0.60f,
     /*.alpha                    =*/ 1.00f,
@@ -795,7 +795,7 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_LEATHER = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.30f, 0.15f, 0.09f},   /* darker brown */
     /*.ambient_light_factor     =*/ 0.80f,
     /*.alpha                    =*/ 1.00f,
@@ -835,7 +835,7 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
-    /*.mode                     =*/ SHADE_GOURAUD,           /* keep GOURAUD for efficiency */
+    /*.mode                     =*/ SHADE_FLAT,           /* keep GOURAUD for efficiency */
     /*.color                    =*/ {0.80f, 0.60f, 0.20f},   /* gold base */
     /*.ambient_light_factor     =*/ 0.50f,                   /* low ambient for darkness */
     /*.alpha                    =*/ 1.00f,
@@ -873,7 +873,7 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_SNOW = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.95f, 0.95f, 1.00f},   /* white with blue tint */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
@@ -913,7 +913,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_DIRT = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.35f, 0.20f, 0.10f},   /* deep dark earthy brown */
     /*.ambient_light_factor     =*/ 0.45f,
     /*.alpha                    =*/ 1.00f,
@@ -953,7 +953,7 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_NEON = {
-    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.color                    =*/ {0.00f, 1.00f, 1.00f},   /* pure emissive */
     /*.ambient_light_factor     =*/ 0.00f,                   /* allow emissive to show TODO: get emissive working with 0.00f alpha.*/
     /*.alpha                    =*/ 1.00f,

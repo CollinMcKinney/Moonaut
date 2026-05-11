@@ -35,7 +35,9 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
         return -1;
     }
     memcpy(loaded, data, group->total_size);
-    inst->data = loaded;
+    inst->backup_data = loaded;
+    /* Copy initial data to active before modifications */
+    memcpy(inst->active_data, loaded, group->total_size);
     inst->loaded = 1;
 
     /* reference fix-up */
@@ -91,6 +93,9 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
         else if (name && strstr(name, "box"))
             refs[0].handle = tag_load("default_material_rubber", TAG_material);
     }
+
+    /* Update active_data with the modified backup_data */
+    memcpy(inst->active_data, inst->backup_data, group->total_size);
 
     tag_postprocess_tag(handle);
     return handle;

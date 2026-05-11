@@ -23,7 +23,7 @@ end
 
 local mat_timer = 0
 local mat_index = 1
-local mat_interval = 3.5 -- seconds between changes
+local mat_interval = 5 -- seconds between changes
 
 -- seconds for all animations to complete their cycles
 local cam_cycle_time = 7
@@ -36,8 +36,8 @@ function update(dt) --called every game-tick.
 
     -- Orbit camera around (0,0,0)
     local cam_angle = (total_time / cam_cycle_time) * 2 * math.pi
-    local radius = 10.0
-    local height = 5.0
+    local radius = 15.0
+    local height = 7.5
     local cam_x = radius * math.cos(cam_angle)
     local cam_z = radius * math.sin(cam_angle)
     camera_eye(cam_x, height, cam_z)
@@ -81,10 +81,12 @@ function update(dt) --called every game-tick.
                     print("No model found in the entity.")
                 end
                 
-                -- local rigid_body_handle = tag_get_field(ent_handle, "rigid_body")
-                -- tag_set_field(rigid_body_handle, "velocity", vec3(0, 6, 0))
-                -- tag_set_field(rigid_body_handle, "angular_velocity", vec3(3, 0, 0))
-                tag_set_field(ent_handle, "position", vec3(0, 3.5, 0))
+                local rigid_body_handle = tag_get_field(ent_handle, "rigid_body")
+                tag_set_field(rigid_body_handle, "velocity", vec3(-5, 10, 0))
+                tag_set_field(rigid_body_handle, "angular_velocity", vec3(0, 0, 0))
+                tag_set_field(rigid_body_handle, "restitution", 0.6)
+                tag_set_field(rigid_body_handle, "friction", 0.5)
+                tag_set_field(ent_handle, "position", vec3(10, 1.5, 0))
             end
         else
             print("No entities found in the scenario.")
