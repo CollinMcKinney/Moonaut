@@ -1,0 +1,7 @@
+
+build/
+*.exe
+
+*.md
+!LICENSE.md
+!README.md

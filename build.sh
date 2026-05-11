@@ -1,7 +1,8 @@
 #!/bin/bash
 
-gcc -ansi -Ofast -flto -I lua-5.5.0/src -o Moonaut.exe \
-  main.c \
+gcc -ansi \
+  -Ofast -flto -march=native \
+  -I lua-5.5.0/src -o ./build/Moonaut.exe main.c \
   lua-5.5.0/src/lapi.c \
   lua-5.5.0/src/lauxlib.c \
   lua-5.5.0/src/lbaselib.c \
@@ -36,4 +37,4 @@ gcc -ansi -Ofast -flto -I lua-5.5.0/src -o Moonaut.exe \
   lua-5.5.0/src/lzio.c \
   -lm -lgdi32 -Wno-multichar 2>&1 | grep -E "undefined|error|warning" | head -30
 
-./Moonaut.exe
+./build/Moonaut.exe
