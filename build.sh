@@ -1,7 +1,7 @@
 #!/bin/bash
 
 gcc -ansi \
-  -Ofast -flto -march=native \
+  -O3 -ffast-math -flto -march=native \
   -I lua-5.5.0/src -o ./build/Moonaut.exe main.c \
   lua-5.5.0/src/lapi.c \
   lua-5.5.0/src/lauxlib.c \
