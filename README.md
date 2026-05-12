@@ -2,6 +2,7 @@
 
 A lightweight game engine written in C with Lua scripting support. Designed for simplicity, featuring a tag-based asset system, real-time physics, and multiple software-rendering shading modes with ~20 effects.
 
+<img width="786" height="750" alt="Image" src="https://github.com/user-attachments/assets/9f5fa635-fe84-4186-8e8e-c30965d46536" />
 <img width="720" height="370" alt="Image" src="https://github.com/user-attachments/assets/081f3619-32c8-4099-8357-d80f67abcf0c" />
 <img width="305" height="347" alt="Image" src="https://github.com/user-attachments/assets/c39a06d4-004c-4d78-ad64-47964a27c27f" />
 
