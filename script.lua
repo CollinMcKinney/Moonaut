@@ -53,8 +53,8 @@ function update(dt) --called every game-tick.
     -- Cycle light color (hue shift)
     local hue = (total_time / light_col_cycle_time) * 360  -- degrees
     local r = (math.sin(hue * math.pi / 180) + 1) 
-    local g = (math.sin((hue + 120) * math.pi / 180) + 1) 
-    local b = (math.sin((hue + 240) * math.pi / 180) + 1) 
+    local g = (math.sin((hue + 120) * math.pi / 180) + 1)
+    local b = (math.sin((hue + 240) * math.pi / 180) + 1)
     light_color(r , g , b )  -- brighter
 
      -- Cycle materials on the first entity's model
