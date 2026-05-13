@@ -15,6 +15,11 @@
 extern "C" {
 #endif
 
+/* 
+    TODO: view frustrum culling? Sometimes there are graphical artifacts that stretch
+    across the screen when a model is near the camera or leaves the viewport.
+*/
+
 /* -------------------------------------------------------------------------
    Global render state
    ------------------------------------------------------------------------- */
