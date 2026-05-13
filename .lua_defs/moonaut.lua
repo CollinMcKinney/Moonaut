@@ -146,6 +146,10 @@ function tag_get_script(handle) end
 ---@param dt number
 function update(dt) end
 
+---@param filename string
+---@return number
+function import_model(filename) end
+
 SHADE_WIREFRAME = 0
 SHADE_FLAT = 1
 SHADE_GOURAUD = 2
