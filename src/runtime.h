@@ -15,6 +15,8 @@
 #include "tags/camera.h"
 #include "tags/lua_script.h"
 
+#include "toolbox/model_importer.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -583,6 +585,28 @@ static i32 lua_tag_load(lua_State *L)
     return 1;
 }
 
+/* import_model(path [, material_handle]) -> model tag handle */
+static i32 lua_import_model(lua_State *L)
+{
+    const char *path = luaL_checkstring(L, 1);
+    i32 material_handle = -1;
+    i32 handle;
+
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
+        material_handle = (i32)luaL_checkinteger(L, 2);
+
+    handle = model_importer_import_model_with_material(path, material_handle);
+    if (handle < 0) {
+        const char *error = model_importer_last_error();
+        if (!error || error[0] == '\0')
+            error = "unknown importer error";
+        return luaL_error(L, "failed to import model '%s': %s", path, error);
+    }
+
+    lua_pushinteger(L, handle);
+    return 1;
+}
+
 /* tag_get_field(handle, field_name) -> value */
 static i32 lua_tag_get_field(lua_State *L)
 {
@@ -786,6 +810,7 @@ static void scenario_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "light_ambient",   lua_light_ambient);
     lua_register_builtin(state, "clear_color",     lua_clear_color);
     lua_register_builtin(state, "load_scenario",   lua_load_scenario);
+    lua_register_builtin(state, "import_model",    lua_import_model);
     lua_register_builtin(state, "tag_load",        lua_tag_load);
     lua_register_builtin(state, "tag_get_field",   lua_tag_get_field);
     lua_register_builtin(state, "tag_set_field",   lua_tag_set_field);

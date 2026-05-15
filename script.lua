@@ -20,14 +20,23 @@ for i, name in ipairs(material_pool) do
     material_handles[i] = tag_load(name, TAG_material)
 end
 
+local station_model_handle = import_model("station.glb")
+
+if tag_get_block_count(scenario_handle, "entities") > 0 then
+    local entity_handle = tag_get_block_field(scenario_handle, "entities", 1, "entity")
+    if entity_handle and entity_handle >= 0 then
+        tag_set_field(entity_handle, "model", station_model_handle)
+    end
+end
+
 local mat_timer = 0
 local mat_index = 1
 local mat_interval = 5 -- seconds between changes
 
 -- seconds for all animations to complete their cycles
-local cam_cycle_time = 7
-local light_dir_cycle_time = 3.5
-local light_col_cycle_time = 1.75
+local cam_cycle_time = 15
+local light_dir_cycle_time = 10
+local light_col_cycle_time = 5
 
 local total_time = 0
 function update(dt) --called every game-tick.
@@ -35,8 +44,8 @@ function update(dt) --called every game-tick.
 
     -- Orbit camera around (0,0,0)
     local cam_angle = (total_time / cam_cycle_time) * 2 * math.pi
-    local radius = 15.0
-    local height = 7.5
+    local radius = 20.0
+    local height = 12.5
     local cam_x = radius * math.cos(cam_angle)
     local cam_z = radius * math.sin(cam_angle)
     camera_eye(cam_x, height, cam_z)
