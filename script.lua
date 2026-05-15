@@ -6,7 +6,7 @@ local scenario_handle = load_scenario("default_scenario")
 clear_color(0, 32, 64)
 
 -- Pre-load some materials to cycle through
-local material_pool = { 
+local material_pool = {
     "default_material_wireframe", 
     "default_material_water", "default_material_grass", "default_material_cloth", "default_material_wood", 
     "default_material_metal", "default_material_glass", "default_material_skin", "default_material_rubber", 
@@ -14,7 +14,6 @@ local material_pool = {
     "default_material_hologram", "default_material_iridescent", "default_material_plastic", "default_material_brick", 
     "default_material_leather", "default_material_gold", "default_material_snow", "default_material_dirt", 
     "default_material_neon" }
-
 
 local material_handles = {}
 for i, name in ipairs(material_pool) do
