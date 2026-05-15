@@ -2,7 +2,8 @@
 
 A lightweight game engine written in C with Lua scripting support. Designed for simplicity, featuring a tag-based asset system, real-time physics, and multiple software-rendering shading modes with ~20 effects.
 
-<img width="786" height="750" alt="Image" src="https://github.com/user-attachments/assets/9f5fa635-fe84-4186-8e8e-c30965d46536" />
+<img width="393" height="375" alt="Image" src="https://github.com/user-attachments/assets/9f5fa635-fe84-4186-8e8e-c30965d46536" />
+<img width="256" height="204" alt="Image" src="https://github.com/CollinMcKinney/Moonaut/blob/master/flowchart.png" />
 
 ## Features
 
