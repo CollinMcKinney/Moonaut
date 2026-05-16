@@ -44,8 +44,8 @@ function update(dt) --called every game-tick.
 
     -- Orbit camera around (0,0,0)
     local cam_angle = (total_time / cam_cycle_time) * 2 * math.pi
-    local radius = 20.0
-    local height = 12.5
+    local radius = 10
+    local height = 5
     local cam_x = radius * math.cos(cam_angle)
     local cam_z = radius * math.sin(cam_angle)
     camera_eye(cam_x, height, cam_z)

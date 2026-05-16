@@ -124,6 +124,97 @@ static i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
 }
 
 /* -------------------------------------------------------------------------
+    Sutherland-Hodgman clipping for triangles against a single plane
+    Returns the number of output vertices (0-4 for a clipped triangle)
+    ------------------------------------------------------------------------- */
+#define MAX_CLIPPED_VERTS 12
+
+typedef struct {
+    vec3 v, n, l;  /* position, normal, local_pos */
+} clip_vertex;
+
+static i32 clip_triangle_plane(
+    clip_vertex *in, i32 in_count,
+    clip_vertex *out,
+    i32 plane_idx,
+    vec3 normal, real d)
+{
+    i32 out_count = 0;
+    i32 i, prev;
+    
+    for (i = 0, prev = in_count - 1; i < in_count; prev = i, i++) {
+        real dp1 = vec3_dot(normal, in[prev].v) + d;
+        real dp2 = vec3_dot(normal, in[i].v) + d;
+        i32 in1 = dp1 >= 0.0f;
+        i32 in2 = dp2 >= 0.0f;
+        
+        if (in1 && in2) {
+            /* Both inside - add second vertex */
+            out[out_count++] = in[i];
+        } else if (in1 && !in2) {
+            /* Leaving - add intersection */
+            real t = dp1 / (dp1 - dp2);
+            clip_vertex iv;
+            iv.v = vec3_add(in[prev].v, vec3_mul_scalar(vec3_sub(in[i].v, in[prev].v), t));
+            iv.n = vec3_add(in[prev].n, vec3_mul_scalar(vec3_sub(in[i].n, in[prev].n), t));
+            iv.l = vec3_add(in[prev].l, vec3_mul_scalar(vec3_sub(in[i].l, in[prev].l), t));
+            out[out_count++] = iv;
+        } else if (!in1 && in2) {
+            /* Entering - add intersection and second vertex */
+            real t = dp1 / (dp1 - dp2);
+            clip_vertex iv;
+            iv.v = vec3_add(in[prev].v, vec3_mul_scalar(vec3_sub(in[i].v, in[prev].v), t));
+            iv.n = vec3_add(in[prev].n, vec3_mul_scalar(vec3_sub(in[i].n, in[prev].n), t));
+            iv.l = vec3_add(in[prev].l, vec3_mul_scalar(vec3_sub(in[i].l, in[prev].l), t));
+            out[out_count++] = iv;
+            out[out_count++] = in[i];
+        }
+        /* Else both outside - add nothing */
+    }
+    
+    return out_count;
+}
+
+/* Clip triangle against all frustum planes, returning 0 (culled) or the clipped tri count */
+static i32 clip_triangle_full(
+    vec3 v0, vec3 v1, vec3 v2,
+    vec3 n0, vec3 n1, vec3 n2,
+    vec3 l0, vec3 l1, vec3 l2,
+    vec3 *cv_out, vec3 *cn_out, vec3 *cl_out)
+{
+    clip_vertex in[MAX_CLIPPED_VERTS], out[MAX_CLIPPED_VERTS];
+    i32 in_count, out_count, i;
+    
+    /* Initialize with input triangle */
+    in[0].v = v0; in[0].n = n0; in[0].l = l0;
+    in[1].v = v1; in[1].n = n1; in[1].l = l1;
+    in[2].v = v2; in[2].n = n2; in[2].l = l2;
+    in_count = 3;
+    
+    /* Clip against each frustum plane */
+    i32 j;
+    for (i = 0; i < 6; i++) {
+        if (in_count < 3) return 0;  /* Nothing left after previous clip */
+        out_count = clip_triangle_plane(in, in_count, out, i, frustum[i].normal, frustum[i].d);
+        if (out_count < 3) return 0;  /* Degenerate result */
+        /* Swap in/out for next iteration */
+        for (j = 0; j < out_count; j++) in[j] = out[j];
+        in_count = out_count;
+    }
+    
+    /* Triangulate the clipped polygon and store results */
+    /* For convex polygons (result of clipping), fan triangulate from first vertex */
+    i32 tri_count = in_count - 2;
+    for (i = 0; i < tri_count; i++) {
+        cv_out[i*3 + 0] = in[0].v;   cn_out[i*3 + 0] = in[0].n;   cl_out[i*3 + 0] = in[0].l;
+        cv_out[i*3 + 1] = in[i+1].v; cn_out[i*3 + 1] = in[i+1].n; cl_out[i*3 + 1] = in[i+1].l;
+        cv_out[i*3 + 2] = in[i+2].v; cn_out[i*3 + 2] = in[i+2].n; cl_out[i*3 + 2] = in[i+2].l;
+    }
+    
+    return tri_count;
+}
+
+/* -------------------------------------------------------------------------
    Transparent triangle sorting
    ------------------------------------------------------------------------- */
 #define MAX_TRANSPARENT 4096
@@ -797,14 +888,20 @@ static void raster_triangle_phong(
 }
 
 /* -------------------------------------------------------------------------
-   Main triangle dispatch (now with automatic transparent queuing)
-   ------------------------------------------------------------------------- */
+    Main triangle dispatch (now with automatic transparent queuing)
+    ------------------------------------------------------------------------- */
+static void draw_triangle_internal(
+    vec3 v0, vec3 v1, vec3 v2,
+    vec3 n0, vec3 n1, vec3 n2,
+    vec3 l0, vec3 l1, vec3 l2,
+    const struct material_definition *mat);
+
 static void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat) {
-        
+    
     /* Backface culling in 3D space */
     if (!mat->double_sided) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
@@ -813,8 +910,19 @@ static void draw_triangle_shaded(
         if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
     }
 
-    /* Frustum culling - skip triangles completely outside view volume */
+/* Frustum culling - skip triangles completely outside view volume */
     if (triangle_outside_frustum(v0, v1, v2)) return;
+     
+/* Check if triangle intersects any frustum plane for clipping */
+    i32 needs_clip = 0;
+    real min_dist_sq = 100.0f * 100.0f;
+    real d0_sq = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
+    real d1_sq = vec3_dot(vec3_sub(v1, cam_eye), vec3_sub(v1, cam_eye));
+    real d2_sq = vec3_dot(vec3_sub(v2, cam_eye), vec3_sub(v2, cam_eye));
+
+    if (d0_sq < min_dist_sq || d1_sq < min_dist_sq || d2_sq < min_dist_sq) {
+        needs_clip = 1;
+    }
 
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
     if (mat->alpha < 1.0f) {
@@ -840,10 +948,39 @@ static void draw_triangle_shaded(
         /* else: already in transparent pass or queue full – fall through to draw immediately */
     }
 
-    vec3 face_normal;
-    vec3 face_center;
-    vec3 local_center;
-    vec3 color;
+    /* Clip triangle against all frustum planes */
+    if (needs_clip) {
+        vec3 cv[MAX_CLIPPED_VERTS * 3];
+        vec3 cn[MAX_CLIPPED_VERTS * 3];
+        vec3 cl[MAX_CLIPPED_VERTS * 3];
+        i32 tri_count = clip_triangle_full(v0, v1, v2, n0, n1, n2, l0, l1, l2, cv, cn, cl);
+        if (tri_count == 0) return;
+
+        /* Draw each clipped triangle */
+        i32 t;
+        for (t = 0; t < tri_count; t++) {
+            vec3 cv0 = cv[t*3 + 0], cv1 = cv[t*3 + 1], cv2 = cv[t*3 + 2];
+            vec3 cn0 = cn[t*3 + 0], cn1 = cn[t*3 + 1], cn2 = cn[t*3 + 2];
+            vec3 cl0_t = cl[t*3 + 0], cl1_t = cl[t*3 + 1], cl2_t = cl[t*3 + 2];
+
+            draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat);
+        }
+        return;
+    }
+
+    draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+}
+
+/* -------------------------------------------------------------------------
+    Internal triangle drawing (no clipping)
+    ------------------------------------------------------------------------- */
+static void draw_triangle_internal(
+    vec3 v0, vec3 v1, vec3 v2,
+    vec3 n0, vec3 n1, vec3 n2,
+    vec3 l0, vec3 l1, vec3 l2,
+    const struct material_definition *mat)
+{
+    vec3 face_normal, face_center, local_center, color;
     vec3 c0, c1, c2;
 
     switch (mat->mode) {
@@ -881,9 +1018,9 @@ static void draw_triangle_shaded(
 }
 
 /* -------------------------------------------------------------------------
-   Finish frame: sort and draw all transparent triangles (called after all
-   draw_triangle_shaded calls, before reading the framebuffer).
-   ------------------------------------------------------------------------- */
+    Finish frame: sort and draw all transparent triangles (called after all
+    draw_triangle_shaded calls, before reading the framebuffer).
+    ------------------------------------------------------------------------- */
 static void render_finish(void)
 {
     if (transparent_count > 0) {
