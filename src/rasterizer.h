@@ -15,11 +15,6 @@
 extern "C" {
 #endif
 
-/* 
-    TODO: view frustrum culling? Sometimes there are graphical artifacts that stretch
-    across the screen when a model is near the camera or leaves the viewport.
-*/
-
 /* -------------------------------------------------------------------------
    Global render state
    ------------------------------------------------------------------------- */
@@ -41,6 +36,92 @@ static vec3 cam_eye;
 static vec3 fog_color;
 static real fog_start;
 static real fog_end;
+
+/* -------------------------------------------------------------------------
+    View frustum planes (extracted from VP matrix)
+    Each plane: ax + by + cz + d = 0, where (a,b,c) is the normal
+    Points inside frustum satisfy: a*x + b*y + c*z + d >= 0 for all planes
+    ------------------------------------------------------------------------- */
+typedef struct {
+    vec3 normal;
+    real d;
+} frustum_plane;
+
+static frustum_plane frustum[6];
+
+/* Extract frustum planes from view-projection matrix */
+static void extract_frustum_planes(void) {
+    vec4 c0, c1, c2, c3;
+    c0 = vp.columns[0];
+    c1 = vp.columns[1];
+    c2 = vp.columns[2];
+    c3 = vp.columns[3];
+    
+    /* Left plane: c3 + c0 */
+    frustum[0].normal = vec3_add(vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
+                                   vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
+    frustum[0].d = c3.components[3] + c0.components[3];
+    
+    /* Right plane: c3 - c0 */
+    frustum[1].normal = vec3_sub(vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
+                                   vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
+    frustum[1].d = c3.components[3] - c0.components[3];
+    
+    /* Bottom plane: c3 + c1 */
+    frustum[2].normal = vec3_add(vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
+                                   vec3_init_from_3(c1.components[0], c1.components[1], c1.components[2]));
+    frustum[2].d = c3.components[3] + c1.components[3];
+    
+    /* Top plane: c3 - c1 */
+    frustum[3].normal = vec3_sub(vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
+                                   vec3_init_from_3(c1.components[0], c1.components[1], c1.components[2]));
+    frustum[3].d = c3.components[3] - c1.components[3];
+    
+    /* Near plane: c3 + c2 */
+    frustum[4].normal = vec3_add(vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
+                                   vec3_init_from_3(c2.components[0], c2.components[1], c2.components[2]));
+    frustum[4].d = c3.components[3] + c2.components[3];
+    
+    /* Far plane: c3 - c2 */
+    frustum[5].normal = vec3_sub(vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
+                                   vec3_init_from_3(c2.components[0], c2.components[1], c2.components[2]));
+    frustum[5].d = c3.components[3] - c2.components[3];
+    
+    /* Normalize all planes */
+    i32 i;
+    for (i = 0; i < 6; i++) {
+        real len = vec3_magnitude(frustum[i].normal);
+        if (len > 0.0f) {
+            frustum[i].normal = vec3_div_scalar(frustum[i].normal, len);
+            frustum[i].d /= len;
+        }
+    }
+}
+
+/* Test if a point is inside the frustum */
+static i32 point_in_frustum(vec3 p) {
+    i32 i;
+    for (i = 0; i < 6; i++) {
+        if (vec3_dot(frustum[i].normal, p) + frustum[i].d < 0.0f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Test if a triangle is completely outside the frustum */
+static i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
+    i32 i;
+    for (i = 0; i < 6; i++) {
+        i32 out0 = vec3_dot(frustum[i].normal, v0) + frustum[i].d < 0.0f;
+        i32 out1 = vec3_dot(frustum[i].normal, v1) + frustum[i].d < 0.0f;
+        i32 out2 = vec3_dot(frustum[i].normal, v2) + frustum[i].d < 0.0f;
+        if (out0 && out1 && out2) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 /* -------------------------------------------------------------------------
    Transparent triangle sorting
@@ -74,6 +155,7 @@ static void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real asp
     mat4 view = mat4_lookat(eye, center, up);
     vp = mat4_mul(proj, view);
     cam_eye = eye;
+    extract_frustum_planes();
 }
 
 static void render_set_fog(vec3 color, real start, real end) {
@@ -730,6 +812,9 @@ static void draw_triangle_shaded(
         vec3 view_dir = vec3_sub(cam_eye, face_center);
         if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
     }
+
+    /* Frustum culling - skip triangles completely outside view volume */
+    if (triangle_outside_frustum(v0, v1, v2)) return;
 
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
     if (mat->alpha < 1.0f) {
