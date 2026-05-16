@@ -98,19 +98,8 @@ static void extract_frustum_planes(void) {
     }
 }
 
-/* Test if a point is inside the frustum */
-static i32 point_in_frustum(vec3 p) {
-    i32 i;
-    for (i = 0; i < 6; i++) {
-        if (vec3_dot(frustum[i].normal, p) + frustum[i].d < 0.0f) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 /* Test if a triangle is completely outside the frustum */
-static i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
+static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
     i32 i;
     for (i = 0; i < 6; i++) {
         i32 out0 = vec3_dot(frustum[i].normal, v0) + frustum[i].d < 0.0f;
@@ -133,7 +122,7 @@ typedef struct {
     vec3 v, n, l;  /* position, normal, local_pos */
 } clip_vertex;
 
-static i32 clip_triangle_plane(
+static INLINE i32 clip_triangle_plane(
     clip_vertex *in, i32 in_count,
     clip_vertex *out,
     i32 plane_idx,
@@ -176,7 +165,7 @@ static i32 clip_triangle_plane(
 }
 
 /* Clip triangle against all frustum planes, returning 0 (culled) or the clipped tri count */
-static i32 clip_triangle_full(
+static INLINE i32 clip_triangle_full(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
@@ -258,25 +247,25 @@ static void render_set_fog(vec3 color, real start, real end) {
 /* -------------------------------------------------------------------------
    Colour packing
    ------------------------------------------------------------------------- */
-static u32 pack_color(u8 r, u8 g, u8 b) {
+static INLINE u32 pack_color(u8 r, u8 g, u8 b) {
     return (r << 16) | (g << 8) | b;
 }
 
-static real saturate(real x) {
+static INLINE real saturate(real x) {
     return real_clamp(x, 0.0f, 1.0f);
 }
 
-static u8 color_to_u8(real x) {
+static INLINE u8 color_to_u8(real x) {
     x = saturate(x);
     return (u8)(x * 255.0f + 0.5f);
 }
 
-static u32 pack_color_real(real r, real g, real b) {
+static INLINE u32 pack_color_real(real r, real g, real b) {
     return pack_color(color_to_u8(r), color_to_u8(g), color_to_u8(b));
 }
 
 /* - Transparent / opaque pixel write - */
-static void write_pixel(i32 idx, real iw, vec3 color, real alpha)
+static INLINE void write_pixel(i32 idx, real iw, vec3 color, real alpha)
 {
     if (iw <= 0.0f) return;
 
@@ -349,7 +338,7 @@ static void render_shutdown(void) {
 /* -------------------------------------------------------------------------
    Pixel write (wireframe helper)
    ------------------------------------------------------------------------- */
-static void set_pix(i32 x, i32 y, u8 r, u8 g, u8 b) {
+static INLINE void set_pix(i32 x, i32 y, u8 r, u8 g, u8 b) {
     if (x < 0 || x >= fw || y < 0 || y >= fh) return;
     fb[y * fw + x] = pack_color(r, g, b);
 }
@@ -357,7 +346,7 @@ static void set_pix(i32 x, i32 y, u8 r, u8 g, u8 b) {
 /* -------------------------------------------------------------------------
    Projection helpers
    ------------------------------------------------------------------------- */
-static void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
+static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
     vec4 c = mat4_mul_vec4(vp, vec4_init_from_4(w.position.x, w.position.y, w.position.z, 1.0f));
     if (c.rotation.w <= 1e-6f) { *sx = -1; *sy = -1; *iw = 0; return; }
     *iw = 1.0f / c.rotation.w;
@@ -366,10 +355,10 @@ static void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
     *sy = (i32)((1.0f - (ndcy * 0.5f + 0.5f)) * fh);
 }
 
-static void swapi(i32 *a, i32 *b) { i32 t = *a; *a = *b; *b = t; }
-static void swapr(real *a, real *b) { real t = *a; *a = *b; *b = t; }
-static void swapv(vec3 *a, vec3 *b) { vec3 t = *a; *a = *b; *b = t; }
-static i32 raster_round(real x) { return (i32)real_floor(x + 0.5f); }
+static INLINE void swapi(i32 *a, i32 *b) { i32 t = *a; *a = *b; *b = t; }
+static INLINE void swapr(real *a, real *b) { real t = *a; *a = *b; *b = t; }
+static INLINE void swapv(vec3 *a, vec3 *b) { vec3 t = *a; *a = *b; *b = t; }
+static INLINE i32 raster_round(real x) { return (i32)real_floor(x + 0.5f); }
 
 /* Global render time (animates emissive pulse) */
 static real render_time = 0.0f;
@@ -378,7 +367,7 @@ static real render_time = 0.0f;
 static void render_set_time(real t) { render_time = t; }
 
 /* - The unified shading function - */
-static vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
+static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
                           const struct material_definition *mat)
 {
     vec3 N = normal;   /* raw un‑normalised normal */
@@ -888,21 +877,61 @@ static void raster_triangle_phong(
 }
 
 /* -------------------------------------------------------------------------
-    Main triangle dispatch (now with automatic transparent queuing)
+    Internal triangle drawing (no clipping)
     ------------------------------------------------------------------------- */
 static void draw_triangle_internal(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat);
+    const struct material_definition *mat)
+{
+    vec3 face_normal, face_center, local_center, color;
+    vec3 c0, c1, c2;
 
+    switch (mat->mode) {
+        case SHADE_WIREFRAME:
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            color = shade_surface(face_normal, face_center, local_center, mat);
+            raster_triangle_wireframe(v0, v1, v2, color, mat->alpha);
+            return;
+        case SHADE_FLAT:
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            color = shade_surface(face_normal, face_center, local_center, mat);
+            raster_triangle_flat(v0, v1, v2, color, mat);
+            return;
+        case SHADE_GOURAUD:
+            c0 = shade_surface(n0, v0, l0, mat);
+            c1 = shade_surface(n1, v1, l1, mat);
+            c2 = shade_surface(n2, v2, l2, mat);
+            raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
+            return;
+        case SHADE_PHONG:
+            raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+            return;
+        default:
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            color = shade_surface(face_normal, face_center, local_center, mat);
+            raster_triangle_flat(v0, v1, v2, color, mat);
+            return;
+    }
+}
+
+/* -------------------------------------------------------------------------
+    Main triangle dispatch
+    ------------------------------------------------------------------------- */
 static void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat) {
     
-    /* Backface culling in 3D space */
+    /* Backface culling */
     if (!mat->double_sided) {
         vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
@@ -910,10 +939,10 @@ static void draw_triangle_shaded(
         if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
     }
 
-/* Frustum culling - skip triangles completely outside view volume */
+    /* Frustum culling - skip triangles completely outside view volume */
     if (triangle_outside_frustum(v0, v1, v2)) return;
      
-/* Check if triangle intersects any frustum plane for clipping */
+    /* Check if triangle intersects any frustum plane for clipping */
     i32 needs_clip = 0;
     real min_dist_sq = 100.0f * 100.0f;
     real d0_sq = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
@@ -969,52 +998,6 @@ static void draw_triangle_shaded(
     }
 
     draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
-}
-
-/* -------------------------------------------------------------------------
-    Internal triangle drawing (no clipping)
-    ------------------------------------------------------------------------- */
-static void draw_triangle_internal(
-    vec3 v0, vec3 v1, vec3 v2,
-    vec3 n0, vec3 n1, vec3 n2,
-    vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
-{
-    vec3 face_normal, face_center, local_center, color;
-    vec3 c0, c1, c2;
-
-    switch (mat->mode) {
-        case SHADE_WIREFRAME:
-            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
-            color = shade_surface(face_normal, face_center, local_center, mat);
-            raster_triangle_wireframe(v0, v1, v2, color, mat->alpha);
-            return;
-        case SHADE_FLAT:
-            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
-            color = shade_surface(face_normal, face_center, local_center, mat);
-            raster_triangle_flat(v0, v1, v2, color, mat);
-            return;
-        case SHADE_GOURAUD:
-            c0 = shade_surface(n0, v0, l0, mat);
-            c1 = shade_surface(n1, v1, l1, mat);
-            c2 = shade_surface(n2, v2, l2, mat);
-            raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
-            return;
-        case SHADE_PHONG:
-            raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
-            return;
-        default:
-            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
-            color = shade_surface(face_normal, face_center, local_center, mat);
-            raster_triangle_flat(v0, v1, v2, color, mat);
-            return;
-    }
 }
 
 /* -------------------------------------------------------------------------
