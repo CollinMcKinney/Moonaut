@@ -61,7 +61,7 @@ static i32 transparent_count = 0;
 static i32 in_transparent_pass = 0;
 
 /* -------------------------------------------------------------------------
-   Setter functions (light, camera, backface)
+   Setter functions
    ------------------------------------------------------------------------- */
 static void render_set_light(vec3 dir, vec3 col, vec3 amb) {
     light_dir = vec3_normalize(dir);
@@ -107,16 +107,13 @@ static void write_pixel(i32 idx, real iw, vec3 color, real alpha)
 {
     if (iw <= 0.0f) return;
 
-    alpha = saturate(alpha);
-    if (alpha <= 0.0f) return;
-
     if (alpha >= 1.0f) {
         /* Opaque – normal depth write */
         if (iw > zbuf[idx]) {
             zbuf[idx] = iw;
             fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
         }
-    } else {
+    } else if (alpha > 0.0f) {
         /* Transparent – depth test against opaque geometry, but do not update zbuf. */
         if (iw < zbuf[idx]) return;
 
@@ -128,6 +125,8 @@ static void write_pixel(i32 idx, real iw, vec3 color, real alpha)
         real g = color.color.g * alpha + bg_g * (1.0f - alpha);
         real b = color.color.b * alpha + bg_b * (1.0f - alpha);
         fb[idx] = pack_color_real(r, g, b);
+    } else { 
+        return;
     }
 }
 
@@ -156,6 +155,9 @@ static void render_clear(u8 r, u8 g, u8 b) {
     u32 col = pack_color(r, g, b);
     i32 n = fw * fh;
     i32 i;
+    /*TODO: for some reason memset is slower here.*/
+    /*memset(fb, col2, n * sizeof(u32));*/
+    /*memset(zbuf, 0, n * sizeof(real));*/
     for (i = 0; i < n; i++) {
         fb[i] = col;
         zbuf[i] = 0;
@@ -209,7 +211,7 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
     vec3 N = normal;   /* raw un‑normalised normal */
 
     /* - Procedural bump (perturb normal using world pos) - */
-    if (mat->bump_frequency > 0.0f && mat->bump_amplitude > 0.0f) {
+    if (mat->bump_amplitude > 0.0f) {
         real fx = world_pos.position.x * mat->bump_frequency;
         real fy = world_pos.position.y * mat->bump_frequency;
         real fz = world_pos.position.z * mat->bump_frequency;
@@ -217,10 +219,9 @@ static vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         N.position.x += real_sin(fy + fz + t) * mat->bump_amplitude;
         N.position.y += real_sin(fz + fx + t) * mat->bump_amplitude;
         N.position.z += real_sin(fx + fy + t) * mat->bump_amplitude;
+        /* Normalise now so all further calculations use the bumped normal */
+        N = vec3_normalize(N);
     }
-
-    /* Normalise now so all further calculations use the bumped normal */
-    N = vec3_normalize(N);
     
     vec3 V = vec3_normalize(vec3_sub(cam_eye, world_pos));
     real ndotl = saturate(vec3_dot(N, light_dir));
@@ -529,13 +530,6 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
    ------------------------------------------------------------------------- */
 static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, 
                                 const struct material_definition *mat) {
-    /* Backface culling in 3D space */
-    if (!mat->double_sided) {
-        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 view_dir = vec3_sub(cam_eye, face_center);
-        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
-    }
 
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
@@ -581,14 +575,7 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
 static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
                                      vec3 c0, vec3 c1, vec3 c2, 
                                      const struct material_definition *mat) {
-    /* Backface culling in 3D space */
-    if (!mat->double_sided) {
-        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 view_dir = vec3_sub(cam_eye, face_center);
-        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
-    }
-
+                                        
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
 
@@ -635,18 +622,10 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
    Per‑pixel rasterization
    ------------------------------------------------------------------------- */
 static void raster_triangle_phong(
-    vec3 v0, vec3 v1, vec3 v2,
-    vec3 n0, vec3 n1, vec3 n2,
-    vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
-{
-    /* Backface culling in 3D space */
-    if (!mat->double_sided) {
-        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 view_dir = vec3_sub(cam_eye, face_center);
-        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
-    }
+        vec3 v0, vec3 v1, vec3 v2,
+        vec3 n0, vec3 n1, vec3 n2,
+        vec3 l0, vec3 l1, vec3 l2,
+        const struct material_definition *mat) {
 
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
@@ -742,8 +721,16 @@ static void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
-{
+    const struct material_definition *mat) {
+        
+    /* Backface culling in 3D space */
+    if (!mat->double_sided) {
+        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+        vec3 view_dir = vec3_sub(cam_eye, face_center);
+        if (vec3_dot(face_normal, view_dir) <= 0.0f) return;
+    }
+
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
     if (mat->alpha < 1.0f) {
         if (!in_transparent_pass && transparent_count < MAX_TRANSPARENT) {
@@ -768,37 +755,44 @@ static void draw_triangle_shaded(
         /* else: already in transparent pass or queue full – fall through to draw immediately */
     }
 
-    /* Wireframe */
-    if (mat->mode == SHADE_WIREFRAME) {
-        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
-        vec3 color = shade_surface(face_normal, face_center, local_center, mat);
-        raster_triangle_wireframe(v0, v1, v2, color, mat->alpha);
-        return;
-    }
+    vec3 face_normal;
+    vec3 face_center;
+    vec3 local_center;
+    vec3 color;
+    vec3 c0, c1, c2;
 
-    /* Flat */
-    if (mat->mode == SHADE_FLAT) {
-        vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-        vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-        vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
-        vec3 color = shade_surface(face_normal, face_center, local_center, mat);
-        raster_triangle_flat(v0, v1, v2, color, mat);
-        return;
+    switch (mat->mode) {
+        case SHADE_WIREFRAME:
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            color = shade_surface(face_normal, face_center, local_center, mat);
+            raster_triangle_wireframe(v0, v1, v2, color, mat->alpha);
+            return;
+        case SHADE_FLAT:
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            color = shade_surface(face_normal, face_center, local_center, mat);
+            raster_triangle_flat(v0, v1, v2, color, mat);
+            return;
+        case SHADE_GOURAUD:
+            c0 = shade_surface(n0, v0, l0, mat);
+            c1 = shade_surface(n1, v1, l1, mat);
+            c2 = shade_surface(n2, v2, l2, mat);
+            raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
+            return;
+        case SHADE_PHONG:
+            raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+            return;
+        default:
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            color = shade_surface(face_normal, face_center, local_center, mat);
+            raster_triangle_flat(v0, v1, v2, color, mat);
+            return;
     }
-
-    /* Per‑pixel NPR (Phong mode) */
-    if (mat->mode == SHADE_PHONG) {
-        raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
-        return;
-    }
-
-    /* Gouraud (fallback) */
-    vec3 c0 = shade_surface(n0, v0, l0, mat);
-    vec3 c1 = shade_surface(n1, v1, l1, mat);
-    vec3 c2 = shade_surface(n2, v2, l2, mat);
-    raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
 }
 
 /* -------------------------------------------------------------------------
