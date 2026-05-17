@@ -241,7 +241,7 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_WATER = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
                                     EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.10f, 0.35f, 0.65f},
@@ -280,7 +280,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GRASS = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE | EFFECT_CEL_SHADING,
     /*.color                    =*/ {0.0f, 0.24f, 0.08f},
     /*.ambient_light_factor     =*/ 1.0f,
@@ -318,7 +318,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_CLOTH = {
-    /*.mode                     =*/ SHADE_FLAT,     /* or GOURAUD, depending on your model */
+    /*.mode                     =*/ SHADE_GOURAUD,     /* or GOURAUD, depending on your model */
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_SPECULAR,
     /*.color                    =*/ {0.6f, 0.2f, 0.3f},
     /*.ambient_light_factor     =*/ 1.0f,
@@ -359,7 +359,7 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_WOOD = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.55f, 0.32f, 0.12f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -400,7 +400,7 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_METAL = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE,
     /*.color                    =*/ {0.5f, 0.65f, 0.70f},
     /*.ambient_light_factor     =*/ 0.5f,
@@ -439,7 +439,7 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.85f, 0.95f, 1.00f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -479,7 +479,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR,
     /*.color                    =*/ {0.87f, 0.8f, 0.64f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -518,7 +518,7 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR,
     /*.color                    =*/ {0.10f, 0.10f, 0.10f},
     /*.ambient_light_factor     =*/ 0.50f,
@@ -557,7 +557,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_ICE = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.65f, 0.85f, 0.95f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -596,7 +596,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_STONE = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.48f, 0.43f, 0.38f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -637,7 +637,7 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
                                     EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | 
                                     EFFECT_STROBE | EFFECT_GLITCH | EFFECT_FRINGE,
@@ -678,7 +678,7 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_TOON = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_SPECULAR_THRESH | EFFECT_POSTERIZE | EFFECT_CEL_SHADING,
     /*.color                    =*/ {0.90f, 0.70f, 0.40f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -757,7 +757,7 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SATURATION,
     /*.color                    =*/ {1.00f, 1.00f, 1.00f},
     /*.ambient_light_factor     =*/ 1.00f,
@@ -796,7 +796,7 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_GOOCH | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_FRINGE | EFFECT_SATURATION,
     /*.color                    =*/ {0.20f, 0.50f, 0.80f},   /* blue plastic */
     /*.ambient_light_factor     =*/ 0.70f,
@@ -835,12 +835,12 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
-    /*.mode                     =*/ SHADE_FLAT,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_RIM | EFFECT_ROUGHNESS,
-    /*.color                    =*/ {0.50f, 0.19f, 0.10f},
-    /*.ambient_light_factor     =*/ 0.60f,
+    /*.mode                     =*/ SHADE_GOURAUD,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_ROUGHNESS,
+    /*.color                    =*/ {0.61f, 0.27f, 0.23f},   /* #9B443B */
+    /*.ambient_light_factor     =*/ 0.70f,
     /*.alpha                    =*/ 1.00f,
-    /*.saturation               =*/ 1.00f,
+    /*.saturation               =*/ 1.50f,                   /* richer color */
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
     /*.cel_bands                =*/ 0,
     /*.diffuse_wrap             =*/ 0,
@@ -849,15 +849,15 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
     /*.bump_amplitude           =*/ 0.00f,
     /*.bump_frequency           =*/ 0.00f,
     /*.bump_speed               =*/ 0.00f,
-    /*.gooch_cool               =*/ {0.35f, 0.12f, 0.06f},
-    /*.gooch_warm               =*/ {0.75f, 0.26f, 0.14f},
+    /*.gooch_cool               =*/ {0.35f, 0.15f, 0.12f},   /* dark cool shadow */
+    /*.gooch_warm               =*/ {0.85f, 0.40f, 0.30f},   /* bright warm lit */
     /*.back_glow_color          =*/ {0.00f, 0.00f, 0.00f},
-    /*.rim_color                =*/ {0.62f, 0.21f, 0.11f},
-    /*.rim_exponent             =*/ 0.50f,
+    /*.rim_color                =*/ {0.00f, 0.00f, 0.00f},
+    /*.rim_exponent             =*/ 0.00f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 0.00f,
-    /*.specular_color           =*/ {0.00f, 0.00f, 0.00f},
+    /*.specular_exponent        =*/ 0.0f,
+    /*.specular_color           =*/ {0.00f, 0.00f, 0.00f},   /* warm highlight */
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0.00f, 0.00f, 0.00f},
     /*.emissive_pulse_frequency =*/ 0.00f,
@@ -876,7 +876,7 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_LEATHER = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.30f, 0.15f, 0.09f},   /* darker brown */
     /*.ambient_light_factor     =*/ 0.80f,
@@ -917,7 +917,7 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
-    /*.mode                     =*/ SHADE_FLAT,           /* keep GOURAUD for efficiency */
+    /*.mode                     =*/ SHADE_GOURAUD,           /* keep GOURAUD for efficiency */
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE,
     /*.color                    =*/ {0.80f, 0.60f, 0.20f},   /* gold base */
     /*.ambient_light_factor     =*/ 0.50f,                   /* low ambient for darkness */
@@ -956,7 +956,7 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_SNOW = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.95f, 0.95f, 1.00f},   /* white with blue tint */
     /*.ambient_light_factor     =*/ 1.00f,
@@ -997,7 +997,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_DIRT = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.35f, 0.20f, 0.10f},   /* deep dark earthy brown */
     /*.ambient_light_factor     =*/ 0.45f,
@@ -1038,7 +1038,7 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_NEON = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE | EFFECT_SATURATION,
     /*.color                    =*/ {0.00f, 1.00f, 1.00f},   /* pure emissive */
     /*.ambient_light_factor     =*/ 0.00f,                   /* allow emissive to show TODO: get emissive working with 0.00f alpha.*/
