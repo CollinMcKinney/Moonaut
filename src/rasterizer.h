@@ -558,8 +558,8 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         x ^= (u32)q.components[2]; x *= 16777619u;
         real offset = ((real)x * (1.0f / 4294967296.0f) - 0.5f) * mat->roughness;
         color.color.r += offset;
-        color.color.g += offset * 0.5f;
-        color.color.b -= offset * 0.25f;
+        color.color.g += offset;
+        color.color.b += offset;
     }
 
     if (effects & EFFECT_FRINGE) {
