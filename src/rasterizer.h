@@ -373,16 +373,18 @@ static real render_time = 0.0f;
 static void render_set_time(real t) { render_time = t; }
 
 /* - The unified shading function - */
-/* Optimized with early-outs and reduced branching */
+/* Optimized with precomputed material flags for branch reduction */
 static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
                            const struct material_definition *mat)
 {
     vec3 N = normal;
     real ndotl, ndotv = 0.0f;
     vec3 V;
-
+    
+    enum32 effects = mat->effects;
+    
     /* Procedural bump mapping */
-    if (mat->bump_amplitude > 0.0f) {
+    if (effects & EFFECT_BUMP) {
         real fx = world_pos.position.x * mat->bump_frequency;
         real fy = world_pos.position.y * mat->bump_frequency;
         real fz = world_pos.position.z * mat->bump_frequency;
@@ -396,9 +398,7 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
     ndotl = saturate(vec3_dot(N, light_dir));
 
     /* Check if we need view vector (for rim, fresnel, specular) */
-    i32 need_view = (mat->rim_exponent > 0.0f || mat->fresnel_exponent > 0.0f || 
-                     mat->specular_exponent > 0.0f);
-    if (need_view) {
+    if (effects & (EFFECT_MINNAERT | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE)) {
         V = vec3_normalize(vec3_sub(cam_eye, world_pos));
         ndotv = saturate(vec3_dot(N, V));
     }
@@ -406,21 +406,21 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
     real diffuse_term = ndotl;
     vec3 color = mat->color;
 
-    if (mat->diffuse_wrap) {
+    if (effects & EFFECT_DIFFUSE_WRAP) {
         real t = ndotl;
         ndotl = t * t * (3.0f - 2.0f * t);
     }
 
-    if (mat->cel_bands > 1) {
+    if (effects & EFFECT_CEL_SHADING) {
         real inv = 1.0f / (real)(mat->cel_bands - 1);
         ndotl = real_min(1.0f, real_floor(ndotl * mat->cel_bands) * inv);
     }
 
-    if (mat->minnaert_k > 0.0f) {
+    if (effects & EFFECT_MINNAERT) {
         diffuse_term = real_pow(ndotl, mat->minnaert_k) * real_pow(ndotv, 1.0f - mat->minnaert_k);
     }
 
-    if (mat->oren_nayar_sigma > 0.0f) {
+    if (effects & EFFECT_OREN_NAYAR) {
         real sigma = mat->oren_nayar_sigma;
         real sigma_sq = sigma * sigma;
         real a = 1.0f - 0.5f * sigma_sq / (sigma_sq + 0.33f);
@@ -454,13 +454,12 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         diffuse_term = saturate(diffuse_term);
     }
 
-    if (mat->ambient_light_factor > 0.0f) {
+    if (effects & EFFECT_AMBIENT_LIGHT) {
         color = vec3_add(ambient_col, vec3_mul_scalar(light_col, diffuse_term));
         color = vec3_mul_scalar(color, mat->ambient_light_factor);
     }
 
-    real gooch_len = vec3_dot(mat->gooch_cool, mat->gooch_cool) + vec3_dot(mat->gooch_warm, mat->gooch_warm);
-    if (gooch_len > 0.0001f) {
+    if (effects & EFFECT_GOOCH) {
         real t = (ndotl + 1.0f) * 0.5f;
         vec3 gooch = vec3_add(vec3_mul_scalar(mat->gooch_cool, 1.0f - t),
                               vec3_mul_scalar(mat->gooch_warm, t));
@@ -469,26 +468,26 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color = vec3_mul(color, mat->color);
     }
 
-    if (vec3_dot(mat->back_glow_color, mat->back_glow_color) > 0.0001f) {
+    if (effects & EFFECT_BACK_GLOW) {
         vec3 light_neg = vec3_mul_scalar(light_dir, -1.0f);
         real ndotl_neg = vec3_dot(N, light_neg);
         color = vec3_add(color, vec3_mul_scalar(mat->back_glow_color, ndotl_neg < 0.0f ? 0.0f : ndotl_neg));
     }
 
-    if (mat->rim_exponent > 0.0f) {
+    if (effects & EFFECT_RIM) {
         real rim = real_pow(1.0f - ndotv, mat->rim_exponent);
         color = vec3_add(color, vec3_mul_scalar(mat->rim_color, rim));
     }
 
-    if (mat->fresnel_exponent > 0.0f) {
+    if (effects & EFFECT_FRESNEL) {
         real fresnel = real_pow(1.0f - ndotv, mat->fresnel_exponent);
         color = vec3_add(vec3_mul_scalar(color, 1.0f - fresnel),
                          vec3_mul_scalar(mat->fresnel_color, fresnel));
     }
 
-    if (vec3_dot(mat->emissive_color, mat->emissive_color) > 0.0001f) {
+    if (effects & EFFECT_EMISSIVE) {
         vec3 emissive = mat->emissive_color;
-        if (mat->emissive_pulse_amplitude > 0.0f) {
+        if (effects & EFFECT_EMISSIVE_PULSE) {
             real pulse = 1.0f + mat->emissive_pulse_amplitude *
                          real_sin(render_time * mat->emissive_pulse_frequency + mat->emissive_pulse_phase);
             emissive = vec3_mul_scalar(emissive, pulse);
@@ -496,30 +495,30 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color = vec3_add(color, emissive);
     }
 
-    if (vec3_dot(mat->strobe_color, mat->strobe_color) > 0.0001f && mat->strobe_frequency > 0.0f) {
+    if (effects & EFFECT_STROBE) {
         real s = real_sin(render_time * mat->strobe_frequency + mat->strobe_phase);
         s = s * 0.5f + 0.5f;
         color = vec3_add(color, vec3_mul_scalar(mat->strobe_color, s));
     }
 
-    if (mat->specular_exponent > 0.0f) {
+    if (effects & EFFECT_SPECULAR) {
         vec3 H = vec3_normalize(vec3_add(light_dir, V));
         real nh = vec3_dot(N, H);
         real spec = real_pow(nh < 0.0f ? 0.0f : nh, mat->specular_exponent);
-        if (mat->specular_threshold > 0.0f) {
+        if (effects & EFFECT_SPECULAR_THRESH) {
             spec = (spec > mat->specular_threshold) ? 1.0f : 0.0f;
         }
         color = vec3_add(color, vec3_mul_scalar(mat->specular_color, spec));
     }
 
-    if (mat->saturation != 1.0f) {
+    if (effects & EFFECT_SATURATION) {
         real luma = color.color.r * 0.299f + color.color.g * 0.587f + color.color.b * 0.114f;
         color.color.r = luma + (color.color.r - luma) * mat->saturation;
         color.color.g = luma + (color.color.g - luma) * mat->saturation;
         color.color.b = luma + (color.color.b - luma) * mat->saturation;
     }
 
-    if (mat->iridescence_strength > 0.0f) {
+    if (effects & EFFECT_IRIDESCENCE) {
         real angle = ndotv * 2.0f * VECTORS_PI;
         real c = real_cos(angle);
         real s = real_sin(angle);
@@ -537,12 +536,9 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color.color.b = b * is + color.color.b * (1.0f - is);
     }
 
-    real tint_len = vec3_dot(mat->tint, mat->tint);
-    if (tint_len < 2.999f) {
-        color = vec3_mul(color, mat->tint);
-    }
+    color = vec3_mul(color, mat->tint);
 
-    if (mat->glitch_intensity > 0.0f) {
+    if (effects & EFFECT_GLITCH) {
         u32 x = (u32)(render_time * 60.0f);
         vec3 wp_q = vec3_floor(vec3_mul_scalar(world_pos, 4096.0f));
         x ^= (u32)wp_q.components[0]; x = x * 1664525u + 1013904223u;
@@ -554,7 +550,7 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color.color.b -= offset;
     }
 
-    if (mat->roughness > 0.0f) {
+    if (effects & EFFECT_ROUGHNESS) {
         u32 x = 2166136261u;
         vec3 q = vec3_floor(vec3_mul_scalar(local_pos, 256.0f));
         x ^= (u32)q.components[0]; x *= 16777619u;
@@ -566,20 +562,20 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color.color.b -= offset * 0.25f;
     }
 
-    if (mat->fringe_intensity > 0.0f) {
+    if (effects & EFFECT_FRINGE) {
         real fringe = real_pow(1.0f - ndotv, 3.0f) * mat->fringe_intensity;
         color.color.r += fringe;
         color.color.b -= fringe;
     }
 
-    if (mat->posterize_levels > 1) {
+    if (effects & EFFECT_POSTERIZE) {
         real levels = (real)(mat->posterize_levels);
         color.color.r = real_floor(color.color.r * levels + 0.5f) / levels;
         color.color.g = real_floor(color.color.g * levels + 0.5f) / levels;
         color.color.b = real_floor(color.color.b * levels + 0.5f) / levels;
     }
 
-    if (!mat->skip_fog && fog_end > fog_start) {
+    if ((effects & EFFECT_FOG) && fog_end > fog_start) {
         real dist = vec3_magnitude(vec3_sub(world_pos, cam_eye));
         real t = (dist - fog_start) / (fog_end - fog_start);
         t = saturate(t);
@@ -855,8 +851,8 @@ static void raster_triangle_phong(
 }
 
 /* -------------------------------------------------------------------------
-    Internal triangle drawing (no clipping)
-    ------------------------------------------------------------------------- */
+     Internal triangle drawing (no clipping)
+     ------------------------------------------------------------------------- */
 static void draw_triangle_internal(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
@@ -932,28 +928,25 @@ static void draw_triangle_shaded(
     }
 
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
-    if (mat->alpha < 1.0f) {
-        if (!in_transparent_pass && transparent_count < MAX_TRANSPARENT) {
-            /* Use squared distances for sorting to avoid sqrt */
-            real d0 = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
-            real d1 = vec3_dot(vec3_sub(v1, cam_eye), vec3_sub(v1, cam_eye));
-            real d2 = vec3_dot(vec3_sub(v2, cam_eye), vec3_sub(v2, cam_eye));
-            transparent_queue[transparent_count].v0   = v0;
-            transparent_queue[transparent_count].v1   = v1;
-            transparent_queue[transparent_count].v2   = v2;
-            transparent_queue[transparent_count].n0   = n0;
-            transparent_queue[transparent_count].n1   = n1;
-            transparent_queue[transparent_count].n2   = n2;
-            transparent_queue[transparent_count].l0   = l0;
-            transparent_queue[transparent_count].l1   = l1;
-            transparent_queue[transparent_count].l2   = l2;
-            transparent_queue[transparent_count].mat  = mat;
-            transparent_queue[transparent_count].mode = mat->mode;
-            transparent_queue[transparent_count].depth = (d0 + d1 + d2) * 0.33333333f;
-            transparent_count++;
-            return;   /* deferred */
-        }
-        /* else: already in transparent pass or queue full – fall through to draw immediately */
+    if (mat->alpha < 1.0f && !in_transparent_pass && transparent_count < MAX_TRANSPARENT) {
+        /* Use squared distances for sorting to avoid sqrt */
+        real d0 = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
+        real d1 = vec3_dot(vec3_sub(v1, cam_eye), vec3_sub(v1, cam_eye));
+        real d2 = vec3_dot(vec3_sub(v2, cam_eye), vec3_sub(v2, cam_eye));
+        transparent_queue[transparent_count].v0   = v0;
+        transparent_queue[transparent_count].v1   = v1;
+        transparent_queue[transparent_count].v2   = v2;
+        transparent_queue[transparent_count].n0   = n0;
+        transparent_queue[transparent_count].n1   = n1;
+        transparent_queue[transparent_count].n2   = n2;
+        transparent_queue[transparent_count].l0   = l0;
+        transparent_queue[transparent_count].l1   = l1;
+        transparent_queue[transparent_count].l2   = l2;
+        transparent_queue[transparent_count].mat  = mat;
+        transparent_queue[transparent_count].mode = mat->mode;
+        transparent_queue[transparent_count].depth = (d0 + d1 + d2) * 0.33333333f;
+        transparent_count++;
+        return;   /* deferred */
     }
 
     /* Clip triangle against all frustum planes */

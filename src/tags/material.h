@@ -9,8 +9,8 @@ extern "C" {
 #endif
 
 /* =========================================================================
- * Shading mode enum
- * ========================================================================= */
+  * Shading mode enum
+  * ========================================================================= */
 typedef enum shading_mode {
     SHADE_WIREFRAME = 0,
     SHADE_FLAT,
@@ -27,11 +27,68 @@ TAG_ENUM_BEGIN(shading_mode)
 TAG_ENUM_END(shading_mode)
 
 /* =========================================================================
- * Material tag struct
- * ========================================================================= */
+   * Material effects enum (bitflags for branch reduction optimization)
+   * ========================================================================= */
+typedef enum material_effects {
+    EFFECT_NONE           = 0,
+    EFFECT_BUMP           = (1u << 0),
+    EFFECT_DIFFUSE_WRAP   = (1u << 1),
+    EFFECT_CEL_SHADING    = (1u << 2),
+    EFFECT_MINNAERT       = (1u << 3),
+    EFFECT_OREN_NAYAR     = (1u << 4),
+    EFFECT_AMBIENT_LIGHT  = (1u << 5),
+    EFFECT_GOOCH          = (1u << 6),
+    EFFECT_BACK_GLOW      = (1u << 7),
+    EFFECT_RIM            = (1u << 8),
+    EFFECT_FRESNEL        = (1u << 9),
+    EFFECT_EMISSIVE       = (1u << 10),
+    EFFECT_EMISSIVE_PULSE = (1u << 11),
+    EFFECT_STROBE         = (1u << 12),
+    EFFECT_SPECULAR       = (1u << 13),
+    EFFECT_SPECULAR_THRESH= (1u << 14),
+    EFFECT_SATURATION     = (1u << 15),
+    EFFECT_IRIDESCENCE    = (1u << 16),
+    EFFECT_GLITCH         = (1u << 17),
+    EFFECT_ROUGHNESS      = (1u << 18),
+    EFFECT_FRINGE         = (1u << 19),
+    EFFECT_POSTERIZE      = (1u << 20),
+    EFFECT_FOG            = (1u << 21)
+} material_effects;
+
+/* ----- Flags name table for material_effects ----- */
+TAG_FLAGS_BEGIN(material_effects)
+    TAG_FLAGS_ENTRY(EFFECT_NONE,          "none")
+    TAG_FLAGS_ENTRY(EFFECT_BUMP,          "bump")
+    TAG_FLAGS_ENTRY(EFFECT_DIFFUSE_WRAP,  "diffuse_wrap")
+    TAG_FLAGS_ENTRY(EFFECT_CEL_SHADING,   "cel_shading")
+    TAG_FLAGS_ENTRY(EFFECT_MINNAERT,      "minnaert")
+    TAG_FLAGS_ENTRY(EFFECT_OREN_NAYAR,    "oren_nayar")
+    TAG_FLAGS_ENTRY(EFFECT_AMBIENT_LIGHT, "ambient_light")
+    TAG_FLAGS_ENTRY(EFFECT_GOOCH,         "gooch")
+    TAG_FLAGS_ENTRY(EFFECT_BACK_GLOW,     "back_glow")
+    TAG_FLAGS_ENTRY(EFFECT_RIM,           "rim")
+    TAG_FLAGS_ENTRY(EFFECT_FRESNEL,       "fresnel")
+    TAG_FLAGS_ENTRY(EFFECT_EMISSIVE,      "emissive")
+    TAG_FLAGS_ENTRY(EFFECT_EMISSIVE_PULSE,"emissive_pulse")
+    TAG_FLAGS_ENTRY(EFFECT_STROBE,        "strobe")
+    TAG_FLAGS_ENTRY(EFFECT_SPECULAR,      "specular")
+    TAG_FLAGS_ENTRY(EFFECT_SPECULAR_THRESH,"specular_thresh")
+    TAG_FLAGS_ENTRY(EFFECT_SATURATION,    "sat_adjust")
+    TAG_FLAGS_ENTRY(EFFECT_IRIDESCENCE,   "iridescence")
+    TAG_FLAGS_ENTRY(EFFECT_GLITCH,        "glitch")
+    TAG_FLAGS_ENTRY(EFFECT_ROUGHNESS,     "roughness")
+    TAG_FLAGS_ENTRY(EFFECT_FRINGE,        "fringe")
+    TAG_FLAGS_ENTRY(EFFECT_POSTERIZE,     "posterize")
+    TAG_FLAGS_ENTRY(EFFECT_FOG,           "fog")
+TAG_FLAGS_END(material_effects)
+
+/* =========================================================================
+  * Material tag struct
+  * ========================================================================= */
 typedef struct material_definition {
     /* Render technique */
     enum32       mode;                  /* SHADE_WIREFRAME, SHADE_FLAT, SHADE_GOURAUD, SHADE_PHONG */
+    enum32       effects;               /* Bitflags of material_effects (precomputed for fast branch reduction) */
 
     /* Base appearance */
     vec3         color;                 /* Diffuse (base) colour of the material. */
@@ -98,6 +155,7 @@ typedef struct material_definition {
  * ========================================================================= */
 TAG_GROUP_BEGIN(material, 'mtrl', sizeof(struct material_definition))
     FIELD_ENUM("mode", shading_mode),
+    FIELD_FLAGS("effects", material_effects),
     FIELD_VEC3("color"),
     FIELD_REAL("ambient_light_factor"),
     FIELD_REAL("alpha"),
@@ -144,6 +202,7 @@ TAG_GROUP_END(material, sizeof(struct material_definition))
 
 const struct material_definition DEFAULT_MATERIAL_WIREFRAME = {
     /*.mode                =*/ SHADE_WIREFRAME,
+    /*.effects             =*/ EFFECT_AMBIENT_LIGHT,
     /*.color               =*/ {1.0f, 1.0f, 1.0f},
     /*.ambient_light_factor=*/ 1.0f,
     /*.alpha               =*/ 1.0f,
@@ -153,6 +212,7 @@ const struct material_definition DEFAULT_MATERIAL_WIREFRAME = {
 
 const struct material_definition DEFAULT_MATERIAL_FLAT = {
     /*.mode                =*/ SHADE_FLAT,
+    /*.effects             =*/ EFFECT_AMBIENT_LIGHT,
     /*.color               =*/ {0.5f, 0.5f, 0.5f},
     /*.ambient_light_factor=*/ 1.0f,
     /*.alpha               =*/ 1.0f,
@@ -162,6 +222,7 @@ const struct material_definition DEFAULT_MATERIAL_FLAT = {
 
 const struct material_definition DEFAULT_MATERIAL_GOURAUD = {
     /*.mode                =*/ SHADE_GOURAUD,
+    /*.effects             =*/ EFFECT_AMBIENT_LIGHT,
     /*.color               =*/ {0.5f, 0.5f, 0.5f},
     /*.ambient_light_factor=*/ 1.0f,
     /*.alpha               =*/ 1.0f,
@@ -171,6 +232,7 @@ const struct material_definition DEFAULT_MATERIAL_GOURAUD = {
 
 const struct material_definition DEFAULT_MATERIAL_PHONG = {
     /*.mode                =*/ SHADE_PHONG,
+    /*.effects             =*/ EFFECT_AMBIENT_LIGHT,
     /*.color               =*/ {0.5f, 0.5f, 0.5f},
     /*.ambient_light_factor=*/ 1.0f,
     /*.alpha               =*/ 1.0f,
@@ -180,29 +242,31 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
 
 const struct material_definition DEFAULT_MATERIAL_WATER = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.10f, 0.35f, 0.65f},  /* brighter tropical blue */
-    /*.ambient_light_factor     =*/ 0.80f,  /* shadowed water still looks bright */
-    /*.alpha                    =*/ 0.70f,  /* mostly opaque but still translucent */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
+                                    EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.color                    =*/ {0.10f, 0.35f, 0.65f},
+    /*.ambient_light_factor     =*/ 0.80f,
+    /*.alpha                    =*/ 0.70f,
     /*.saturation               =*/ 1.00f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
     /*.cel_bands                =*/ 0,
-    /*.diffuse_wrap             =*/ 0.20f,  /* gentle edge softening */
+    /*.diffuse_wrap             =*/ 0.20f,
     /*.oren_nayar_sigma         =*/ 0.30f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.40f,  /* subtle ripples */
+    /*.bump_amplitude           =*/ 0.40f,
     /*.bump_frequency           =*/ 32.0f,
     /*.bump_speed               =*/ 2.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
-    /*.back_glow_color          =*/ {0.0f, 0.20f, 0.0f},  /* brighter subsurface glow */
+    /*.back_glow_color          =*/ {0.0f, 0.20f, 0.0f},
     /*.rim_color                =*/ {0.00f, 0.00f, 0.00f},
     /*.rim_exponent             =*/ 0.00f,
-    /*.fresnel_color            =*/ {0.55f, 0.85f, 1.00f}, /* sky reflection */
-    /*.fresnel_exponent         =*/ 3.00f,  /* slightly lower so it doesn't darken too much */
-    /*.specular_exponent        =*/ 384.0f, /* still sharp sun glitter */
+    /*.fresnel_color            =*/ {0.55f, 0.85f, 1.00f},
+    /*.fresnel_exponent         =*/ 3.00f,
+    /*.specular_exponent        =*/ 384.0f,
     /*.specular_color           =*/ {1.00f, 1.00f, 1.00f},
     /*.specular_threshold       =*/ 0.00f,
-    /*.emissive_color           =*/ {0.00f, 0.00f, 0.00f}, /* no artificial glow */
+    /*.emissive_color           =*/ {0.00f, 0.00f, 0.00f},
     /*.emissive_pulse_frequency =*/ 0.00f,
     /*.emissive_pulse_phase     =*/ 0.00f,
     /*.emissive_pulse_amplitude =*/ 0.00f,
@@ -210,34 +274,35 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     /*.strobe_frequency         =*/ 0.00f,
     /*.strobe_phase             =*/ 0.00f,
     /*.skip_fog                 =*/ false,
-    /*.iridescence_strength     =*/ 0.05f, /* barely-there oil-slick rainbow */
+    /*.iridescence_strength     =*/ 0.05f,
     /*.glitch_intensity         =*/ 0.00f,
-    /*.fringe_intensity         =*/ 0.01f  /* subtle chromatic aberration */
+    /*.fringe_intensity         =*/ 0.01f
 };
 
 const struct material_definition DEFAULT_MATERIAL_GRASS = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.0f, 0.24f, 0.08f},     /* bright grass green */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE | EFFECT_CEL_SHADING,
+    /*.color                    =*/ {0.0f, 0.24f, 0.08f},
     /*.ambient_light_factor     =*/ 1.0f,
     /*.alpha                    =*/ 1.0f,
-    /*.saturation               =*/ 1.2f,                   /* slightly vivid for natural look */
+    /*.saturation               =*/ 1.2f,
     /*.tint                     =*/ {1,1,1},
-    /*.cel_bands                =*/ 4,                      /* more toon bands for blade definition */
+    /*.cel_bands                =*/ 4,
     /*.diffuse_wrap             =*/ 1,
-    /*.oren_nayar_sigma         =*/ 0.70f,                   /* rough fibrous surface */
+    /*.oren_nayar_sigma         =*/ 0.70f,
     /*.minnaert_k               =*/ 0.0f,
-    /*.bump_amplitude           =*/ 0.15f,                  /* pronounced blade texture */
+    /*.bump_amplitude           =*/ 0.15f,
     /*.bump_frequency           =*/ 16.0f,
     /*.bump_speed               =*/ 1.0f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
-    /*.back_glow_color          =*/ {0.1f, 0.3f, 0.05f},   /* subtle subsurface scatter */
-    /*.rim_color                =*/ {0.4f, 0.8f, 0.15f},   /* backlit blade edges */
+    /*.back_glow_color          =*/ {0.1f, 0.3f, 0.05f},
+    /*.rim_color                =*/ {0.4f, 0.8f, 0.15f},
     /*.rim_exponent             =*/ 2.0f,
-    /*.fresnel_color            =*/ {0.5f, 0.9f, 0.6f},    /* dew reflection at grazing */
+    /*.fresnel_color            =*/ {0.5f, 0.9f, 0.6f},
     /*.fresnel_exponent         =*/ 3.0f,
-    /*.specular_exponent        =*/ 4.0f,                  /* sharper blade highlights */
-    /*.specular_color           =*/ {0.3f, 0.4f, 0.15f},    /* bright green specular */
+    /*.specular_exponent        =*/ 4.0f,
+    /*.specular_color           =*/ {0.3f, 0.4f, 0.15f},
     /*.specular_threshold       =*/ 0.0f,
     /*.emissive_color           =*/ {0,0,0},
     /*.emissive_pulse_frequency =*/ 0.0f,
@@ -247,13 +312,14 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     /*.strobe_frequency         =*/ 0.0f,
     /*.strobe_phase             =*/ 0.0f,
     /*.skip_fog                 =*/ false,
-    /*.iridescence_strength     =*/ 0.05f,                  /* slight rainbow for moisture */
+    /*.iridescence_strength     =*/ 0.05f,
     /*.glitch_intensity         =*/ 0.02f,
     /*.fringe_intensity         =*/ 0.01f,
 };
 
 const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     /*.mode                     =*/ SHADE_FLAT,     /* or GOURAUD, depending on your model */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_SPECULAR,
     /*.color                    =*/ {0.6f, 0.2f, 0.3f},
     /*.ambient_light_factor     =*/ 1.0f,
     /*.alpha                    =*/ 1.0f,
@@ -289,32 +355,33 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     /*.fringe_intensity         =*/ 0.0f,
     /*.posterize_levels         =*/ 0,
     /*.double_sided             =*/ false,
-    /*.roughness                =*/ 0.20f
+    /*.roughness                =*/ 0.00f
 };
 
 const struct material_definition DEFAULT_MATERIAL_WOOD = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.55f, 0.32f, 0.12f},   /* warm brown */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_ROUGHNESS,
+    /*.color                    =*/ {0.55f, 0.32f, 0.12f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 1.00f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
-    /*.cel_bands                =*/ 0,                       /* no cel shading */
-    /*.diffuse_wrap             =*/ 1,                       /* soft falloff */
-    /*.oren_nayar_sigma         =*/ 0.40f,                   /* fibrous roughness */
+    /*.cel_bands                =*/ 0,
+    /*.diffuse_wrap             =*/ 1,
+    /*.oren_nayar_sigma         =*/ 0.40f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.00f,                   /* grain effect */
+    /*.bump_amplitude           =*/ 0.00f,
     /*.bump_frequency           =*/ 48.0f,
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
     /*.back_glow_color          =*/ {0.00f, 0.00f, 0.00f},
-    /*.rim_color                =*/ {0.15f, 0.08f, 0.03f},   /* subtle backlit edge */
+    /*.rim_color                =*/ {0.15f, 0.08f, 0.03f},
     /*.rim_exponent             =*/ 2.50f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 64.00f,                  /* light polish */
-    /*.specular_color           =*/ {0.50f, 0.35f, 0.20f},   /* brighter warm highlight */
+    /*.specular_exponent        =*/ 64.00f,
+    /*.specular_color           =*/ {0.50f, 0.35f, 0.20f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0,0,0},
     /*.emissive_pulse_frequency =*/ 0.00f,
@@ -334,27 +401,28 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
 
 const struct material_definition DEFAULT_MATERIAL_METAL = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.5f, 0.65f, 0.70f},   /* dark base, color from specular */
-    /*.ambient_light_factor     =*/ 0.5f,                   /* low ambient for metallic darkness */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE,
+    /*.color                    =*/ {0.5f, 0.65f, 0.70f},
+    /*.ambient_light_factor     =*/ 0.5f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 1.2f,
     /*.tint                     =*/ {1.0f, 1.8f, 2.00f},
     /*.cel_bands                =*/ 0,
-    /*.diffuse_wrap             =*/ 0,                       /* sharp metallic */
+    /*.diffuse_wrap             =*/ 0,
     /*.oren_nayar_sigma         =*/ 0.10f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.00f,                   /* subtle brushed grain */
+    /*.bump_amplitude           =*/ 0.00f,
     /*.bump_frequency           =*/ 512.0f,
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
     /*.back_glow_color          =*/ {0,0,0},
-    /*.rim_color                =*/ {1.00f, 1.00f, 1.00f},   /* subtle metallic rim */
+    /*.rim_color                =*/ {1.00f, 1.00f, 1.00f},
     /*.rim_exponent             =*/ 3.00f,
-    /*.fresnel_color            =*/ {1.0f, 1.0f, 1.0f},   /* bright reflection at grazing */
-    /*.fresnel_exponent         =*/ 3.0f,                   /* stronger fresnel */
-    /*.specular_exponent        =*/ 32.0f,                  /* very tight highlight */
-    /*.specular_color           =*/ {1.00f, 1.00f, 1.00f},   /* pure white specular */
+    /*.fresnel_color            =*/ {1.0f, 1.0f, 1.0f},
+    /*.fresnel_exponent         =*/ 3.0f,
+    /*.specular_exponent        =*/ 32.0f,
+    /*.specular_color           =*/ {1.00f, 1.00f, 1.00f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0.0,0.0,0.0},
     /*.emissive_pulse_frequency =*/ 0.00f,
@@ -364,7 +432,7 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     /*.strobe_frequency         =*/ 0.00f,
     /*.strobe_phase             =*/ 0.00f,
     /*.skip_fog                 =*/ false,
-    /*.iridescence_strength     =*/ 0.30f,                   /* slight rainbow for polished metal */
+    /*.iridescence_strength     =*/ 0.30f,
     /*.glitch_intensity         =*/ 0.00f,
     /*.fringe_intensity         =*/ 0.00f,
     /*.posterize_levels         =*/ 0
@@ -372,7 +440,8 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
 
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.85f, 0.95f, 1.00f},   /* pale ice blue */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.color                    =*/ {0.85f, 0.95f, 1.00f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.3f,
     /*.saturation               =*/ 1.00f,
@@ -381,15 +450,15 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     /*.diffuse_wrap             =*/ 0,
     /*.oren_nayar_sigma         =*/ 0.00f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.03f,                   /* subtle crystal undulation */
+    /*.bump_amplitude           =*/ 0.03f,
     /*.bump_frequency           =*/ 80.0f,
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
-    /*.back_glow_color          =*/ {0.05f, 0.10f, 0.20f},   /* faint internal blue */
-    /*.rim_color                =*/ {0.30f, 0.50f, 0.80f},   /* blue rim (additive) – matches base hue */
+    /*.back_glow_color          =*/ {0.05f, 0.10f, 0.20f},
+    /*.rim_color                =*/ {0.30f, 0.50f, 0.80f},
     /*.rim_exponent             =*/ 3.00f,
-    /*.fresnel_color            =*/ {0.70f, 0.85f, 1.00f},   /* white-blue reflection */
+    /*.fresnel_color            =*/ {0.70f, 0.85f, 1.00f},
     /*.fresnel_exponent         =*/ 5.00f,
     /*.specular_exponent        =*/ 512.0f,
     /*.specular_color           =*/ {1.00f, 1.00f, 1.00f},
@@ -402,7 +471,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     /*.strobe_frequency         =*/ 0.00f,
     /*.strobe_phase             =*/ 0.00f,
     /*.skip_fog                 =*/ false,
-    /*.iridescence_strength     =*/ 0.12f,                   /* subtle prismatic sparkle */
+    /*.iridescence_strength     =*/ 0.12f,
     /*.glitch_intensity         =*/ 0.00f,
     /*.fringe_intensity         =*/ 0.02f,
     /*.posterize_levels         =*/ 0,
@@ -411,26 +480,27 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
 
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.87f, 0.8f, 0.64f},   /* warm peach */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR,
+    /*.color                    =*/ {0.87f, 0.8f, 0.64f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 1.00f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
     /*.cel_bands                =*/ 0,
-    /*.diffuse_wrap             =*/ 1,                       /* soft falloff */
-    /*.oren_nayar_sigma         =*/ 0.40f,                   /* skin-like roughness */
+    /*.diffuse_wrap             =*/ 1,
+    /*.oren_nayar_sigma         =*/ 0.40f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.02f,                   /* fine pores */
+    /*.bump_amplitude           =*/ 0.02f,
     /*.bump_frequency           =*/ 128.0f,
     /*.bump_speed               =*/ 0.00f,
-    /*.gooch_cool               =*/ {0.25f, 0.15f, 0.22f},   /* cool shadow (purplish) – kept for artistic SSS */
-    /*.gooch_warm               =*/ {1.00f, 0.80f, 0.65f},   /* warm lit */
-    /*.back_glow_color          =*/ {0.15f, 0.05f, 0.05f},   /* forward‑scatter red glow */
-    /*.rim_color                =*/ {0.45f, 0.20f, 0.15f},   /* warm rim */
+    /*.gooch_cool               =*/ {0.25f, 0.15f, 0.22f},
+    /*.gooch_warm               =*/ {1.00f, 0.80f, 0.65f},
+    /*.back_glow_color          =*/ {0.15f, 0.05f, 0.05f},
+    /*.rim_color                =*/ {0.45f, 0.20f, 0.15f},
     /*.rim_exponent             =*/ 2.00f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 16.0f,                   /* soft broad highlight */
+    /*.specular_exponent        =*/ 16.0f,
     /*.specular_color           =*/ {0.50f, 0.40f, 0.35f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0,0,0},
@@ -449,27 +519,28 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
 
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.10f, 0.10f, 0.10f},   /* very dark grey */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR,
+    /*.color                    =*/ {0.10f, 0.10f, 0.10f},
     /*.ambient_light_factor     =*/ 0.50f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 0.80f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
     /*.cel_bands                =*/ 0,
     /*.diffuse_wrap             =*/ 1,
-    /*.oren_nayar_sigma         =*/ 0.90f,                   /* fully rough */
+    /*.oren_nayar_sigma         =*/ 0.90f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.10f,                   /* heavy grain */
+    /*.bump_amplitude           =*/ 0.10f,
     /*.bump_frequency           =*/ 32.0f,
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
     /*.back_glow_color          =*/ {0,0,0},
-    /*.rim_color                =*/ {0.08f, 0.08f, 0.08f},   /* neutral grey rim */
+    /*.rim_color                =*/ {0.08f, 0.08f, 0.08f},
     /*.rim_exponent             =*/ 3.00f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 4.00f,                   /* slightly sharper dull shine */
-    /*.specular_color           =*/ {0.25f, 0.25f, 0.25f},   /* brighter grey highlight */
+    /*.specular_exponent        =*/ 4.00f,
+    /*.specular_color           =*/ {0.25f, 0.25f, 0.25f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0,0,0},
     /*.emissive_pulse_frequency =*/ 0.00f,
@@ -487,7 +558,8 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
 
 const struct material_definition DEFAULT_MATERIAL_ICE = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.65f, 0.85f, 0.95f},   /* pale cyan */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.color                    =*/ {0.65f, 0.85f, 0.95f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.85f,
     /*.saturation               =*/ 1.00f,
@@ -496,20 +568,20 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     /*.diffuse_wrap             =*/ 0,
     /*.oren_nayar_sigma         =*/ 0.00f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.08f,                   /* frost crystals */
+    /*.bump_amplitude           =*/ 0.08f,
     /*.bump_frequency           =*/ 64.0f,
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
-    /*.back_glow_color          =*/ {0.10f, 0.25f, 0.40f},   /* deeper blue internal glow */
-    /*.rim_color                =*/ {0.70f, 0.85f, 1.00f},   /* bright white‑blue rim */
+    /*.back_glow_color          =*/ {0.10f, 0.25f, 0.40f},
+    /*.rim_color                =*/ {0.70f, 0.85f, 1.00f},
     /*.rim_exponent             =*/ 4.00f,
-    /*.fresnel_color            =*/ {0.90f, 0.95f, 1.00f},   /* strong reflection */
+    /*.fresnel_color            =*/ {0.90f, 0.95f, 1.00f},
     /*.fresnel_exponent         =*/ 4.50f,
     /*.specular_exponent        =*/ 256.0f,
     /*.specular_color           =*/ {1.00f, 1.00f, 1.00f},
     /*.specular_threshold       =*/ 0.00f,
-    /*.emissive_color           =*/ {0.02f, 0.05f, 0.12f},   /* cold self‑light */
+    /*.emissive_color           =*/ {0.02f, 0.05f, 0.12f},
     /*.emissive_pulse_frequency =*/ 0.00f,
     /*.emissive_pulse_phase     =*/ 0.00f,
     /*.emissive_pulse_amplitude =*/ 0.00f,
@@ -517,7 +589,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     /*.strobe_frequency         =*/ 0.00f,
     /*.strobe_phase             =*/ 0.00f,
     /*.skip_fog                 =*/ false,
-    /*.iridescence_strength     =*/ 0.10f,                   /* prismatic sparkle */
+    /*.iridescence_strength     =*/ 0.10f,
     /*.glitch_intensity         =*/ 0.00f,
     /*.fringe_intensity         =*/ 0.03f,
     /*.posterize_levels         =*/ 0
@@ -525,27 +597,28 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
 
 const struct material_definition DEFAULT_MATERIAL_STONE = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.48f, 0.43f, 0.38f},   /* neutral grey‑brown */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_ROUGHNESS,
+    /*.color                    =*/ {0.48f, 0.43f, 0.38f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 0.90f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
     /*.cel_bands                =*/ 0,
     /*.diffuse_wrap             =*/ 1,
-    /*.oren_nayar_sigma         =*/ 1.00f,                   /* rough stone */
+    /*.oren_nayar_sigma         =*/ 1.00f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.10f,                   /* coarse surface */
+    /*.bump_amplitude           =*/ 0.10f,
     /*.bump_frequency           =*/ 24.0f,
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
     /*.back_glow_color          =*/ {0,0,0},
-    /*.rim_color                =*/ {0.12f, 0.11f, 0.09f},   /* very subtle grey‑brown rim – avoids green shift */
+    /*.rim_color                =*/ {0.12f, 0.11f, 0.09f},
     /*.rim_exponent             =*/ 2.00f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 16.00f,                  /* slightly sharper highlight for rough surface */
-    /*.specular_color           =*/ {0.40f, 0.38f, 0.35f},   /* brighter grey highlight */
+    /*.specular_exponent        =*/ 16.00f,
+    /*.specular_color           =*/ {0.40f, 0.38f, 0.35f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0,0,0},
     /*.emissive_pulse_frequency =*/ 0.00f,
@@ -565,66 +638,70 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
 
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.15f, 0.05f, 0.00f},   /* darker black-brown crust */
-    /*.ambient_light_factor     =*/ 0.50f,                   /* darker base for deeper shadows */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
+                                    EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_RIM |
+                                    EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_GLITCH | EFFECT_FRINGE | EFFECT_SATURATION,
+    /*.color                    =*/ {0.15f, 0.05f, 0.00f},
+    /*.ambient_light_factor     =*/ 0.50f,
     /*.alpha                    =*/ 1.00f,
-    /*.saturation               =*/ 1.5f,                   /* moderated reds for brown tones */
+    /*.saturation               =*/ 1.5f,
     /*.tint                     =*/ {2.00f, 2.00f, 0.00f},
-    /*.cel_bands                =*/ 0,                       /* more bands for heat contrast */
+    /*.cel_bands                =*/ 0,
     /*.diffuse_wrap             =*/ 1,
-    /*.oren_nayar_sigma         =*/ 0.60f,                   /* rougher surface */
+    /*.oren_nayar_sigma         =*/ 0.60f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.40f,                   /* pronounced bump for texture */
+    /*.bump_amplitude           =*/ 0.40f,
     /*.bump_frequency           =*/ 32.0f,
-    /*.bump_speed               =*/ 2.00f,                   /* slightly faster flow */
-    /*.gooch_cool               =*/ {0.13f, 0.00f, 0.00f},   /* deeper red shadows */
-    /*.gooch_warm               =*/ {1.00f, 1.00f, 0.00f},   /* more orange, less yellow */
-    /*.back_glow_color          =*/ {0.50f, 0.50f, 0.00f},   /* redder internal glow */
-    /*.rim_color                =*/ {0.80f, 0.30f, 0.00f},   /* redder rim */
-    /*.rim_exponent             =*/ 1.50f,                   /* softer rim for Gouraud */
+    /*.bump_speed               =*/ 2.00f,
+    /*.gooch_cool               =*/ {0.13f, 0.00f, 0.00f},
+    /*.gooch_warm               =*/ {1.00f, 1.00f, 0.00f},
+    /*.back_glow_color          =*/ {0.50f, 0.50f, 0.00f},
+    /*.rim_color                =*/ {0.80f, 0.30f, 0.00f},
+    /*.rim_exponent             =*/ 1.50f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 0.0f,                   /* subtle shine on crust */
-    /*.specular_color           =*/ {0.40f, 0.40f, 0.00f},   /* darker brown highlight */
+    /*.specular_exponent        =*/ 0.0f,
+    /*.specular_color           =*/ {0.40f, 0.40f, 0.00f},
     /*.specular_threshold       =*/ 0.00f,
-    /*.emissive_color           =*/ {0.50f, 0.33f, 0.00f},   /* darker red glow */
-    /*.emissive_pulse_frequency =*/ 1.00f,              /* steady pulse */
-    /*.emissive_pulse_phase     =*/ 1.57f,              /* phase shift */
-    /*.emissive_pulse_amplitude =*/ 0.25f,              /* subtle variation */
-    /*.strobe_color             =*/ {0.10f, 0.04f, 0.00f},   /* darker red flashes */
-    /*.strobe_frequency         =*/ 0.50f,                  /* occasional bursts */
+    /*.emissive_color           =*/ {0.50f, 0.33f, 0.00f},
+    /*.emissive_pulse_frequency =*/ 1.00f,
+    /*.emissive_pulse_phase     =*/ 1.57f,
+    /*.emissive_pulse_amplitude =*/ 0.25f,
+    /*.strobe_color             =*/ {0.10f, 0.04f, 0.00f},
+    /*.strobe_frequency         =*/ 0.50f,
     /*.strobe_phase             =*/ 2.10f,
     /*.skip_fog                 =*/ false,
     /*.iridescence_strength     =*/ 0.00f,
-    /*.glitch_intensity         =*/ 0.04f,                   /* slight instability */
+    /*.glitch_intensity         =*/ 0.04f,
     /*.fringe_intensity         =*/ 0.50f,
     /*.posterize_levels         =*/ 0
 };
 
 const struct material_definition DEFAULT_MATERIAL_TOON = {
-    /*.mode                     =*/ SHADE_FLAT,                  /* flat shading for toon look */
-    /*.color                    =*/ {0.90f, 0.70f, 0.40f},   /* cartoon orange */
+    /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_SPECULAR_THRESH | EFFECT_POSTERIZE | EFFECT_CEL_SHADING,
+    /*.color                    =*/ {0.90f, 0.70f, 0.40f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
-    /*.saturation               =*/ 1.50f,                    /* more vibrant */
+    /*.saturation               =*/ 1.50f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
-    /*.cel_bands                =*/ 5,                        /* lit or shadow */
-    /*.diffuse_wrap             =*/ 0,                        /* crisp transitions */
+    /*.cel_bands                =*/ 5,
+    /*.diffuse_wrap             =*/ 0,
     /*.oren_nayar_sigma         =*/ 0.00f,
     /*.minnaert_k               =*/ 0.00f,
     /*.bump_amplitude           =*/ 0.00f,
     /*.bump_frequency           =*/ 0.00f,
     /*.bump_speed               =*/ 0.00f,
-    /*.gooch_cool               =*/ {0.10f, 0.15f, 0.40f},   /* darker blue shadow */
-    /*.gooch_warm               =*/ {1.00f, 0.90f, 0.60f},   /* brighter warm lit */
+    /*.gooch_cool               =*/ {0.10f, 0.15f, 0.40f},
+    /*.gooch_warm               =*/ {1.00f, 0.90f, 0.60f},
     /*.back_glow_color          =*/ {0,0,0},
-    /*.rim_color                =*/ {0.00f, 0.00f, 0.00f},   /* black outline */
-    /*.rim_exponent             =*/ 8.00f,                    /* very sharp outline */
+    /*.rim_color                =*/ {0.00f, 0.00f, 0.00f},
+    /*.rim_exponent             =*/ 8.00f,
     /*.fresnel_color            =*/ {0,0,0},
     /*.fresnel_exponent         =*/ 0.00f,
-    /*.specular_exponent        =*/ 100.0f,                   /* sharp highlight */
-    /*.specular_color           =*/ {1.00f, 1.00f, 0.80f},   /* bright white-yellow */
-    /*.specular_threshold       =*/ 0.90f,                    /* hard specular cut */
+    /*.specular_exponent        =*/ 100.0f,
+    /*.specular_color           =*/ {1.00f, 1.00f, 0.80f},
+    /*.specular_threshold       =*/ 0.90f,
     /*.emissive_color           =*/ {0,0,0},
     /*.emissive_pulse_frequency =*/ 0.00f,
     /*.emissive_pulse_phase     =*/ 0.00f,
@@ -636,12 +713,13 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     /*.iridescence_strength     =*/ 0.00f,
     /*.glitch_intensity         =*/ 0.00f,
     /*.fringe_intensity         =*/ 0.00f,
-    /*.posterize_levels         =*/ 8                         /* more quantized */
+    /*.posterize_levels         =*/ 8
 };
 
 const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {0.20f, 0.60f, 0.80f},   /* cyan/blue base */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE,
+    /*.color                    =*/ {0.20f, 0.60f, 0.80f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.55f,
     /*.saturation               =*/ 1.10f,
@@ -655,23 +733,23 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     /*.bump_speed               =*/ 0.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
-    /*.back_glow_color          =*/ {0.15f, 0.45f, 0.65f},   /* internal glow */
-    /*.rim_color                =*/ {0.40f, 0.80f, 1.00f},   /* bright blue rim */
+    /*.back_glow_color          =*/ {0.15f, 0.45f, 0.65f},
+    /*.rim_color                =*/ {0.40f, 0.80f, 1.00f},
     /*.rim_exponent             =*/ 64.00f,
-    /*.fresnel_color            =*/ {0.70f, 0.90f, 1.00f},   /* teal‑white reflection */
+    /*.fresnel_color            =*/ {0.70f, 0.90f, 1.00f},
     /*.fresnel_exponent         =*/ 4.00f,
     /*.specular_exponent        =*/ 0.0f,
     /*.specular_color           =*/ {0.60f, 0.85f, 1.00f},
     /*.specular_threshold       =*/ 0.00f,
-    /*.emissive_color           =*/ {0.05f, 0.15f, 0.25f},   /* base tech glow */
+    /*.emissive_color           =*/ {0.05f, 0.15f, 0.25f},
     /*.emissive_pulse_frequency =*/ 0.80f,
     /*.emissive_pulse_phase     =*/ 0.00f,
     /*.emissive_pulse_amplitude =*/ 0.15f,
-    /*.strobe_color             =*/ {0.10f, 0.35f, 0.55f},   /* subtle flicker */
+    /*.strobe_color             =*/ {0.10f, 0.35f, 0.55f},
     /*.strobe_frequency         =*/ 1.0f,
     /*.strobe_phase             =*/ 0.5f,
-    /*.skip_fog                 =*/ true,                       /* stay bright in fog */
-    /*.iridescence_strength     =*/ 0.30f,                   /* rainbow data shimmer */
+    /*.skip_fog                 =*/ true,
+    /*.iridescence_strength     =*/ 0.30f,
     /*.glitch_intensity         =*/ 0.50f,
     /*.fringe_intensity         =*/ 0.25f,
     /*.posterize_levels         =*/ 0,
@@ -680,44 +758,46 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
 
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     /*.mode                     =*/ SHADE_FLAT,
-    /*.color                    =*/ {1.00f, 1.00f, 1.00f},   /* pure white base for full rainbow shift */
-    /*.ambient_light_factor     =*/ 1.00f,                   /* full ambient to enhance colors */
-    /*.alpha                    =*/ 0.90f,                   /* near opaque for visibility */
-    /*.saturation               =*/ 2.50f,                   /* max saturation for vibrant rainbows */
-    /*.tint                     =*/ {2.50f, 1.50f, 1.00f},   /* red-green bias for rainbow spectrum */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SATURATION,
+    /*.color                    =*/ {1.00f, 1.00f, 1.00f},
+    /*.ambient_light_factor     =*/ 1.00f,
+    /*.alpha                    =*/ 0.90f,
+    /*.saturation               =*/ 2.50f,
+    /*.tint                     =*/ {2.50f, 1.50f, 1.00f},
     /*.cel_bands                =*/ 0,
     /*.diffuse_wrap             =*/ 0,
-    /*.oren_nayar_sigma         =*/ 0.10f,                   /* very smooth surface */
+    /*.oren_nayar_sigma         =*/ 0.10f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.00f,                   /* minimal bump for clean effect */
+    /*.bump_amplitude           =*/ 0.00f,
     /*.bump_frequency           =*/ 0.00f,
     /*.bump_speed               =*/ 0.00f,
-    /*.gooch_cool               =*/ {0.50f, 0.00f, 0.50f},   /* purple shadows for rainbow depth */
-    /*.gooch_warm               =*/ {1.00f, 0.80f, 0.20f},   /* orange highlights */
-    /*.back_glow_color          =*/ {0.80f, 0.60f, 1.00f},   /* magenta internal glow */
-    /*.rim_color                =*/ {1.00f, 0.50f, 0.00f},   /* orange rim */
+    /*.gooch_cool               =*/ {0.50f, 0.00f, 0.50f},
+    /*.gooch_warm               =*/ {1.00f, 0.80f, 0.20f},
+    /*.back_glow_color          =*/ {0.80f, 0.60f, 1.00f},
+    /*.rim_color                =*/ {1.00f, 0.50f, 0.00f},
     /*.rim_exponent             =*/ 2.00f,
-    /*.fresnel_color            =*/ {0.50f, 0.50f, 0.50f},   /* neutral fresnel for angle dependence */
+    /*.fresnel_color            =*/ {0.50f, 0.50f, 0.50f},
     /*.fresnel_exponent         =*/ 2.00f,
-    /*.specular_exponent        =*/ 16.0f,                   /* moderate specular for GOURAUD */
-    /*.specular_color           =*/ {1.00f, 1.00f, 0.80f},   /* warm white highlights */
+    /*.specular_exponent        =*/ 16.0f,
+    /*.specular_color           =*/ {1.00f, 1.00f, 0.80f},
     /*.specular_threshold       =*/ 0.00f,
-    /*.emissive_color           =*/ {0.30f, 0.20f, 0.40f},   /* purple emissive for rainbow base */
-    /*.emissive_pulse_frequency =*/ 0.50f,              /* slow pulse for dynamic effect */
+    /*.emissive_color           =*/ {0.30f, 0.20f, 0.40f},
+    /*.emissive_pulse_frequency =*/ 0.50f,
     /*.emissive_pulse_phase     =*/ 0.00f,
     /*.emissive_pulse_amplitude =*/ 0.20f,
-    /*.strobe_color             =*/ {0.50f, 0.00f, 0.50f},   /* magenta flashes */
-    /*.strobe_frequency         =*/ 1.00f,                  /* occasional bursts */
+    /*.strobe_color             =*/ {0.50f, 0.00f, 0.50f},
+    /*.strobe_frequency         =*/ 1.00f,
     /*.strobe_phase             =*/ 1.00f,
     /*.skip_fog                 =*/ false,
-    /*.iridescence_strength     =*/ 0.90f,                   /* max rainbow shift */
+    /*.iridescence_strength     =*/ 0.90f,
     /*.glitch_intensity         =*/ 0.00f,
-    /*.fringe_intensity         =*/ 0.20f,                   /* chromatic aberration for rainbow spread */
+    /*.fringe_intensity         =*/ 0.20f,
     /*.posterize_levels         =*/ 0
 };
 
 const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_GOOCH | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_FRINGE | EFFECT_SATURATION,
     /*.color                    =*/ {0.20f, 0.50f, 0.80f},   /* blue plastic */
     /*.ambient_light_factor     =*/ 0.70f,
     /*.alpha                    =*/ 1.00f,
@@ -756,6 +836,7 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
 
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
     /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_RIM | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.50f, 0.19f, 0.10f},
     /*.ambient_light_factor     =*/ 0.60f,
     /*.alpha                    =*/ 1.00f,
@@ -796,6 +877,7 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
 
 const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.30f, 0.15f, 0.09f},   /* darker brown */
     /*.ambient_light_factor     =*/ 0.80f,
     /*.alpha                    =*/ 1.00f,
@@ -836,6 +918,7 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
 
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
     /*.mode                     =*/ SHADE_FLAT,           /* keep GOURAUD for efficiency */
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE,
     /*.color                    =*/ {0.80f, 0.60f, 0.20f},   /* gold base */
     /*.ambient_light_factor     =*/ 0.50f,                   /* low ambient for darkness */
     /*.alpha                    =*/ 1.00f,
@@ -874,6 +957,7 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
 
 const struct material_definition DEFAULT_MATERIAL_SNOW = {
     /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.95f, 0.95f, 1.00f},   /* white with blue tint */
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
@@ -914,6 +998,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
 
 const struct material_definition DEFAULT_MATERIAL_DIRT = {
     /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.35f, 0.20f, 0.10f},   /* deep dark earthy brown */
     /*.ambient_light_factor     =*/ 0.45f,
     /*.alpha                    =*/ 1.00f,
@@ -954,6 +1039,7 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
 
 const struct material_definition DEFAULT_MATERIAL_NEON = {
     /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE | EFFECT_SATURATION,
     /*.color                    =*/ {0.00f, 1.00f, 1.00f},   /* pure emissive */
     /*.ambient_light_factor     =*/ 0.00f,                   /* allow emissive to show TODO: get emissive working with 0.00f alpha.*/
     /*.alpha                    =*/ 1.00f,
