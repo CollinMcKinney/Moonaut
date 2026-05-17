@@ -265,30 +265,36 @@ static INLINE u32 pack_color_real(real r, real g, real b) {
 }
 
 /* - Transparent / opaque pixel write - */
+/* Optimized: inlined color packing, reduced branching */
 static INLINE void write_pixel(i32 idx, real iw, vec3 color, real alpha)
 {
     if (iw <= 0.0f) return;
 
     if (alpha >= 1.0f) {
-        /* Opaque – normal depth write */
         if (iw > zbuf[idx]) {
             zbuf[idx] = iw;
-            fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
+            /* Direct packing - inlined saturate and color_to_u8 */
+            real r = saturate(color.color.r);
+            real g = saturate(color.color.g);
+            real b = saturate(color.color.b);
+            u8 ur = (u8)(r * 255.0f + 0.5f);
+            u8 ug = (u8)(g * 255.0f + 0.5f);
+            u8 ub = (u8)(b * 255.0f + 0.5f);
+            fb[idx] = (u32)((ur << 16) | (ug << 8) | ub);
         }
     } else if (alpha > 0.0f) {
-        /* Transparent – depth test against opaque geometry, but do not update zbuf. */
         if (iw < zbuf[idx]) return;
-
-        u32 bg = fb[idx];
-        real br = (real)((bg >> 16) & 0xFF) / 255.0f;
-        real bg_g = (real)((bg >> 8)  & 0xFF) / 255.0f;
-        real bg_b = (real)(bg & 0xFF) / 255.0f;
-        real r = color.color.r * alpha + br * (1.0f - alpha);
-        real g = color.color.g * alpha + bg_g * (1.0f - alpha);
-        real b = color.color.b * alpha + bg_b * (1.0f - alpha);
-        fb[idx] = pack_color_real(r, g, b);
-    } else { 
-        return;
+        vec3 col = color;
+        vec3 bg = vec3_init_from_3(
+            (real)((fb[idx] >> 16) & 0xFF) * (1.0f/255.0f),
+            (real)((fb[idx] >> 8) & 0xFF) * (1.0f/255.0f),
+            (real)(fb[idx] & 0xFF) * (1.0f/255.0f)
+        );
+        vec3 blended = vec3_add(vec3_mul_scalar(col, alpha), vec3_mul_scalar(bg, 1.0f - alpha));
+        u8 ur = (u8)(saturate(blended.color.r) * 255.0f + 0.5f);
+        u8 ug = (u8)(saturate(blended.color.g) * 255.0f + 0.5f);
+        u8 ub = (u8)(saturate(blended.color.b) * 255.0f + 0.5f);
+        fb[idx] = (u32)((ur << 16) | (ug << 8) | ub);
     }
 }
 
@@ -367,12 +373,15 @@ static real render_time = 0.0f;
 static void render_set_time(real t) { render_time = t; }
 
 /* - The unified shading function - */
+/* Optimized with early-outs and reduced branching */
 static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
-                          const struct material_definition *mat)
+                           const struct material_definition *mat)
 {
-    vec3 N = normal;   /* raw un‑normalised normal */
+    vec3 N = normal;
+    real ndotl, ndotv = 0.0f;
+    vec3 V;
 
-    /* - Procedural bump (perturb normal using world pos) - */
+    /* Procedural bump mapping */
     if (mat->bump_amplitude > 0.0f) {
         real fx = world_pos.position.x * mat->bump_frequency;
         real fy = world_pos.position.y * mat->bump_frequency;
@@ -381,46 +390,44 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         N.position.x += real_sin(fy + fz + t) * mat->bump_amplitude;
         N.position.y += real_sin(fz + fx + t) * mat->bump_amplitude;
         N.position.z += real_sin(fx + fy + t) * mat->bump_amplitude;
-        /* Normalise now so all further calculations use the bumped normal */
         N = vec3_normalize(N);
     }
-    
-    vec3 V = vec3_normalize(vec3_sub(cam_eye, world_pos));
-    real ndotl = saturate(vec3_dot(N, light_dir));
-    real ndotv = saturate(vec3_dot(N, V));
+
+    ndotl = saturate(vec3_dot(N, light_dir));
+
+    /* Check if we need view vector (for rim, fresnel, specular) */
+    i32 need_view = (mat->rim_exponent > 0.0f || mat->fresnel_exponent > 0.0f || 
+                     mat->specular_exponent > 0.0f);
+    if (need_view) {
+        V = vec3_normalize(vec3_sub(cam_eye, world_pos));
+        ndotv = saturate(vec3_dot(N, V));
+    }
+
     real diffuse_term = ndotl;
     vec3 color = mat->color;
 
-    /* - Diffuse wrap (soft light falloff) - */
     if (mat->diffuse_wrap) {
         real t = ndotl;
-        ndotl = t * t * (3.0f - 2.0f * t);   /* smoothstep */
+        ndotl = t * t * (3.0f - 2.0f * t);
     }
 
-    /* - Cel banding (posterise N·L) - */
     if (mat->cel_bands > 1) {
-        i32 bands = mat->cel_bands;
-        real inv = 1.0f / (real)(bands - 1);
-        real band = real_floor(ndotl * bands) * inv;
-        if (band > 1.0f) band = 1.0f;
-        ndotl = band;
+        real inv = 1.0f / (real)(mat->cel_bands - 1);
+        ndotl = real_min(1.0f, real_floor(ndotl * mat->cel_bands) * inv);
     }
 
-    /* - Minnaert limb darkening - */
     if (mat->minnaert_k > 0.0f) {
-        diffuse_term = real_pow(ndotl, mat->minnaert_k) *
-                       real_pow(ndotv, 1.0f - mat->minnaert_k);
+        diffuse_term = real_pow(ndotl, mat->minnaert_k) * real_pow(ndotv, 1.0f - mat->minnaert_k);
     }
 
-    /* - Oren‑Nayar rough diffuse - */
     if (mat->oren_nayar_sigma > 0.0f) {
         real sigma = mat->oren_nayar_sigma;
         real sigma_sq = sigma * sigma;
         real a = 1.0f - 0.5f * sigma_sq / (sigma_sq + 0.33f);
         real b = 0.45f * sigma_sq / (sigma_sq + 0.09f);
-        real oren_term = 0.0f;
-
         real cos_phi_diff = 0.0f;
+        real sin_alpha = 0.0f, tan_beta = 0.0f;
+
         if (ndotl > 0.0f && ndotv > 0.0f) {
             vec3 Lproj = vec3_sub(light_dir, vec3_mul_scalar(N, ndotl));
             vec3 Vproj = vec3_sub(V, vec3_mul_scalar(N, ndotv));
@@ -431,42 +438,30 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
                 Vproj = vec3_div_scalar(Vproj, lenV);
                 cos_phi_diff = vec3_dot(Lproj, Vproj);
                 if (cos_phi_diff < 0.0f) cos_phi_diff = 0.0f;
+
+                real sin_l = real_sqrt(saturate(1.0f - ndotl * ndotl));
+                real sin_v = real_sqrt(saturate(1.0f - ndotv * ndotv));
+                if (ndotl > ndotv) {
+                    sin_alpha = sin_v;
+                    tan_beta = sin_l / ndotl;
+                } else {
+                    sin_alpha = sin_l;
+                    tan_beta = sin_v / ndotv;
+                }
             }
         }
-
-        if (cos_phi_diff > 0.0f && ndotl > 1e-4f && ndotv > 1e-4f) {
-            real sin_l = real_sqrt(saturate(1.0f - ndotl * ndotl));
-            real sin_v = real_sqrt(saturate(1.0f - ndotv * ndotv));
-            real sin_alpha;
-            real tan_beta;
-
-            if (ndotl > ndotv) {
-                sin_alpha = sin_v;          /* larger angle: view */
-                tan_beta = sin_l / ndotl;   /* smaller angle: light */
-            } else {
-                sin_alpha = sin_l;          /* larger angle: light */
-                tan_beta = sin_v / ndotv;   /* smaller angle: view */
-            }
-
-            oren_term = sin_alpha * tan_beta;
-            if (oren_term > 1.0f) oren_term = 1.0f;
-        }
-
-        diffuse_term = ndotl * (a + b * cos_phi_diff * oren_term);
+        diffuse_term = ndotl * (a + b * cos_phi_diff * sin_alpha * tan_beta);
         diffuse_term = saturate(diffuse_term);
     }
 
-    /* - Ambient lighting factor (multiplicative darkening) - */
     if (mat->ambient_light_factor > 0.0f) {
         color = vec3_add(ambient_col, vec3_mul_scalar(light_col, diffuse_term));
         color = vec3_mul_scalar(color, mat->ambient_light_factor);
     }
 
-    /* - Gooch colour blending - */
-    if (vec3_dot(mat->gooch_cool, mat->gooch_cool) > 0.0001f ||
-        vec3_dot(mat->gooch_warm, mat->gooch_warm) > 0.0001f) {
+    real gooch_len = vec3_dot(mat->gooch_cool, mat->gooch_cool) + vec3_dot(mat->gooch_warm, mat->gooch_warm);
+    if (gooch_len > 0.0001f) {
         real t = (ndotl + 1.0f) * 0.5f;
-        if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
         vec3 gooch = vec3_add(vec3_mul_scalar(mat->gooch_cool, 1.0f - t),
                               vec3_mul_scalar(mat->gooch_warm, t));
         color = vec3_mul(color, gooch);
@@ -474,29 +469,23 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color = vec3_mul(color, mat->color);
     }
 
-    /* - Back‑face glow (light from behind) - */
     if (vec3_dot(mat->back_glow_color, mat->back_glow_color) > 0.0001f) {
         vec3 light_neg = vec3_mul_scalar(light_dir, -1.0f);
         real ndotl_neg = vec3_dot(N, light_neg);
-        if (ndotl_neg < 0.0f) ndotl_neg = 0.0f;
-        color = vec3_add(color, vec3_mul_scalar(mat->back_glow_color, ndotl_neg));
+        color = vec3_add(color, vec3_mul_scalar(mat->back_glow_color, ndotl_neg < 0.0f ? 0.0f : ndotl_neg));
     }
 
-    /* - Rim lighting (additive edge glow) - */
     if (mat->rim_exponent > 0.0f) {
-        real rim = 1.0f - ndotv;
-        rim = real_pow(rim, mat->rim_exponent);
+        real rim = real_pow(1.0f - ndotv, mat->rim_exponent);
         color = vec3_add(color, vec3_mul_scalar(mat->rim_color, rim));
     }
 
-    /* - Fresnel (glancing colour blend) - */
     if (mat->fresnel_exponent > 0.0f) {
         real fresnel = real_pow(1.0f - ndotv, mat->fresnel_exponent);
         color = vec3_add(vec3_mul_scalar(color, 1.0f - fresnel),
                          vec3_mul_scalar(mat->fresnel_color, fresnel));
     }
 
-    /* - Emissive (with optional pulse animation) - */
     if (vec3_dot(mat->emissive_color, mat->emissive_color) > 0.0001f) {
         vec3 emissive = mat->emissive_color;
         if (mat->emissive_pulse_amplitude > 0.0f) {
@@ -507,43 +496,33 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color = vec3_add(color, emissive);
     }
 
-    /* Strobe (flashing additive colour) */
     if (vec3_dot(mat->strobe_color, mat->strobe_color) > 0.0001f && mat->strobe_frequency > 0.0f) {
         real s = real_sin(render_time * mat->strobe_frequency + mat->strobe_phase);
-        s = s * 0.5f + 0.5f;   /* 0 → 1 */
+        s = s * 0.5f + 0.5f;
         color = vec3_add(color, vec3_mul_scalar(mat->strobe_color, s));
     }
 
-    /* - Specular - */
     if (mat->specular_exponent > 0.0f) {
         vec3 H = vec3_normalize(vec3_add(light_dir, V));
         real nh = vec3_dot(N, H);
-        if (nh < 0.0f) nh = 0.0f;
-
-        real spec = real_pow(nh, mat->specular_exponent);
-
+        real spec = real_pow(nh < 0.0f ? 0.0f : nh, mat->specular_exponent);
         if (mat->specular_threshold > 0.0f) {
             spec = (spec > mat->specular_threshold) ? 1.0f : 0.0f;
         }
         color = vec3_add(color, vec3_mul_scalar(mat->specular_color, spec));
     }
 
-    /* - Saturation control (C89‑friendly) - */
     if (mat->saturation != 1.0f) {
-        real luma = color.color.r * 0.299f +
-                    color.color.g * 0.587f +
-                    color.color.b * 0.114f;
+        real luma = color.color.r * 0.299f + color.color.g * 0.587f + color.color.b * 0.114f;
         color.color.r = luma + (color.color.r - luma) * mat->saturation;
         color.color.g = luma + (color.color.g - luma) * mat->saturation;
         color.color.b = luma + (color.color.b - luma) * mat->saturation;
     }
 
-    /* - Iridescence (view‑angle rainbow shift) - */
     if (mat->iridescence_strength > 0.0f) {
-        real angle = ndotv * 2.0f * VECTORS_PI;   /* map 0..1 → 0..2π */
+        real angle = ndotv * 2.0f * VECTORS_PI;
         real c = real_cos(angle);
         real s = real_sin(angle);
-        /* standard hue‑rotation matrix (weights from ITU‑R BT.709) */
         real rot[9] = {
             0.299f + 0.701f * c + 0.168f * s,  0.587f - 0.587f * c + 0.330f * s,  0.114f - 0.114f * c - 0.497f * s,
             0.299f - 0.299f * c - 0.328f * s,  0.587f + 0.413f * c + 0.035f * s,  0.114f - 0.114f * c + 0.292f * s,
@@ -552,73 +531,47 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         real r = color.color.r * rot[0] + color.color.g * rot[1] + color.color.b * rot[2];
         real g = color.color.r * rot[3] + color.color.g * rot[4] + color.color.b * rot[5];
         real b = color.color.r * rot[6] + color.color.g * rot[7] + color.color.b * rot[8];
-        /* Lerp between original and rotated colour based on strength */
-        color.color.r = r * mat->iridescence_strength + color.color.r * (1.0f - mat->iridescence_strength);
-        color.color.g = g * mat->iridescence_strength + color.color.g * (1.0f - mat->iridescence_strength);
-        color.color.b = b * mat->iridescence_strength + color.color.b * (1.0f - mat->iridescence_strength);
+        real is = mat->iridescence_strength;
+        color.color.r = r * is + color.color.r * (1.0f - is);
+        color.color.g = g * is + color.color.g * (1.0f - is);
+        color.color.b = b * is + color.color.b * (1.0f - is);
     }
 
-    /* - Tint (post‑lighting colour multiplication) - */
-    if (vec3_dot(mat->tint, mat->tint) < 2.999f) { /* not exactly {1,1,1} */
+    real tint_len = vec3_dot(mat->tint, mat->tint);
+    if (tint_len < 2.999f) {
         color = vec3_mul(color, mat->tint);
     }
 
-    /* - Glitch (time-varying hologram noise overlay) - */
     if (mat->glitch_intensity > 0.0f) {
-        /* Quantized hash so it changes every frame and is spatially unique per shade_surface call. */
-        u32 x = (u32)(render_time * 60.0f); /* ~60Hz frame quantization */
-        vec3 wp_q = vec3_mul_scalar(world_pos, 4096.0f);
-        wp_q = vec3_floor(wp_q);
-        x ^= (u32)wp_q.components[0];
-        x = x * 1664525u + 1013904223u;
-        x ^= (u32)wp_q.components[1];
-        x = x * 1664525u + 1013904223u;
-        x ^= (u32)wp_q.components[2];
-        x = x * 1664525u + 1013904223u;
-
-        /* Convert to [0,1) */
-        real hash = (real)x * (1.0f / 4294967296.0f);
-
-        real offset = (hash - 0.5f) * mat->glitch_intensity;
+        u32 x = (u32)(render_time * 60.0f);
+        vec3 wp_q = vec3_floor(vec3_mul_scalar(world_pos, 4096.0f));
+        x ^= (u32)wp_q.components[0]; x = x * 1664525u + 1013904223u;
+        x ^= (u32)wp_q.components[1]; x = x * 1664525u + 1013904223u;
+        x ^= (u32)wp_q.components[2]; x = x * 1664525u + 1013904223u;
+        real offset = ((real)x * (1.0f / 4294967296.0f) - 0.5f) * mat->glitch_intensity;
         color.color.r += offset;
         color.color.g += offset * 0.7f;
         color.color.b -= offset;
     }
 
-    /* - Roughness tint noise (time-stable brick/stone static) - */
     if (mat->roughness > 0.0f) {
-        /* Deterministic noise anchored to model space, so it follows moving entities. */
-        u32 x = 2166136261u; /* FNV-1a basis */
-
-        /* Use a coarse quantization so small interpolation changes don't reshuffle the hash. */
-        vec3 q = vec3_mul_scalar(local_pos, 256.0f);
-        q = vec3_floor(q);
-
-        u32 qx = (u32)q.components[0];
-        u32 qy = (u32)q.components[1];
-        u32 qz = (u32)q.components[2];
-
-        x ^= qx; x *= 16777619u;
-        x ^= qy; x *= 16777619u;
-        x ^= qz; x *= 16777619u;
-
-        real hash = (real)x * (1.0f / 4294967296.0f); /* [0,1) */
-        real offset = (hash - 0.5f) * mat->roughness;
-
-        /* Subtle high-frequency tint variation (acts like micro-roughness). */
+        u32 x = 2166136261u;
+        vec3 q = vec3_floor(vec3_mul_scalar(local_pos, 256.0f));
+        x ^= (u32)q.components[0]; x *= 16777619u;
+        x ^= (u32)q.components[1]; x *= 16777619u;
+        x ^= (u32)q.components[2]; x *= 16777619u;
+        real offset = ((real)x * (1.0f / 4294967296.0f) - 0.5f) * mat->roughness;
         color.color.r += offset;
         color.color.g += offset * 0.5f;
         color.color.b -= offset * 0.25f;
     }
 
-    /* - Chromatic aberration (color fringing) - */
     if (mat->fringe_intensity > 0.0f) {
         real fringe = real_pow(1.0f - ndotv, 3.0f) * mat->fringe_intensity;
         color.color.r += fringe;
         color.color.b -= fringe;
     }
 
-    /* - Posterisation (quantise final colour) - */
     if (mat->posterize_levels > 1) {
         real levels = (real)(mat->posterize_levels);
         color.color.r = real_floor(color.color.r * levels + 0.5f) / levels;
@@ -626,16 +579,13 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
         color.color.b = real_floor(color.color.b * levels + 0.5f) / levels;
     }
 
-    /* - Global distance fog (unless material opts out) - */
     if (!mat->skip_fog && fog_end > fog_start) {
         real dist = vec3_magnitude(vec3_sub(world_pos, cam_eye));
         real t = (dist - fog_start) / (fog_end - fog_start);
         t = saturate(t);
-        color = vec3_add(vec3_mul_scalar(color, 1.0f - t),
-                         vec3_mul_scalar(fog_color, t));
+        color = vec3_add(vec3_mul_scalar(color, 1.0f - t), vec3_mul_scalar(fog_color, t));
     }
 
-    /* - Clamp and return - */
     color.color.r = saturate(color.color.r);
     color.color.g = saturate(color.color.g);
     color.color.b = saturate(color.color.b);
@@ -722,11 +672,25 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
         if(sx<0)sx=0; if(ex>fw)ex=fw;
         if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
+        
+        /* Fully inlined opaque write for maximum speed (common case) */
         iw=siw;
-        for(x=sx;x<ex;x++){
-            i32 idx=y*fw+x;
-            write_pixel(idx, iw, color, mat->alpha);
-            iw+=iw_step;
+        if (mat->alpha >= 1.0f) {
+            for(x=sx;x<ex;x++){
+                i32 idx=y*fw+x;
+                if(iw > zbuf[idx]){
+                    zbuf[idx] = iw;
+                    fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
+                }
+                iw+=iw_step;
+            }
+        } else {
+            iw=siw;
+            for(x=sx;x<ex;x++){
+                i32 idx=y*fw+x;
+                write_pixel(idx, iw, color, mat->alpha);
+                iw+=iw_step;
+            }
         }
     }
 }
@@ -771,11 +735,25 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
         dc_step.color.r=(ex>sx)?(ce.color.r-cs.color.r)/(ex-sx):0;
         dc_step.color.g=(ex>sx)?(ce.color.g-cs.color.g)/(ex-sx):0;
         dc_step.color.b=(ex>sx)?(ce.color.b-cs.color.b)/(ex-sx):0;
-        iw=siw; col=cs;
-        for(x=sx;x<ex;x++){
-            i32 idx=y*fw+x;
-            write_pixel(idx, iw, col, mat->alpha);
-            iw+=iw_step; col.color.r+=dc_step.color.r; col.color.g+=dc_step.color.g; col.color.b+=dc_step.color.b;
+        
+        /* Fully inlined opaque write for maximum speed (common case) */
+        if (mat->alpha >= 1.0f) {
+            iw=siw; col=cs;
+            for(x=sx;x<ex;x++){
+                i32 idx=y*fw+x;
+                if(iw > zbuf[idx]){
+                    zbuf[idx] = iw;
+                    fb[idx] = pack_color_real(col.color.r, col.color.g, col.color.b);
+                }
+                iw+=iw_step; col.color.r+=dc_step.color.r; col.color.g+=dc_step.color.g; col.color.b+=dc_step.color.b;
+            }
+        } else {
+            iw=siw; col=cs;
+            for(x=sx;x<ex;x++){
+                i32 idx=y*fw+x;
+                write_pixel(idx, iw, col, mat->alpha);
+                iw+=iw_step; col.color.r+=dc_step.color.r; col.color.g+=dc_step.color.g; col.color.b+=dc_step.color.b;
+            }
         }
     }
 }
@@ -956,9 +934,10 @@ static void draw_triangle_shaded(
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
     if (mat->alpha < 1.0f) {
         if (!in_transparent_pass && transparent_count < MAX_TRANSPARENT) {
-            real d0 = vec3_distance(v0, cam_eye);
-            real d1 = vec3_distance(v1, cam_eye);
-            real d2 = vec3_distance(v2, cam_eye);
+            /* Use squared distances for sorting to avoid sqrt */
+            real d0 = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
+            real d1 = vec3_dot(vec3_sub(v1, cam_eye), vec3_sub(v1, cam_eye));
+            real d2 = vec3_dot(vec3_sub(v2, cam_eye), vec3_sub(v2, cam_eye));
             transparent_queue[transparent_count].v0   = v0;
             transparent_queue[transparent_count].v1   = v1;
             transparent_queue[transparent_count].v2   = v2;
