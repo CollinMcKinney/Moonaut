@@ -639,13 +639,13 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.mode                     =*/ SHADE_FLAT,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
-                                    EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_RIM |
-                                    EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_GLITCH | EFFECT_FRINGE | EFFECT_SATURATION,
+                                    EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | 
+                                    EFFECT_STROBE | EFFECT_GLITCH | EFFECT_FRINGE,
     /*.color                    =*/ {0.15f, 0.05f, 0.00f},
-    /*.ambient_light_factor     =*/ 0.50f,
+    /*.ambient_light_factor     =*/ 0.15f,
     /*.alpha                    =*/ 1.00f,
-    /*.saturation               =*/ 1.5f,
-    /*.tint                     =*/ {2.00f, 2.00f, 0.00f},
+    /*.saturation               =*/ 1.00f,
+    /*.tint                     =*/ {1.00f, 1.00f, 0.00f},
     /*.cel_bands                =*/ 0,
     /*.diffuse_wrap             =*/ 1,
     /*.oren_nayar_sigma         =*/ 0.60f,
@@ -661,7 +661,7 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
     /*.specular_exponent        =*/ 0.0f,
-    /*.specular_color           =*/ {0.40f, 0.40f, 0.00f},
+    /*.specular_color           =*/ {0.00f, 0.00f, 0.00f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0.50f, 0.33f, 0.00f},
     /*.emissive_pulse_frequency =*/ 1.00f,
@@ -672,7 +672,7 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.strobe_phase             =*/ 2.10f,
     /*.skip_fog                 =*/ false,
     /*.iridescence_strength     =*/ 0.00f,
-    /*.glitch_intensity         =*/ 0.04f,
+    /*.glitch_intensity         =*/ 0.50f,
     /*.fringe_intensity         =*/ 0.50f,
     /*.posterize_levels         =*/ 0
 };
