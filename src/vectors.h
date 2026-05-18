@@ -110,29 +110,6 @@ STATIC_ASSERT(sizeof(real) == 0x4, real_size_wrong);
 /* Clamp a real value to the range [min, max]. */
 static INLINE real real_clamp(real x, real min, real max) { return real_min(real_max(x, min), max); }
 
-/* -------------------------------------------------------------------------
-    WTF Math Optimization - Fast but less accurate hacks
-    ------------------------------------------------------------------------- */
-#define REAL_WTF_MATH /* On modern CPU's it seems about 2% slower. */
-#ifdef REAL_WTF_MATH
-    /* Fast inverse square root approximation similar to Quake III's "wtf" version;
-        with Jan Kadlec's improvements:
-        https://web.archive.org/web/20250706154109/http://rrrola.wz.cz/inv_sqrt.html
-    */
-    static INLINE real real_wtf_rsqrt(real x) { 
-        union { real f; u32 u; } y = {x};
-        y.u = 0x5F1FFFF9ul - (y.u >> 1);
-        return 0.703952253f * y.f * (2.38924456f - x * y.f * y.f);
-    }
-
-    static INLINE real real_wtf_sqrt(real x) {
-        return x * real_wtf_rsqrt(x);
-    }
-
-    #undef real_sqrt
-    #define real_sqrt(x)   real_wtf_sqrt(x)
-#endif
-
 /* ------------------------------------------------------------------ */
 
 /* Real constants. */
@@ -342,6 +319,29 @@ STATIC_ASSERT(sizeof(u64) == 0x8, u64_size_wrong);
     #endif
 #endif
 STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
+
+/* -------------------------------------------------------------------------
+    WTF Math Optimization - Fast but less accurate hacks
+    ------------------------------------------------------------------------- */
+#define REAL_WTF_MATH */ /* On modern CPU's it seems about 2% slower. */
+#ifdef REAL_WTF_MATH
+    /* Fast inverse square root approximation similar to Quake III's "wtf" version;
+        with Jan Kadlec's improvements:
+        https://web.archive.org/web/20250706154109/http://rrrola.wz.cz/inv_sqrt.html
+    */
+    static INLINE real real_wtf_rsqrt(real x) { 
+        union { real f; u32 u; } y = {x};
+        y.u = 0x5F1FFFF9ul - (y.u >> 1);
+        return 0.703952253f * y.f * (2.38924456f - x * y.f * y.f);
+    }
+
+    static INLINE real real_wtf_sqrt(real x) {
+        return x * real_wtf_rsqrt(x);
+    }
+
+    #undef real_sqrt
+    #define real_sqrt(x)   real_wtf_sqrt(x)
+#endif
 
 #define _0 (u32)(0)
 #define _1 (u32)(1)
