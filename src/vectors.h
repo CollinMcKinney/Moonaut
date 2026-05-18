@@ -113,7 +113,7 @@ static INLINE real real_clamp(real x, real min, real max) { return real_min(real
 /* ------------------------------------------------------------------ */
 
 /* Real constants. */
-#define VECTORS_PI ((real)3.14159265358979323846)
+#define VECTORS_PI ((real)3.141592653589793115997963468544185161590576171875)
 static const real VECTORS_RAD2DEG = (real)(180.0 / VECTORS_PI);
 static const real VECTORS_DEG2RAD = (real)(VECTORS_PI / 180.0);
 static const real VECTORS_QUAT_EPSILON = (real)0.0001;
