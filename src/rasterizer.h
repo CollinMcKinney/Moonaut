@@ -19,6 +19,7 @@ extern "C" {
    Global render state
    ------------------------------------------------------------------------- */
 /* Double‑buffered framebuffer and depth buffer */
+/* Pitch-aligned framebuffer for 16-byte boundary optimization */
 static u32  *fb_front = NULL;   /* displayed buffer */
 static real *zbuf_front = NULL;
 static u32  *fb_back  = NULL;   /* rendered‑to buffer */
@@ -28,6 +29,7 @@ static u32  *fb   = NULL;       /* currently active back buffer (points to fb_ba
 static real *zbuf = NULL;
 
 static i32  fw, fh;
+static i32  fb_pitch;           /* aligned pitch (pixels), may be >= fw */
 
 static mat4 vp;
 static vec3 light_dir, light_col, ambient_col;
@@ -301,12 +303,15 @@ static INLINE void write_pixel(i32 idx, real iw, vec3 color, real alpha)
 /* -------------------------------------------------------------------------
    Framebuffer management
    ------------------------------------------------------------------------- */
+/* Framebuffer pitch aligned to 16-byte boundary for SSE optimization */
 static i32 render_init(i32 w, i32 h) {
+    /* Align pitch to multiple of 4 pixels (16 bytes for u32 rgba) */
+    fb_pitch = (w + 3) & ~3;
     fw = w; fh = h;
-    fb_front = (u32*)malloc(w * h * sizeof(u32));
-    zbuf_front = (real*)malloc(w * h * sizeof(real));
-    fb_back  = (u32*)malloc(w * h * sizeof(u32));
-    zbuf_back = (real*)malloc(w * h * sizeof(real));
+    fb_front = (u32*)malloc(fb_pitch * h * sizeof(u32));
+    zbuf_front = (real*)malloc(fb_pitch * h * sizeof(real));
+    fb_back  = (u32*)malloc(fb_pitch * h * sizeof(u32));
+    zbuf_back = (real*)malloc(fb_pitch * h * sizeof(real));
     if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
         free(fb_front); free(zbuf_front);
         free(fb_back); free(zbuf_back);
@@ -321,14 +326,19 @@ static i32 render_init(i32 w, i32 h) {
 
 static void render_clear(u8 r, u8 g, u8 b) {
     u32 col = pack_color(r, g, b);
-    i32 n = fw * fh;
+    u32 *fb32 = (u32*)fb;
+    real *zb = (real*)zbuf;
+    i32 n = fb_pitch * fh;  /* Use pitch-aligned size */
     i32 i;
-    /*TODO: for some reason memset is slower here.*/
-    /*memset(fb, col2, n * sizeof(u32));*/
-    /*memset(zbuf, 0, n * sizeof(real));*/
-    for (i = 0; i < n; i++) {
-        fb[i] = col;
-        zbuf[i] = 0;
+    for (i = 0; i < n; i += 4) {
+        fb32[i] = col;
+        fb32[i+1] = col;
+        fb32[i+2] = col;
+        fb32[i+3] = col;
+        zb[i] = 0;
+        zb[i+1] = 0;
+        zb[i+2] = 0;
+        zb[i+3] = 0;
     }
 }
 
@@ -589,11 +599,73 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
 }
 
 /* -------------------------------------------------------------------------
-   Wireframe rasterization
-   ------------------------------------------------------------------------- */
+    Wireframe rasterization
+    ------------------------------------------------------------------------- */
+/* Clip line to screen rectangle using Cohen-Sutherland */
+#define CLIP_LEFT   1
+#define CLIP_RIGHT  2
+#define CLIP_BOTTOM 4
+#define CLIP_TOP    8
+
+static INLINE i32 clip_code(i32 x, i32 y) {
+    i32 code = 0;
+    if (x < 0) code |= CLIP_LEFT;
+    else if (x >= fw) code |= CLIP_RIGHT;
+    if (y < 0) code |= CLIP_BOTTOM;
+    else if (y >= fh) code |= CLIP_TOP;
+    return code;
+}
+
 /* Bresenham line drawing with z-buffer */
 static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3 color, real alpha)
 {
+    i32 code0 = clip_code(x0, y0);
+    i32 code1 = clip_code(x1, y1);
+    i32 outcode;
+    i32 accept = 0;
+    
+    do {
+        if ((code0 | code1) == 0) {
+            accept = 1;
+            break;
+        } else if ((code0 & code1) != 0) {
+            break;
+        } else {
+            outcode = code0 ? code0 : code1;
+            real x = (real)x0, y = (real)y0;
+            
+            if (outcode & CLIP_TOP) {
+                if (y1 != y0) {
+                    x = x0 + (real)(x1 - x0) * (fh - 1 - y0) / (y1 - y0);
+                    y = fh - 1;
+                }
+            } else if (outcode & CLIP_BOTTOM) {
+                if (y1 != y0) {
+                    x = x0 + (real)(x1 - x0) * (0 - y0) / (y1 - y0);
+                    y = 0;
+                }
+            } else if (outcode & CLIP_RIGHT) {
+                if (x1 != x0) {
+                    y = y0 + (real)(y1 - y0) * (fw - 1 - x0) / (x1 - x0);
+                    x = fw - 1;
+                }
+            } else if (outcode & CLIP_LEFT) {
+                if (x1 != x0) {
+                    y = y0 + (real)(y1 - y0) * (0 - x0) / (x1 - x0);
+                    x = 0;
+                }
+            }
+            
+            if (outcode == code0) {
+                x0 = (i32)x; y0 = (i32)y; code0 = clip_code(x0, y0);
+            } else {
+                x1 = (i32)x; y1 = (i32)y; code1 = clip_code(x1, y1);
+            }
+        }
+    } while (1);
+    
+    if (!accept) return;
+    
     i32 dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     i32 dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     i32 err = dx + dy, e2;
@@ -604,10 +676,8 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
     real iw = iw0;
 
     while (1) {
-        if (x0 >= 0 && x0 < fw && y0 >= 0 && y0 < fh) {
-            i32 idx = y0 * fw + x0;
-            write_pixel(idx, iw, color, alpha);
-        }
+        i32 idx = y0 * fw + x0;
+        write_pixel(idx, iw, color, alpha);
         if (x0 == x1 && y0 == y1) break;
         e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; iw += diw; }
@@ -637,7 +707,7 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
    Per‑face/triangle rasterization
    ------------------------------------------------------------------------- */
 static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color, 
-                                const struct material_definition *mat) {
+                                 const struct material_definition *mat) {
 
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
@@ -668,12 +738,14 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
         if(sx<0)sx=0; if(ex>fw)ex=fw;
         if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
+
+        i32 row_base = y * fw;  /* Pixel indexing within screen bounds */
         
         /* Fully inlined opaque write for maximum speed (common case) */
         iw=siw;
         if (mat->alpha >= 1.0f) {
             for(x=sx;x<ex;x++){
-                i32 idx=y*fw+x;
+                i32 idx=row_base+x;
                 if(iw > zbuf[idx]){
                     zbuf[idx] = iw;
                     fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
@@ -683,7 +755,7 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
         } else {
             iw=siw;
             for(x=sx;x<ex;x++){
-                i32 idx=y*fw+x;
+                i32 idx=row_base+x;
                 write_pixel(idx, iw, color, mat->alpha);
                 iw+=iw_step;
             }
@@ -695,8 +767,8 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
    Per‑vertex rasterization with interpolation
    ------------------------------------------------------------------------- */
 static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
-                                     vec3 c0, vec3 c1, vec3 c2, 
-                                     const struct material_definition *mat) {
+                                      vec3 c0, vec3 c1, vec3 c2, 
+                                      const struct material_definition *mat) {
                                         
     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
@@ -731,12 +803,14 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
         dc_step.color.r=(ex>sx)?(ce.color.r-cs.color.r)/(ex-sx):0;
         dc_step.color.g=(ex>sx)?(ce.color.g-cs.color.g)/(ex-sx):0;
         dc_step.color.b=(ex>sx)?(ce.color.b-cs.color.b)/(ex-sx):0;
+
+        i32 row_base = y * fw;  /* Pixel indexing within screen bounds */
         
         /* Fully inlined opaque write for maximum speed (common case) */
         if (mat->alpha >= 1.0f) {
             iw=siw; col=cs;
             for(x=sx;x<ex;x++){
-                i32 idx=y*fw+x;
+                i32 idx=row_base+x;
                 if(iw > zbuf[idx]){
                     zbuf[idx] = iw;
                     fb[idx] = pack_color_real(col.color.r, col.color.g, col.color.b);
@@ -746,7 +820,7 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
         } else {
             iw=siw; col=cs;
             for(x=sx;x<ex;x++){
-                i32 idx=y*fw+x;
+                i32 idx=row_base+x;
                 write_pixel(idx, iw, col, mat->alpha);
                 iw+=iw_step; col.color.r+=dc_step.color.r; col.color.g+=dc_step.color.g; col.color.b+=dc_step.color.b;
             }
@@ -793,62 +867,84 @@ static void raster_triangle_phong(
         dwpw2.position.x=(wp2w.position.x-wp0w.position.x)*idy; dwpw2.position.y=(wp2w.position.y-wp0w.position.y)*idy; dwpw2.position.z=(wp2w.position.z-wp0w.position.z)*idy;
         dlpw2.position.x=(lp2w.position.x-lp0w.position.x)*idy; dlpw2.position.y=(lp2w.position.y-lp0w.position.y)*idy; dlpw2.position.z=(lp2w.position.z-lp0w.position.z)*idy; }
 
+    /* Structure of Arrays for interpolants - split vec3 into scalar components
+        for sequential memory access and better cache locality */
     i32 y_start=y0<0?0:y0, y_end=y2>fh?fh:y2;
     i32 y,sx,ex,x; real siw,eiw,iw_step,iw;
-    vec3 nws,nwe,nw_val,dnw_step;
-    vec3 wps,wpe,wp_val,dwp_step;
-    vec3 lps,lpe,lp_val,dlp_step;
-
+    
+    /* Normal interpolants - SoA layout */
+    real nws_x,nws_y,nws_z, nwe_x,nwe_y,nwe_z, nw_val_x,nw_val_y,nw_val_z, dnw_step_x,dnw_step_y,dnw_step_z;
+    /* World position interpolants - SoA layout */
+    real wps_x,wps_y,wps_z, wpe_x,wpe_y,wpe_z, wp_val_x,wp_val_y,wp_val_z, dwp_step_x,dwp_step_y,dwp_step_z;
+    /* Local position interpolants - SoA layout */
+    real lps_x,lps_y,lps_z, lpe_x,lpe_y,lpe_z, lp_val_x,lp_val_y,lp_val_z, dlp_step_x,dlp_step_y,dlp_step_z;
     for(y=y_start;y<y_end;y++){
         if(y<y1){ real t=(real)(y-y0); sx=x0+raster_round(dx0*t); ex=x0+raster_round(dx2*t); siw=iw0+diw0*t; eiw=iw0+diw2*t;
-            nws.position.x=n0w.position.x+dnw0.position.x*t; nws.position.y=n0w.position.y+dnw0.position.y*t; nws.position.z=n0w.position.z+dnw0.position.z*t;
-            nwe.position.x=n0w.position.x+dnw2.position.x*t; nwe.position.y=n0w.position.y+dnw2.position.y*t; nwe.position.z=n0w.position.z+dnw2.position.z*t;
-            wps.position.x=wp0w.position.x+dwpw0.position.x*t; wps.position.y=wp0w.position.y+dwpw0.position.y*t; wps.position.z=wp0w.position.z+dwpw0.position.z*t;
-            wpe.position.x=wp0w.position.x+dwpw2.position.x*t; wpe.position.y=wp0w.position.y+dwpw2.position.y*t; wpe.position.z=wp0w.position.z+dwpw2.position.z*t;
-            lps.position.x=lp0w.position.x+dlpw0.position.x*t; lps.position.y=lp0w.position.y+dlpw0.position.y*t; lps.position.z=lp0w.position.z+dlpw0.position.z*t;
-            lpe.position.x=lp0w.position.x+dlpw2.position.x*t; lpe.position.y=lp0w.position.y+dlpw2.position.y*t; lpe.position.z=lp0w.position.z+dlpw2.position.z*t; }
+            /* Load start values for this scanline - sequential access */
+            nws_x=n0w.position.x+dnw0.position.x*t; nws_y=n0w.position.y+dnw0.position.y*t; nws_z=n0w.position.z+dnw0.position.z*t;
+            nwe_x=n0w.position.x+dnw2.position.x*t; nwe_y=n0w.position.y+dnw2.position.y*t; nwe_z=n0w.position.z+dnw2.position.z*t;
+            wps_x=wp0w.position.x+dwpw0.position.x*t; wps_y=wp0w.position.y+dwpw0.position.y*t; wps_z=wp0w.position.z+dwpw0.position.z*t;
+            wpe_x=wp0w.position.x+dwpw2.position.x*t; wpe_y=wp0w.position.y+dwpw2.position.y*t; wpe_z=wp0w.position.z+dwpw2.position.z*t;
+            lps_x=lp0w.position.x+dlpw0.position.x*t; lps_y=lp0w.position.y+dlpw0.position.y*t; lps_z=lp0w.position.z+dlpw0.position.z*t;
+            lpe_x=lp0w.position.x+dlpw2.position.x*t; lpe_y=lp0w.position.y+dlpw2.position.y*t; lpe_z=lp0w.position.z+dlpw2.position.z*t; }
         else { real t=(real)(y-y1); sx=x1+raster_round(dx1*t); ex=x0+raster_round(dx2*(y-y0)); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0);
-            nws.position.x=n1w.position.x+dnw1.position.x*t; nws.position.y=n1w.position.y+dnw1.position.y*t; nws.position.z=n1w.position.z+dnw1.position.z*t;
-            nwe.position.x=n0w.position.x+dnw2.position.x*(y-y0); nwe.position.y=n0w.position.y+dnw2.position.y*(y-y0); nwe.position.z=n0w.position.z+dnw2.position.z*(y-y0);
-            wps.position.x=wp1w.position.x+dwpw1.position.x*t; wps.position.y=wp1w.position.y+dwpw1.position.y*t; wps.position.z=wp1w.position.z+dwpw1.position.z*t;
-            wpe.position.x=wp0w.position.x+dwpw2.position.x*(y-y0); wpe.position.y=wp0w.position.y+dwpw2.position.y*(y-y0); wpe.position.z=wp0w.position.z+dwpw2.position.z*(y-y0);
-            lps.position.x=lp1w.position.x+dlpw1.position.x*t; lps.position.y=lp1w.position.y+dlpw1.position.y*t; lps.position.z=lp1w.position.z+dlpw1.position.z*t;
-            lpe.position.x=lp0w.position.x+dlpw2.position.x*(y-y0); lpe.position.y=lp0w.position.y+dlpw2.position.y*(y-y0); lpe.position.z=lp0w.position.z+dlpw2.position.z*(y-y0); }
-        if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);swapv(&nws,&nwe);swapv(&wps,&wpe);swapv(&lps,&lpe);}
+            nws_x=n1w.position.x+dnw1.position.x*t; nws_y=n1w.position.y+dnw1.position.y*t; nws_z=n1w.position.z+dnw1.position.z*t;
+            nwe_x=n0w.position.x+dnw2.position.x*(y-y0); nwe_y=n0w.position.y+dnw2.position.y*(y-y0); nwe_z=n0w.position.z+dnw2.position.z*(y-y0);
+            wps_x=wp1w.position.x+dwpw1.position.x*t; wps_y=wp1w.position.y+dwpw1.position.y*t; wps_z=wp1w.position.z+dwpw1.position.z*t;
+            wpe_x=wp0w.position.x+dwpw2.position.x*(y-y0); wpe_y=wp0w.position.y+dwpw2.position.y*(y-y0); wpe_z=wp0w.position.z+dwpw2.position.z*(y-y0);
+            lps_x=lp1w.position.x+dlpw1.position.x*t; lps_y=lp1w.position.y+dlpw1.position.y*t; lps_z=lp1w.position.z+dlpw1.position.z*t;
+            lpe_x=lp0w.position.x+dlpw2.position.x*(y-y0); lpe_y=lp0w.position.y+dlpw2.position.y*(y-y0); lpe_z=lp0w.position.z+dlpw2.position.z*(y-y0); }
+        if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);
+            /* Swap normal components */
+            real tmp=nws_x; nws_x=nwe_x; nwe_x=tmp;
+            tmp=nws_y; nws_y=nwe_y; nwe_y=tmp;
+            tmp=nws_z; nws_z=nwe_z; nwe_z=tmp;
+            /* Swap world pos components */
+            tmp=wps_x; wps_x=wpe_x; wpe_x=tmp;
+            tmp=wps_y; wps_y=wpe_y; wpe_y=tmp;
+            tmp=wps_z; wps_z=wpe_z; wpe_z=tmp;
+            /* Swap local pos components */
+            tmp=lps_x; lps_x=lpe_x; lpe_x=tmp;
+            tmp=lps_y; lps_y=lpe_y; lpe_y=tmp;
+            tmp=lps_z; lps_z=lpe_z; lpe_z=tmp; }
         if(sx<0)sx=0; if(ex>fw)ex=fw;
         if(ex<=sx) continue;
         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
         if(ex>sx){
-            dnw_step.position.x=(nwe.position.x-nws.position.x)/(ex-sx); dnw_step.position.y=(nwe.position.y-nws.position.y)/(ex-sx); dnw_step.position.z=(nwe.position.z-nws.position.z)/(ex-sx);
-            dwp_step.position.x=(wpe.position.x-wps.position.x)/(ex-sx); dwp_step.position.y=(wpe.position.y-wps.position.y)/(ex-sx); dwp_step.position.z=(wpe.position.z-wps.position.z)/(ex-sx);
-            dlp_step.position.x=(lpe.position.x-lps.position.x)/(ex-sx); dlp_step.position.y=(lpe.position.y-lps.position.y)/(ex-sx); dlp_step.position.z=(lpe.position.z-lps.position.z)/(ex-sx);
-        } else { dnw_step=vec3_init_from_3(0,0,0); dwp_step=vec3_init_from_3(0,0,0); dlp_step=vec3_init_from_3(0,0,0); }
-        iw=siw; nw_val=nws; wp_val=wps; lp_val=lps;
+            /* Compute per-pixel step values - SoA sequential access */
+            dnw_step_x=(nwe_x-nws_x)/(ex-sx); dnw_step_y=(nwe_y-nws_y)/(ex-sx); dnw_step_z=(nwe_z-nws_z)/(ex-sx);
+            dwp_step_x=(wpe_x-wps_x)/(ex-sx); dwp_step_y=(wpe_y-wps_y)/(ex-sx); dwp_step_z=(wpe_z-wps_z)/(ex-sx);
+            dlp_step_x=(lpe_x-lps_x)/(ex-sx); dlp_step_y=(lpe_y-lps_y)/(ex-sx); dlp_step_z=(lpe_z-lps_z)/(ex-sx);
+        } else { dnw_step_x=0; dnw_step_y=0; dnw_step_z=0; dwp_step_x=0; dwp_step_y=0; dwp_step_z=0; dlp_step_x=0; dlp_step_y=0; dlp_step_z=0; }
+        iw=siw; nw_val_x=nws_x; nw_val_y=nws_y; nw_val_z=nws_z; wp_val_x=wps_x; wp_val_y=wps_y; wp_val_z=wps_z; lp_val_x=lps_x; lp_val_y=lps_y; lp_val_z=lps_z;
+
+        i32 row_base = y * fw;  /* Pixel indexing within screen bounds */
+          
         for(x=sx;x<ex;x++){
-            i32 idx=y*fw+x;
+            i32 idx=row_base+x;
             if(iw > 0.0f && (iw>zbuf[idx] || (mat->alpha < 1.0f && iw >= zbuf[idx]))){
                 real inv_w = 1.0f / iw;
                 vec3 normal, world_pos, local_pos;
-                normal.position.x = nw_val.position.x * inv_w;
-                normal.position.y = nw_val.position.y * inv_w;
-                normal.position.z = nw_val.position.z * inv_w;
-                world_pos.position.x = wp_val.position.x * inv_w;
-                world_pos.position.y = wp_val.position.y * inv_w;
-                world_pos.position.z = wp_val.position.z * inv_w;
-                local_pos.position.x = lp_val.position.x * inv_w;
-                local_pos.position.y = lp_val.position.y * inv_w;
-                local_pos.position.z = lp_val.position.z * inv_w;
-
+                normal.position.x = nw_val_x * inv_w;
+                normal.position.y = nw_val_y * inv_w;
+                normal.position.z = nw_val_z * inv_w;
+                world_pos.position.x = wp_val_x * inv_w;
+                world_pos.position.y = wp_val_y * inv_w;
+                world_pos.position.z = wp_val_z * inv_w;
+                local_pos.position.x = lp_val_x * inv_w;
+                local_pos.position.y = lp_val_y * inv_w;
+                local_pos.position.z = lp_val_z * inv_w;
                 vec3 color = shade_surface(normal, world_pos, local_pos, mat);
                 write_pixel(idx, iw, color, mat->alpha);
             }
             iw+=iw_step;
-            nw_val.position.x+=dnw_step.position.x; nw_val.position.y+=dnw_step.position.y; nw_val.position.z+=dnw_step.position.z;
-            wp_val.position.x+=dwp_step.position.x; wp_val.position.y+=dwp_step.position.y; wp_val.position.z+=dwp_step.position.z;
-            lp_val.position.x+=dlp_step.position.x; lp_val.position.y+=dlp_step.position.y; lp_val.position.z+=dlp_step.position.z;
+            /* Sequential updates with no struct overhead */
+            nw_val_x+=dnw_step_x; nw_val_y+=dnw_step_y; nw_val_z+=dnw_step_z;
+            wp_val_x+=dwp_step_x; wp_val_y+=dwp_step_y; wp_val_z+=dwp_step_z;
+            lp_val_x+=dlp_step_x; lp_val_y+=dlp_step_y; lp_val_z+=dlp_step_z;
         }
-    }
-}
+     }
+ }
 
 /* -------------------------------------------------------------------------
      Internal triangle drawing (no clipping)
@@ -917,6 +1013,7 @@ static void draw_triangle_shaded(
     if (triangle_outside_frustum(v0, v1, v2)) return;
      
     /* Check if triangle intersects any frustum plane for clipping */
+    /* Quick near/far test - skip clipping if all vertices are comfortably within frustum */
     i32 needs_clip = 0;
     real min_dist_sq = 100.0f * 100.0f;
     real d0_sq = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
@@ -973,9 +1070,9 @@ static void draw_triangle_shaded(
 }
 
 /* -------------------------------------------------------------------------
-    Finish frame: sort and draw all transparent triangles (called after all
-    draw_triangle_shaded calls, before reading the framebuffer).
-    ------------------------------------------------------------------------- */
+     Finish frame: sort and draw all transparent triangles (called after all
+     draw_triangle_shaded calls, before reading the framebuffer).
+     ------------------------------------------------------------------------- */
 static void render_finish(void)
 {
     if (transparent_count > 0) {
