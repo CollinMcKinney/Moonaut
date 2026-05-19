@@ -2,9 +2,9 @@
  * rasterizer.h – Unified rasterizer (CPU)
  *
  * Uses material_definition.h for shading parameters.
- * Supports: Wireframe, Flat, Gouraud, and Phong.
+ * Supports: Wireframe, Flat, Gouraud, Phong, and Quadratic/X-shading.
  * Transparent triangles are automatically sorted and drawn back‑to‑front.
- */
+*/
 #ifndef RASTERIZER_H
 #define RASTERIZER_H
 
@@ -937,18 +937,117 @@ static void raster_triangle_phong(
                 vec3 color = shade_surface(normal, world_pos, local_pos, mat);
                 write_pixel(idx, iw, color, mat->alpha);
             }
-            iw+=iw_step;
-            /* Sequential updates with no struct overhead */
-            nw_val_x+=dnw_step_x; nw_val_y+=dnw_step_y; nw_val_z+=dnw_step_z;
-            wp_val_x+=dwp_step_x; wp_val_y+=dwp_step_y; wp_val_z+=dwp_step_z;
-            lp_val_x+=dlp_step_x; lp_val_y+=dlp_step_y; lp_val_z+=dlp_step_z;
-        }
+iw+=iw_step;
+             /* Sequential updates with no struct overhead */
+             nw_val_x+=dnw_step_x; nw_val_y+=dnw_step_y; nw_val_z+=dnw_step_z;
+             wp_val_x+=dwp_step_x; wp_val_y+=dwp_step_y; wp_val_z+=dwp_step_z;
+             lp_val_x+=dlp_step_x; lp_val_y+=dlp_step_y; lp_val_z+=dlp_step_z;
+         }
+      }
+ }
+
+/* -------------------------------------------------------------------------
+  *    Fast Quadratic / X-shading rasterization
+  *       Computes shade_surface at 6 points (3 vertices + 3 edge midpoints)
+  *       and uses quadratic interpolation for smooth results.
+  *       True quadratic: c = λ₀c₀ + λ₁c₁ + λ₂c₂ + 2λ₀λ₁cm₀₁ + 2λ₁λ₂cm₁₂ + 2λ₂λ₀cm₂₀
+  *       We compute barycentric coordinates via edge distances and evaluate per-pixel.
+  *     ------------------------------------------------------------------------- */
+ static void raster_triangle_quadratic(
+     vec3 v0, vec3 v1, vec3 v2,
+     vec3 n0, vec3 n1, vec3 n2,
+     vec3 l0, vec3 l1, vec3 l2,
+     const struct material_definition *mat) {
+
+     i32 x0,y0,x1,y1,x2,y2; real iw0,iw1,iw2;
+     project(v0,&x0,&y0,&iw0); project(v1,&x1,&y1,&iw1); project(v2,&x2,&y2,&iw2);
+
+     /* Sort vertices by Y and swap all associated values */
+     if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);swapv(&n0,&n1);swapv(&l0,&l1);}
+     if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&v1,&v2);swapv(&n1,&n2);swapv(&l1,&l2);}
+     if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);swapv(&n0,&n1);swapv(&l0,&l1);}
+
+     /* Compute shaded colors at vertices */
+     vec3 c0 = shade_surface(n0, v0, l0, mat);
+     vec3 c1 = shade_surface(n1, v1, l1, mat);
+     vec3 c2 = shade_surface(n2, v2, l2, mat);
+
+     /* Compute midpoints and their shaded colors */
+     vec3 cm01 = shade_surface(vec3_mul_scalar(vec3_add(n0, n1), 0.5f), 
+                             vec3_mul_scalar(vec3_add(v0, v1), 0.5f), 
+                             vec3_mul_scalar(vec3_add(l0, l1), 0.5f), mat);
+     vec3 cm12 = shade_surface(vec3_mul_scalar(vec3_add(n1, n2), 0.5f), 
+                             vec3_mul_scalar(vec3_add(v1, v2), 0.5f), 
+                             vec3_mul_scalar(vec3_add(l1, l2), 0.5f), mat);
+     vec3 cm20 = shade_surface(vec3_mul_scalar(vec3_add(n2, n0), 0.5f), 
+                             vec3_mul_scalar(vec3_add(v2, v0), 0.5f), 
+                             vec3_mul_scalar(vec3_add(l2, l0), 0.5f), mat);
+
+     /* Compute edge equations for barycentric coordinate calculation */
+     real f0x = y1 - y2, f0y = x2 - x1, f0_offset = x1*y2 - x2*y1;
+     real f1x = y2 - y0, f1y = x0 - x2, f1_offset = x2*y0 - x0*y2;
+     real f2x = y0 - y1, f2y = x1 - x0, f2_offset = x0*y1 - x1*y0;
+     real area = (f0x * x0 + f0y * y0 + f0_offset);
+     real iarea = 1.0f / (2.0f * area);
+
+     real dx0=0,diw0=0, dx1=0,diw1=0, dx2=0,diw2=0;
+     if(y1>y0){ real idy=1.0f/(y1-y0); dx0=(x1-x0)*idy; diw0=(iw1-iw0)*idy; }
+     if(y2>y1){ real idy=1.0f/(y2-y1); dx1=(x2-x1)*idy; diw1=(iw2-iw1)*idy; }
+     if(y2>y0){ real idy=1.0f/(y2-y0); dx2=(x2-x0)*idy; diw2=(iw2-iw0)*idy; }
+
+     i32 y_start=y0<0?0:y0, y_end=y2>fh?fh:y2;
+     i32 y,sx,ex,x; real siw,eiw,iw_step,iw;
+
+     for(y=y_start;y<y_end;y++){
+         real t=(y<y1)?(real)(y-y0):(real)(y-y1);
+         if(y<y1){ sx=x0+raster_round(dx0*t); ex=x0+raster_round(dx2*t); siw=iw0+diw0*t; eiw=iw0+diw2*t; }
+         else { sx=x1+raster_round(dx1*t); ex=x0+raster_round(dx2*(y-y0)); siw=iw1+diw1*t; eiw=iw0+diw2*(y-y0); }
+
+         if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);}
+         if(sx<0)sx=0; if(ex>fw)ex=fw;
+         if(ex<=sx) continue;
+         iw_step=(ex>sx)?(eiw-siw)/(ex-sx):0;
+
+         i32 row_base = y * fw;
+         iw=siw;
+
+for(x=sx;x<ex;x++){
+              i32 idx=row_base+x;
+              /* Compute barycentric coordinates via edge distances */
+              real l0_val = (f0x * x + f0y * y + f0_offset) * iarea;
+              real l1_val = (f1x * x + f1y * y + f1_offset) * iarea;
+              real l2_val = (f2x * x + f2y * y + f2_offset) * iarea;
+
+/* Clamp negatives to zero and renormalize to maintain quadratic interpolation energy */
+               l0_val = (l0_val < 0.0f) ? 0.0f : l0_val;
+               l1_val = (l1_val < 0.0f) ? 0.0f : l1_val;
+               l2_val = (l2_val < 0.0f) ? 0.0f : l2_val;
+               real sum = l0_val + l1_val + l2_val;
+               if (sum > 0.0f && sum != 1.0f) {
+                   l0_val /= sum; l1_val /= sum; l2_val /= sum;
+               }
+
+              /* True quadratic interpolation with squared vertex terms */
+              vec3 final_col;
+              final_col.color.r = l0_val*l0_val*c0.color.r + l1_val*l1_val*c1.color.r + l2_val*l2_val*c2.color.r
+                                + 2.0f*l0_val*l1_val*cm01.color.r + 2.0f*l1_val*l2_val*cm12.color.r + 2.0f*l2_val*l0_val*cm20.color.r;
+              final_col.color.g = l0_val*l0_val*c0.color.g + l1_val*l1_val*c1.color.g + l2_val*l2_val*c2.color.g
+                                + 2.0f*l0_val*l1_val*cm01.color.g + 2.0f*l1_val*l2_val*cm12.color.g + 2.0f*l2_val*l0_val*cm20.color.g;
+              final_col.color.b = l0_val*l0_val*c0.color.b + l1_val*l1_val*c1.color.b + l2_val*l2_val*c2.color.b
+                                + 2.0f*l0_val*l1_val*cm01.color.b + 2.0f*l1_val*l2_val*cm12.color.b + 2.0f*l2_val*l0_val*cm20.color.b;
+
+              if(iw > zbuf[idx]){
+                  zbuf[idx] = iw;
+                  fb[idx] = pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b);
+              }
+              iw+=iw_step;
+          }
      }
  }
 
 /* -------------------------------------------------------------------------
-     Internal triangle drawing (no clipping)
-     ------------------------------------------------------------------------- */
+       Internal triangle drawing (no clipping)
+       ------------------------------------------------------------------------- */
 static void draw_triangle_internal(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
@@ -981,6 +1080,9 @@ static void draw_triangle_internal(
             return;
         case SHADE_PHONG:
             raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+            return;
+        case SHADE_QUADRATIC:
+            raster_triangle_quadratic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
             return;
         default:
             face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
