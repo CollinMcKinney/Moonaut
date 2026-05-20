@@ -234,11 +234,69 @@ typedef struct transparent_tri
     const struct material_definition *mat;
     shading_mode mode;
     real  depth;
+    i32 min_x, max_x, min_y, max_y;
 } transparent_tri;
 
 static struct transparent_tri transparent_queue[MAX_TRANSPARENT];
 static i32 transparent_count = 0;
 static i32 in_transparent_pass = 0;
+
+/* Radix sort for transparent triangles by depth (back-to-front) */
+/* Uses 4 passes for 32-bit float key, ascending order (smallest iw = farthest first) */
+static void radix_sort_transparent(void)
+{
+    if (transparent_count <= 1) return;
+    
+    i32 *indices = (i32*)malloc(transparent_count * sizeof(i32));
+    i32 *temp = (i32*)malloc(transparent_count * sizeof(i32));
+    i32 i, pass;
+    
+    for (i = 0; i < transparent_count; i++) indices[i] = i;
+    
+    u32 count[256];
+    
+    for (pass = 0; pass < 4; pass++)
+    {
+        i32 shift = pass * 8;
+        for (i = 0; i < 256; i++) count[i] = 0;
+        
+        for (i = 0; i < transparent_count; i++)
+        {
+            u32 byte = (*((u32*)&transparent_queue[indices[i]].depth) >> shift) & 0xFF;
+            count[byte]++;
+        }
+        
+        {
+            i32 sum = 0;
+            for (i = 0; i < 256; i++)
+            {
+                i32 t = count[i];
+                count[i] = sum;
+                sum += t;
+            }
+        }
+        
+        for (i = 0; i < transparent_count; i++)
+        {
+            u32 byte = (*((u32*)&transparent_queue[indices[i]].depth) >> shift) & 0xFF;
+            temp[count[byte]++] = indices[i];
+        }
+        
+        {
+            i32 *swap = indices;
+            indices = temp;
+            temp = swap;
+        }
+    }
+    
+    struct transparent_tri *sorted = (struct transparent_tri*)malloc(transparent_count * sizeof(struct transparent_tri));
+    for (i = 0; i < transparent_count; i++) sorted[i] = transparent_queue[indices[i]];
+    for (i = 0; i < transparent_count; i++) transparent_queue[i] = sorted[i];
+    
+    free(indices);
+    free(temp);
+    free(sorted);
+}
 
 /* -------------------------------------------------------------------------
  *  Setter functions
@@ -291,22 +349,25 @@ static INLINE u32 pack_color_real(real r, real g, real b)
 }
 
 /* - Transparent pixel write - */
-/* Optimized: assumes transparent-only since opaque paths write directly */
+/* Optimized: uses fixed-point integer math for faster blending */
 static INLINE void write_transparent_pixel(i32 idx, real iw, vec3 color, real alpha)
 {
     if (iw <= 0.0f) return;
-    if (iw < zbuf[idx]) return;
-    vec3 col = color;
-    vec3 bg = vec3_init_from_3(
-        (real)((fb[idx] >> 16) & 0xFF) * (1.0f/255.0f),
-        (real)((fb[idx] >> 8) & 0xFF) * (1.0f/255.0f),
-        (real)(fb[idx] & 0xFF) * (1.0f/255.0f)
-    );
-    vec3 blended = vec3_add(vec3_mul_scalar(col, alpha), vec3_mul_scalar(bg, 1.0f - alpha));
-    u8 ur = (u8)(saturate(blended.color.r) * 255.0f + 0.5f);
-    u8 ug = (u8)(saturate(blended.color.g) * 255.0f + 0.5f);
-    u8 ub = (u8)(saturate(blended.color.b) * 255.0f + 0.5f);
-    fb[idx] = (u32)((ur << 16) | (ug << 8) | ub);
+    if (iw <= zbuf[idx]) return;
+    
+    u32 dst = fb[idx];
+    u8 dr = (u8)((dst >> 16) & 0xFF);
+    u8 dg = (u8)((dst >> 8) & 0xFF);
+    u8 db = (u8)(dst & 0xFF);
+    
+    u8 sr = color_to_u8(color.color.r);
+    u8 sg = color_to_u8(color.color.g);
+    u8 sb = color_to_u8(color.color.b);
+    u8 ia = (u8)(alpha * 255.0f + 0.5f);
+    
+    fb[idx] = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
+              ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
+              ((u32)((sb * ia + db * (255 - ia)) / 255));
 }
 
 /* -------------------------------------------------------------------------
@@ -363,6 +424,29 @@ static void render_shutdown(void)
     free(fb_back);  free(zbuf_back);
     fb_front = fb_back = fb = NULL;
     zbuf_front = zbuf_back = zbuf = NULL;
+}
+
+/* Check if screen-space bounding box is fully occluded by opaque geometry.
+    * min_iw: minimum inverse W (1/clip_w) of transparent triangle (farthest point).
+    * Returns 1 if triangle is completely behind opaque pixels (can be skipped), 0 otherwise. */
+static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw)
+{
+    i32 x, y, checked = 0;
+    for (y = y0; y <= y1; y += 4)
+    {
+        if (y < 0 || y >= fh) continue;
+        i32 row_base = y * fw;
+        for (x = x0; x <= x1; x += 4)
+        {
+            if (x < 0 || x >= fw) continue;
+            checked = 1;
+            real z = zbuf[row_base + x];
+            /* If no opaque (z==0) or opaque is behind farthest transparent point (z < min_iw),
+               then transparent is NOT fully occluded at this pixel */
+            if (z == 0 || z < min_iw) return 0;
+        }
+    }
+    return checked ? 1 : 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -1985,10 +2069,29 @@ static void draw_triangle_shaded(
     /* - Enqueue transparent triangles for later back‑to‑front sorting - */
     if ((mat->effects & EFFECT_ALPHA) && !in_transparent_pass && transparent_count < MAX_TRANSPARENT)
     {
-        /* Use squared distances for sorting to avoid sqrt */
-        real d0 = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
-        real d1 = vec3_dot(vec3_sub(v1, cam_eye), vec3_sub(v1, cam_eye));
-        real d2 = vec3_dot(vec3_sub(v2, cam_eye), vec3_sub(v2, cam_eye));
+        /* Project vertices to screen space for bounds calculation */
+        i32 sx0, sy0, sx1, sy1, sx2, sy2;
+        real iw0, iw1, iw2;
+        project(v0, &sx0, &sy0, &iw0);
+        project(v1, &sx1, &sy1, &iw1);
+        project(v2, &sx2, &sy2, &iw2);
+        
+        /* Clamp bounds to screen */
+        i32 min_x = sx0, max_x = sx0;
+        i32 min_y = sy0, max_y = sy0;
+        if (sx1 < min_x) min_x = sx1; if (sx1 > max_x) max_x = sx1;
+        if (sx2 < min_x) min_x = sx2; if (sx2 > max_x) max_x = sx2;
+        if (sy1 < min_y) min_y = sy1; if (sy1 > max_y) max_y = sy1;
+        if (sy2 < min_y) min_y = sy2; if (sy2 > max_y) max_y = sy2;
+        
+        /* Clip to screen bounds */
+        if (min_x < 0) min_x = 0;
+        if (max_x >= fw) max_x = fw - 1;
+        if (min_y < 0) min_y = 0;
+        if (max_y >= fh) max_y = fh - 1;
+        
+        /* Store projected bounds for early occlusion test.
+           Use MAX iw for conservative culling: if farthest point is behind opaque, skip. */
         transparent_queue[transparent_count].v0 = v0;
         transparent_queue[transparent_count].v1 = v1;
         transparent_queue[transparent_count].v2 = v2;
@@ -2000,7 +2103,11 @@ static void draw_triangle_shaded(
         transparent_queue[transparent_count].l2 = l2;
         transparent_queue[transparent_count].mat = mat;
         transparent_queue[transparent_count].mode = mat->mode;
-        transparent_queue[transparent_count].depth = (d0 + d1 + d2) * 0.33333333f;
+        transparent_queue[transparent_count].depth = (iw0 < iw1 ? (iw0 < iw2 ? iw0 : iw2) : (iw1 < iw2 ? iw1 : iw2));
+        transparent_queue[transparent_count].min_x = min_x;
+        transparent_queue[transparent_count].max_x = max_x;
+        transparent_queue[transparent_count].min_y = min_y;
+        transparent_queue[transparent_count].max_y = max_y;
         transparent_count++;
         return;   /* deferred */
     }
@@ -2038,29 +2145,25 @@ static void render_finish(void)
 {
     if (transparent_count > 0)
     {
-        /* Simple insertion sort – back to front (largest depth first) */
-        i32 i, j;
-        for (i = 1; i < transparent_count; i++)
-        {
-            j = i;
-            while (j > 0 && transparent_queue[j - 1].depth < transparent_queue[j].depth)
-            {
-                struct transparent_tri tmp;
-                tmp = transparent_queue[j - 1];
-                transparent_queue[j - 1] = transparent_queue[j];
-                transparent_queue[j] = tmp;
-                j--;
-            }
-        }
+        /* Radix sort back-to-front by depth */
+        radix_sort_transparent();
 
         in_transparent_pass = 1;
+        i32 i;
         for (i = 0; i < transparent_count; i++)
         {
-            draw_triangle_shaded(
-                transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
-                transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
-                transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
-                transparent_queue[i].mat);
+            /* Early occlusion test - skip if bbox is fully behind opaque geometry */
+            if (!is_bbox_occluded(
+                    transparent_queue[i].min_x, transparent_queue[i].min_y,
+                    transparent_queue[i].max_x, transparent_queue[i].max_y,
+                    transparent_queue[i].depth))
+            {
+                draw_triangle_shaded(
+                    transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                    transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                    transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                    transparent_queue[i].mat);
+            }
         }
 
         transparent_count = 0;
