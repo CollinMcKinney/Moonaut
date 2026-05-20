@@ -56,7 +56,8 @@ typedef enum material_effects {
     EFFECT_ROUGHNESS      = (1u << 18),
     EFFECT_FRINGE         = (1u << 19),
     EFFECT_POSTERIZE      = (1u << 20),
-    EFFECT_FOG            = (1u << 21)
+    EFFECT_FOG            = (1u << 21),
+    EFFECT_ALPHA          = (1u << 22)
 } material_effects;
 
 /* ----- Flags name table for material_effects ----- */
@@ -266,8 +267,8 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
 
 const struct material_definition DEFAULT_MATERIAL_WATER = {
     /*.mode                     =*/ SHADE_CUBIC,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
-                                    EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
+                                     EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.10f, 0.35f, 0.65f},
     /*.ambient_light_factor     =*/ 0.80f,
     /*.alpha                    =*/ 0.70f,
@@ -463,8 +464,8 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
-    /*.mode                     =*/ SHADE_CUBIC,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.mode                     =*/ SHADE_FLAT,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.85f, 0.95f, 1.00f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.3f,
@@ -582,7 +583,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
 
 const struct material_definition DEFAULT_MATERIAL_ICE = {
     /*.mode                     =*/ SHADE_CUBIC,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BUMP | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.65f, 0.85f, 0.95f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.85f,
@@ -703,13 +704,13 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
 
 const struct material_definition DEFAULT_MATERIAL_TOON = {
     /*.mode                     =*/ SHADE_CUBIC,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_SPECULAR_THRESH | EFFECT_POSTERIZE | EFFECT_CEL_SHADING,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_SPECULAR_THRESH | EFFECT_CEL_SHADING,
     /*.color                    =*/ {0.90f, 0.70f, 0.40f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 1.50f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
-    /*.cel_bands                =*/ 5,
+    /*.cel_bands                =*/ 3,
     /*.diffuse_wrap             =*/ 0,
     /*.oren_nayar_sigma         =*/ 0.00f,
     /*.minnaert_k               =*/ 0.00f,
@@ -737,12 +738,12 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     /*.iridescence_strength     =*/ 0.00f,
     /*.glitch_intensity         =*/ 0.00f,
     /*.fringe_intensity         =*/ 0.00f,
-    /*.posterize_levels         =*/ 8
+    /*.posterize_levels         =*/ 0
 };
 
 const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     /*.mode                     =*/ SHADE_CUBIC,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE,
     /*.color                    =*/ {0.20f, 0.60f, 0.80f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.55f,
@@ -782,7 +783,7 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
 
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     /*.mode                     =*/ SHADE_CUBIC,
-    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SATURATION,
+    /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SATURATION,
     /*.color                    =*/ {1.00f, 1.00f, 1.00f},
     /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 0.90f,
