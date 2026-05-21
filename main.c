@@ -23,6 +23,7 @@
 
 /* ---------- window management (RGFW) ---------- */
 #include "src/window.h"
+#include "src/input.h"
 
 /* ======================================================================
    FPS counter
@@ -100,7 +101,7 @@ int main(void)
         double frame_time;
         i32 step_count;
 
-        window_process_events();
+        input_process_events(window_get());
 
         now = app_time_seconds();
         frame_time = now - last_time;

@@ -17,6 +17,9 @@ extern "C" {
 static RGFW_window *g_window = NULL;
 static int g_window_inited = 0;
 
+/* Expose window for input.c */
+static RGFW_window* window_get(void) { return g_window; }
+
 /* Initialize the window with RGFW
  * title: window title
  * w, h: width and height
@@ -31,6 +34,8 @@ static int window_init(const char *title, int w, int h)
         return -1;
     }
     RGFW_window_setExitKey(g_window, RGFW_keyNULL);
+    g_window->internal.lastMouseX = w / 2;
+    g_window->internal.lastMouseY = h / 2;
     g_window_inited = 1;
     return 0;
 }
@@ -42,14 +47,6 @@ static int is_running(void)
 {
     if (!g_window_inited || !g_window) return 0;
     return !RGFW_window_shouldClose(g_window);
-}
-
-/* Process events - call this once per frame */
-static void window_process_events(void)
-{
-    RGFW_event event;
-    while (RGFW_window_checkEvent(g_window, &event)) {
-    }
 }
 
 /* Present the framebuffer to the window using RGFW surface blit
