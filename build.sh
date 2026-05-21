@@ -4,7 +4,7 @@ mkdir -p ./build
 
 if [ "$(uname -s)" = "Linux" ]; then
     OUTPUT="./build/Moonaut"
-    LIBS="-lm -lX11"
+    LIBS="-lm -lX11 -lXrandr -ldl -lpthread"
 else
     OUTPUT="./build/Moonaut.exe"
     LIBS="-lm -lgdi32"
