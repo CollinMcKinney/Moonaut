@@ -7,7 +7,7 @@
 #define RGFW_IMPLEMENTATION
 
 #include "rasterizer.h"
-#include "../rgfw/RGFW.h"
+#include "../libs/rgfw/RGFW.h"
 
 #ifdef __cplusplus
 extern "C" {
