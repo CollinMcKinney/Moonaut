@@ -4,15 +4,15 @@ mkdir -p ./build
 
 if [ "$(uname -s)" = "Linux" ]; then
     OUTPUT="./build/Moonaut"
-    LIBS="-lm -lX11 -lXrandr -ldl -lpthread"
+    LIBS=(-lm -lX11 -lXrandr -ldl -lpthread)
 else
     OUTPUT="./build/Moonaut.exe"
-    LIBS="-lm -lgdi32"
+    LIBS=(-lm -lgdi32)
 fi
 
-GCC_OPTS="-std=gnu99 -O3 -ffast-math -march=native"
+GCC_OPTS=(-std=gnu99 -O3 -ffast-math -march=native)
 
-gcc $GCC_OPTS \
+gcc "${GCC_OPTS[@]}" \
   -I lua-5.5.0/src -o $OUTPUT main.c \
   lua-5.5.0/src/lapi.c \
   lua-5.5.0/src/lauxlib.c \
@@ -46,6 +46,6 @@ gcc $GCC_OPTS \
   lua-5.5.0/src/lutf8lib.c \
   lua-5.5.0/src/lvm.c \
   lua-5.5.0/src/lzio.c \
-  $LIBS -Wno-multichar 2>&1 | grep -E "undefined|error|warning" | head -30
+  "${LIBS[@]}" -Wno-multichar 2>&1 | grep -E "undefined|error|warning" | head -30
 
 $OUTPUT
