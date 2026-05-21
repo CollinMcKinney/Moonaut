@@ -1,8 +1,19 @@
 #!/bin/bash
 
-gcc -ansi \
-  -O3 -ffast-math -flto -flto-partition=one -march=native \
-  -I lua-5.5.0/src -o ./build/Moonaut.exe main.c \
+mkdir -p ./build
+
+if [ "$(uname -s)" = "Linux" ]; then
+    OUTPUT="./build/Moonaut"
+    LIBS="-lm -lX11"
+else
+    OUTPUT="./build/Moonaut.exe"
+    LIBS="-lm -lgdi32"
+fi
+
+GCC_OPTS="-std=gnu99 -O3 -ffast-math -march=native"
+
+gcc $GCC_OPTS \
+  -I lua-5.5.0/src -o $OUTPUT main.c \
   lua-5.5.0/src/lapi.c \
   lua-5.5.0/src/lauxlib.c \
   lua-5.5.0/src/lbaselib.c \
@@ -35,6 +46,6 @@ gcc -ansi \
   lua-5.5.0/src/lutf8lib.c \
   lua-5.5.0/src/lvm.c \
   lua-5.5.0/src/lzio.c \
-  -lm -lgdi32 -Wno-multichar 2>&1 | grep -E "undefined|error|warning" | head -30
+  $LIBS -Wno-multichar 2>&1 | grep -E "undefined|error|warning" | head -30
 
-./build/Moonaut.exe
+$OUTPUT

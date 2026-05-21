@@ -398,12 +398,13 @@ static i32 render_init(i32 w, i32 h)
 
 static void render_clear(u8 r, u8 g, u8 b)
 {
+    if (!fb || !zbuf) return;
     u32 col = pack_color(r, g, b);
     u32 *fb32 = (u32*)fb;
     real *zb = (real*)zbuf;
     i32 n = fb_pitch * fh;  /* Use pitch-aligned size */
     i32 i;
-    for (i = 0; i < n; i += 4)
+    for (i = 0; i + 3 < n; i += 4)
     {
         fb32[i] = col;
         fb32[i+1] = col;
@@ -413,6 +414,12 @@ static void render_clear(u8 r, u8 g, u8 b)
         zb[i+1] = 0;
         zb[i+2] = 0;
         zb[i+3] = 0;
+    }
+    /* Handle any remaining pixels */
+    while (i < n) {
+        fb32[i] = col;
+        zb[i] = 0;
+        i++;
     }
 }
 
@@ -2171,16 +2178,18 @@ static void render_finish(void)
     }
 
     /* Swap buffers – present the back buffer, make the old front buffer the new back */
-    u32  *tmp_fb   = fb_front;
-    real *tmp_zbuf = zbuf_front;
-    fb_front   = fb_back;
-    zbuf_front = zbuf_back;
-    fb_back    = tmp_fb;
-    zbuf_back  = tmp_zbuf;
+    if (fb_front && fb_back) {
+        u32  *tmp_fb   = fb_front;
+        real *tmp_zbuf = zbuf_front;
+        fb_front   = fb_back;
+        zbuf_front = zbuf_back;
+        fb_back    = tmp_fb;
+        zbuf_back  = tmp_zbuf;
 
-    /* fb / zbuf now point to the new back buffer */
-    fb   = fb_back;
-    zbuf = zbuf_back;
+        /* fb / zbuf now point to the new back buffer */
+        fb   = fb_back;
+        zbuf = zbuf_back;
+    }
 }
 
 #ifdef __cplusplus

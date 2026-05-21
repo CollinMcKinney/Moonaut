@@ -2,13 +2,14 @@
  * main.c – Moonaut Engine demo (fixed 32-bit framebuffer)
  *
  * Compile (Windows):
- *   gcc -ansi -o engine.exe main.c src\lua.c -lm -lgdi32
+ *   gcc -std=gnu99 -o engine.exe main.c src\lua.c -lm -lgdi32
  * Compile (Linux):
- *   gcc -ansi -o engine main.c src/lua.c -lm -lX11
+ *   gcc -std=gnu99 -o engine main.c src/lua.c -lm -lX11
  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 /* ---------- platform windowing (must be before engine includes) ---------- */
 #ifdef _WIN32
@@ -67,7 +68,7 @@ static void win32_present(const u32 *fb) {
     bmi.bmiHeader.biWidth       = g_width;
     bmi.bmiHeader.biHeight      = -g_height;   /* top-down */
     bmi.bmiHeader.biPlanes      = 1;
-    bmi.bmiHeader.biBitCount    = 32;          /* <-- FIXED */
+    bmi.bmiHeader.biBitCount    = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
     bmi.bmiHeader.biSizeImage   = g_width * g_height * 4;
 
@@ -104,11 +105,22 @@ static int win32_pump(void) {
 static Display *dpy;
 static Window   win;
 static GC       gc;
-static XImage  *ximage;
 static int      g_width, g_height;
+static int g_window_inited = 0;
 
 static void x11_init(const char *title, int w, int h) {
+    const char *display = getenv("DISPLAY");
+    if (!display || !display[0]) {
+        fprintf(stderr, "No X11 DISPLAY environment variable set\n");
+        g_window_inited = 0;
+        return;
+    }
     dpy = XOpenDisplay(NULL);
+    if (!dpy) {
+        fprintf(stderr, "Cannot open X11 display\n");
+        g_window_inited = 0;
+        return;
+    }
     int screen = DefaultScreen(dpy);
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, w, h, 1, 0, 0);
@@ -122,16 +134,27 @@ static void x11_init(const char *title, int w, int h) {
     g_height = h;
 
     XFlush(dpy);
+    g_window_inited = 1;
 }
 
-static void x11_present(const uint32_t *fb) {
-    ximage = XCreateImage(
+static void x11_present(const u32 *fb) {
+    if (!dpy) return;
+    
+    int screen = DefaultScreen(dpy);
+    Visual *visual = DefaultVisual(dpy, screen);
+    
+    /* Create a separate buffer for X11 since XPutImage may modify the image data */
+    u32 *x11_fb = (u32*)malloc(g_width * g_height * sizeof(u32));
+    if (!x11_fb) return;
+    memcpy(x11_fb, fb, g_width * g_height * sizeof(u32));
+    
+    XImage *ximage = XCreateImage(
         dpy,
-        DefaultVisual(dpy, DefaultScreen(dpy)),
+        visual,
         24,
         ZPixmap,
         0,
-        (char*)fb,
+        (char*)x11_fb,
         g_width,
         g_height,
         32,
@@ -144,6 +167,7 @@ static void x11_present(const uint32_t *fb) {
 }
 
 static int x11_pump(void) {
+    if (!dpy) return 0;
     XEvent ev;
     while (XPending(dpy)) {
         XNextEvent(dpy, &ev);
@@ -157,21 +181,21 @@ static int x11_pump(void) {
    FPS counter
    ====================================================================== */
 static double app_time_seconds(void) {
-    #ifdef _WIN32
-        static LARGE_INTEGER freq;
-        LARGE_INTEGER now;
-        if (freq.QuadPart == 0) {
-            QueryPerformanceFrequency(&freq);
-        }
-        QueryPerformanceCounter(&now);
-        return (double)now.QuadPart / (double)freq.QuadPart;
-    #elif defined(__linux__)
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
-    #else
-        return (double)clock() / (double)CLOCKS_PER_SEC;
-    #endif
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (freq.QuadPart == 0) {
+        QueryPerformanceFrequency(&freq);
+    }
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+#elif defined(__linux__)
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+#else
+    return (double)clock() / (double)CLOCKS_PER_SEC;
+#endif
 }
 
 static void print_fps(double now) {
@@ -183,41 +207,42 @@ static void print_fps(double now) {
     frames++;
     {
         double elapsed = now - last;
-    if (elapsed >= 1.0) {
-        printf("FPS: %d\n", (int)(frames / elapsed));
-        frames = 0;
-        last = now;
-    }
+        if (elapsed >= 1.0) {
+            printf("FPS: %d\n", (int)(frames / elapsed));
+            frames = 0;
+            last = now;
+        }
     }
 }
 
 void window_init(const char *title, int w, int h) {
-        /* create window */
-    #ifdef _WIN32
-        win32_init(title, w, h);
-    #elif defined(__linux__)
-        x11_init(title, w, h);
-    #endif
+#ifdef _WIN32
+    win32_init(title, w, h);
+    g_window_inited = 1;
+#elif defined(__linux__)
+    x11_init(title, w, h);
+#endif
 }
 
 int is_running(){
     int running;
-    #ifdef _WIN32
-            running = win32_pump();
-    #elif defined(__linux__)
-            running = x11_pump();
-    #else
-            running = 1;
-    #endif
+#ifdef _WIN32
+    running = win32_pump();
+#elif defined(__linux__)
+    running = x11_pump();
+#else
+    running = 1;
+#endif
+    if (!g_window_inited) running = 0;
     return running;
 }
 
-void present_frame() {
-    #ifdef _WIN32
-        win32_present(fb);
-    #elif defined(__linux__)
-        x11_present(fb);
-    #endif   
+void present_frame(const u32 *fb) {
+#ifdef _WIN32
+    win32_present(fb);
+#elif defined(__linux__)
+    x11_present(fb);
+#endif   
 }
 
 /* ======================================================================
@@ -237,9 +262,12 @@ int main(void) {
         return 1;
     }
 
-    tag_register_default_all();
+    if (!g_window_inited) {
+        fprintf(stderr, "Failed to initialise window\n");
+        return 1;
+    }
 
-    fprintf(stderr, "Registered defaults\n");
+    tag_register_default_all();
 
     scenario_world world;
     scenario_init(&world, width, height);
@@ -279,14 +307,20 @@ int main(void) {
         render_set_time((real)now);
         scenario_render(&world);
 
-        const u32 *fb = render_get_fb(); /* <-- FIXED TYPE */
-
-        present_frame();
+        const u32 *fb = render_get_fb();
+        present_frame(fb);
 
         print_fps(now);
     }
 
     scenario_shutdown(&world);
     render_shutdown();
+
+#ifdef __linux__
+    if (dpy) {
+        XCloseDisplay(dpy);
+    }
+#endif
+
     return 0;
 }
