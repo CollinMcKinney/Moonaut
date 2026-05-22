@@ -20,9 +20,9 @@
 #undef S
 #endif
 
-#include "../lua-5.5.0/src/lua.h"
-#include "../lua-5.5.0/src/lauxlib.h"
-#include "../lua-5.5.0/src/lualib.h"
+#include "../libs/lua-5.5.0/src/lua.h"
+#include "../libs/lua-5.5.0/src/lauxlib.h"
+#include "../libs/lua-5.5.0/src/lualib.h"
 
 #ifdef __cplusplus
 extern "C" {
