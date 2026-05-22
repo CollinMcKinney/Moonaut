@@ -226,10 +226,6 @@ STATIC_ASSERT(sizeof(i16) == 0x2, i16_size_wrong);
     #error "No 32‑bit unsigned integer type found"
 #endif
 STATIC_ASSERT(sizeof(u32) == 0x4, u32_size_wrong);
-typedef u32 flags32;
-STATIC_ASSERT(sizeof(flags32) == 0x4, flags32_size_wrong);
-typedef u32 string_id;
-STATIC_ASSERT(sizeof(string_id) == 0x4, string_id_size_wrong);
 
 /* ================================================================== *
  *  32‑bit signed  -  i32
