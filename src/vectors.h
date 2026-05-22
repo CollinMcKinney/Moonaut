@@ -3,6 +3,10 @@
 
 #include <math.h>
 #include <limits.h>
+#include <float.h>
+
+
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,20 +45,17 @@ extern "C" {
   #endif
 #endif
 
-/* -------------------------------------------------------------------------
-    User configuration - define ONE of these before including this header.
-    By default we use 32‑bit float.
-   ------------------------------------------------------------------------- */
-#if defined(VECTORS_REAL32_IS_DOUBLE)
-    #define VECTORS_REAL32 double
-    #define VECTORS_REAL_IS_FLOAT 0
+/*-------------------------------------------------------------------------
+    Detect which floating point type is standard 32-bits.
+  -------------------------------------------------------------------------*/
+#if FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_DIG == 6 && FLT_MAX_10_EXP == 38
+    /* The float type is likely 32-bit IEEE 754 */
+    typedef float real;
+#elif DBL_RADIX == 2 && DBL_MANT_DIG == 24 && DBL_DIG == 6 && DBL_MAX_10_EXP == 38
+    typedef double real;
 #else
-    /* default to float if VECTORS_REAL32_IS_FLOAT is defined or nothing is defined */
-    #define VECTORS_REAL32 float
-    #define VECTORS_REAL_IS_FLOAT 1
+    #error
 #endif
-
-typedef VECTORS_REAL32 real;
 STATIC_ASSERT(sizeof(real) == 0x4, real_size_wrong);
 
 /* -------------------------------------------------------------------------
