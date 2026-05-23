@@ -1834,9 +1834,55 @@ static void raster_triangle_phong(
     dwpw0 = vec3_init_from_3(0, 0, 0);
     dwpw1 = vec3_init_from_3(0, 0, 0);
     dwpw2 = vec3_init_from_3(0, 0, 0);
-    dlpw0 = vec3_init_from_3(0, 0, 0);
+dlpw0 = vec3_init_from_3(0, 0, 0);
     dlpw1 = vec3_init_from_3(0, 0, 0);
-dlpw2 = vec3_init_from_3(0, 0, 0);
+    dlpw2 = vec3_init_from_3(0, 0, 0);
+
+    if (y1 > y0)
+    {
+        real idy = 1.0f / (y1 - y0);
+        dx0 = (x1 - x0) * idy;
+        diw0 = (iw1 - iw0) * idy;
+        dnw0.position.x = (n1w.position.x - n0w.position.x) * idy;
+        dnw0.position.y = (n1w.position.y - n0w.position.y) * idy;
+        dnw0.position.z = (n1w.position.z - n0w.position.z) * idy;
+        dwpw0.position.x = (wp1w.position.x - wp0w.position.x) * idy;
+        dwpw0.position.y = (wp1w.position.y - wp0w.position.y) * idy;
+        dwpw0.position.z = (wp1w.position.z - wp0w.position.z) * idy;
+        dlpw0.position.x = (lp1w.position.x - lp0w.position.x) * idy;
+        dlpw0.position.y = (lp1w.position.y - lp0w.position.y) * idy;
+        dlpw0.position.z = (lp1w.position.z - lp0w.position.z) * idy;
+    }
+    if (y2 > y1)
+    {
+        real idy = 1.0f / (y2 - y1);
+        dx1 = (x2 - x1) * idy;
+        diw1 = (iw2 - iw1) * idy;
+        dnw1.position.x = (n2w.position.x - n1w.position.x) * idy;
+        dnw1.position.y = (n2w.position.y - n1w.position.y) * idy;
+        dnw1.position.z = (n2w.position.z - n1w.position.z) * idy;
+        dwpw1.position.x = (wp2w.position.x - wp1w.position.x) * idy;
+        dwpw1.position.y = (wp2w.position.y - wp1w.position.y) * idy;
+        dwpw1.position.z = (wp2w.position.z - wp1w.position.z) * idy;
+        dlpw1.position.x = (lp2w.position.x - lp1w.position.x) * idy;
+        dlpw1.position.y = (lp2w.position.y - lp1w.position.y) * idy;
+        dlpw1.position.z = (lp2w.position.z - lp1w.position.z) * idy;
+    }
+    if (y2 > y0)
+    {
+        real idy = 1.0f / (y2 - y0);
+        dx2 = (x2 - x0) * idy;
+        diw2 = (iw2 - iw0) * idy;
+        dnw2.position.x = (n2w.position.x - n0w.position.x) * idy;
+        dnw2.position.y = (n2w.position.y - n0w.position.y) * idy;
+        dnw2.position.z = (n2w.position.z - n0w.position.z) * idy;
+        dwpw2.position.x = (wp2w.position.x - wp0w.position.x) * idy;
+        dwpw2.position.y = (wp2w.position.y - wp0w.position.y) * idy;
+        dwpw2.position.z = (wp2w.position.z - wp0w.position.z) * idy;
+        dlpw2.position.x = (lp2w.position.x - lp0w.position.x) * idy;
+        dlpw2.position.y = (lp2w.position.y - lp0w.position.y) * idy;
+        dlpw2.position.z = (lp2w.position.z - lp0w.position.z) * idy;
+    }
 
     i32 y_start = y0 < bounds->y0 ? bounds->y0 : y0;
     i32 y_end = y2 > bounds->y1 ? bounds->y1 : y2;
@@ -1940,56 +1986,49 @@ dlpw2 = vec3_init_from_3(0, 0, 0);
 tmp = lps_z;
              lps_z = lpe_z;
              lpe_z = tmp;
-         }
-         /* Compute iw_step first so we can adjust siw when clipping */
-         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
-         /* Clip to tile bounds and adjust depth interpolation */
-         if (sx < bounds->x0)
-         {
-             siw += (bounds->x0 - sx) * iw_step;
-             /* Adjust normal interpolation */
-             nws_x += (bounds->x0 - sx) * (nwe_x - nws_x) / (ex - sx);
-             nws_y += (bounds->x0 - sx) * (nwe_y - nws_y) / (ex - sx);
-             nws_z += (bounds->x0 - sx) * (nwe_z - nws_z) / (ex - sx);
-             /* Adjust world pos interpolation */
-             wps_x += (bounds->x0 - sx) * (wpe_x - wps_x) / (ex - sx);
-             wps_y += (bounds->x0 - sx) * (wpe_y - wps_y) / (ex - sx);
-             wps_z += (bounds->x0 - sx) * (wpe_z - wps_z) / (ex - sx);
-             /* Adjust local pos interpolation */
-             lps_x += (bounds->x0 - sx) * (lpe_x - lps_x) / (ex - sx);
-             lps_y += (bounds->x0 - sx) * (lpe_y - lps_y) / (ex - sx);
-             lps_z += (bounds->x0 - sx) * (lpe_z - lps_z) / (ex - sx);
-             sx = bounds->x0;
-         }
-         if (ex > bounds->x1) ex = bounds->x1;
-         if (ex <= sx) continue;
+}
+           /* Compute iw_step first so we can adjust siw when clipping */
+           iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+           /* Compute per-pixel steps first for interpolation adjustment */
+           if (ex > sx)
+           {
+               /* Compute per-pixel step values - SoA sequential access */
+               dnw_step_x = (nwe_x - nws_x) / (ex - sx);
+               dnw_step_y = (nwe_y - nws_y) / (ex - sx);
+               dnw_step_z = (nwe_z - nws_z) / (ex - sx);
+               dwp_step_x = (wpe_x - wps_x) / (ex - sx);
+               dwp_step_y = (wpe_y - wps_y) / (ex - sx);
+               dwp_step_z = (wpe_z - wps_z) / (ex - sx);
+               dlp_step_x = (lpe_x - lps_x) / (ex - sx);
+               dlp_step_y = (lpe_y - lps_y) / (ex - sx);
+               dlp_step_z = (lpe_z - lps_z) / (ex - sx);
+           }
+           else
+           {
+               dnw_step_x = dnw_step_y = dnw_step_z = 0;
+               dwp_step_x = dwp_step_y = dwp_step_z = 0;
+               dlp_step_x = dlp_step_y = dlp_step_z = 0;
+           }
+           /* Clip to tile bounds and adjust interpolants */
+           if (sx < bounds->x0)
+           {
+               i32 clipped = bounds->x0 - sx;
+               siw += clipped * iw_step;
+               nws_x += clipped * dnw_step_x;
+               nws_y += clipped * dnw_step_y;
+               nws_z += clipped * dnw_step_z;
+               wps_x += clipped * dwp_step_x;
+               wps_y += clipped * dwp_step_y;
+               wps_z += clipped * dwp_step_z;
+               lps_x += clipped * dlp_step_x;
+               lps_y += clipped * dlp_step_y;
+               lps_z += clipped * dlp_step_z;
+               sx = bounds->x0;
+           }
+           if (ex > bounds->x1) ex = bounds->x1;
+           if (ex <= sx) continue;
 
-         if (ex > sx)
-        {
-            /* Compute per-pixel step values - SoA sequential access */
-            dnw_step_x = (nwe_x - nws_x) / (ex - sx);
-            dnw_step_y = (nwe_y - nws_y) / (ex - sx);
-            dnw_step_z = (nwe_z - nws_z) / (ex - sx);
-            dwp_step_x = (wpe_x - wps_x) / (ex - sx);
-            dwp_step_y = (wpe_y - wps_y) / (ex - sx);
-            dwp_step_z = (wpe_z - wps_z) / (ex - sx);
-            dlp_step_x = (lpe_x - lps_x) / (ex - sx);
-            dlp_step_y = (lpe_y - lps_y) / (ex - sx);
-            dlp_step_z = (lpe_z - lps_z) / (ex - sx);
-        }
-        else
-        {
-            dnw_step_x = 0;
-            dnw_step_y = 0;
-            dnw_step_z = 0;
-            dwp_step_x = 0;
-            dwp_step_y = 0;
-            dwp_step_z = 0;
-            dlp_step_x = 0;
-            dlp_step_y = 0;
-            dlp_step_z = 0;
-        }
-        iw = siw;
+           iw = siw;
         nw_val_x = nws_x;
         nw_val_y = nws_y;
         nw_val_z = nws_z;
