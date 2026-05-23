@@ -1834,7 +1834,7 @@ static void raster_triangle_phong(
     dwpw0 = vec3_init_from_3(0, 0, 0);
     dwpw1 = vec3_init_from_3(0, 0, 0);
     dwpw2 = vec3_init_from_3(0, 0, 0);
-dlpw0 = vec3_init_from_3(0, 0, 0);
+    dlpw0 = vec3_init_from_3(0, 0, 0);
     dlpw1 = vec3_init_from_3(0, 0, 0);
     dlpw2 = vec3_init_from_3(0, 0, 0);
 
@@ -1983,52 +1983,54 @@ dlpw0 = vec3_init_from_3(0, 0, 0);
             tmp = lps_y;
             lps_y = lpe_y;
             lpe_y = tmp;
-tmp = lps_z;
-             lps_z = lpe_z;
-             lpe_z = tmp;
-}
-           /* Compute iw_step first so we can adjust siw when clipping */
-           iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
-           /* Compute per-pixel steps first for interpolation adjustment */
-           if (ex > sx)
-           {
-               /* Compute per-pixel step values - SoA sequential access */
-               dnw_step_x = (nwe_x - nws_x) / (ex - sx);
-               dnw_step_y = (nwe_y - nws_y) / (ex - sx);
-               dnw_step_z = (nwe_z - nws_z) / (ex - sx);
-               dwp_step_x = (wpe_x - wps_x) / (ex - sx);
-               dwp_step_y = (wpe_y - wps_y) / (ex - sx);
-               dwp_step_z = (wpe_z - wps_z) / (ex - sx);
-               dlp_step_x = (lpe_x - lps_x) / (ex - sx);
-               dlp_step_y = (lpe_y - lps_y) / (ex - sx);
-               dlp_step_z = (lpe_z - lps_z) / (ex - sx);
-           }
-           else
-           {
-               dnw_step_x = dnw_step_y = dnw_step_z = 0;
-               dwp_step_x = dwp_step_y = dwp_step_z = 0;
-               dlp_step_x = dlp_step_y = dlp_step_z = 0;
-           }
-           /* Clip to tile bounds and adjust interpolants */
-           if (sx < bounds->x0)
-           {
-               i32 clipped = bounds->x0 - sx;
-               siw += clipped * iw_step;
-               nws_x += clipped * dnw_step_x;
-               nws_y += clipped * dnw_step_y;
-               nws_z += clipped * dnw_step_z;
-               wps_x += clipped * dwp_step_x;
-               wps_y += clipped * dwp_step_y;
-               wps_z += clipped * dwp_step_z;
-               lps_x += clipped * dlp_step_x;
-               lps_y += clipped * dlp_step_y;
-               lps_z += clipped * dlp_step_z;
-               sx = bounds->x0;
-           }
-           if (ex > bounds->x1) ex = bounds->x1;
-           if (ex <= sx) continue;
+            tmp = lps_z;
+            lps_z = lpe_z;
+            lpe_z = tmp;
+        }
+        
+        /* Compute iw_step first so we can adjust siw when clipping */
+        iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Compute per-pixel steps first for interpolation adjustment */
+        if (ex > sx)
+        {
+            /* Compute per-pixel step values - SoA sequential access */
+            dnw_step_x = (nwe_x - nws_x) / (ex - sx);
+            dnw_step_y = (nwe_y - nws_y) / (ex - sx);
+            dnw_step_z = (nwe_z - nws_z) / (ex - sx);
+            dwp_step_x = (wpe_x - wps_x) / (ex - sx);
+            dwp_step_y = (wpe_y - wps_y) / (ex - sx);
+            dwp_step_z = (wpe_z - wps_z) / (ex - sx);
+            dlp_step_x = (lpe_x - lps_x) / (ex - sx);
+            dlp_step_y = (lpe_y - lps_y) / (ex - sx);
+            dlp_step_z = (lpe_z - lps_z) / (ex - sx);
+        }
+        else
+        {
+            dnw_step_x = dnw_step_y = dnw_step_z = 0;
+            dwp_step_x = dwp_step_y = dwp_step_z = 0;
+            dlp_step_x = dlp_step_y = dlp_step_z = 0;
+        }
+        /* Clip to tile bounds and adjust interpolants */
+        if (sx < bounds->x0)
+        {
+            i32 clipped = bounds->x0 - sx;
+            siw += clipped * iw_step;
+            nws_x += clipped * dnw_step_x;
+            nws_y += clipped * dnw_step_y;
+            nws_z += clipped * dnw_step_z;
+            wps_x += clipped * dwp_step_x;
+            wps_y += clipped * dwp_step_y;
+            wps_z += clipped * dwp_step_z;
+            lps_x += clipped * dlp_step_x;
+            lps_y += clipped * dlp_step_y;
+            lps_z += clipped * dlp_step_z;
+            sx = bounds->x0;
+        }
 
-           iw = siw;
+        if (ex > bounds->x1) ex = bounds->x1;
+        if (ex <= sx) continue;
+
+        iw = siw;
         nw_val_x = nws_x;
         nw_val_y = nws_y;
         nw_val_z = nws_z;
