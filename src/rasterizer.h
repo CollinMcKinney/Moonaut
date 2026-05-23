@@ -20,7 +20,13 @@ extern "C" {
 /* -------------------------------------------------------------------------
   *  Tile-based multithreading (forward declarations)
   *  ------------------------------------------------------------------------- */
-#define TILE_SIZE 64
+#define TILE_SIZE 128
+
+/* Minimum tiles per thread for multithreading to be beneficial */
+#define MIN_TILES_PER_THREAD 4
+
+/* Maximum triangles per tile before we consider splitting work */
+#define MAX_TRIS_PER_TILE 1024
 
 typedef struct tile_tri {
     vec3 v0, v1, v2;
@@ -30,8 +36,6 @@ typedef struct tile_tri {
     shading_mode mode;
     real depth;
 } tile_tri;
-
-#define MAX_TRIS_PER_TILE 512
 
 typedef struct tile_bin {
     tile_tri tris[MAX_TRIS_PER_TILE];
@@ -50,6 +54,10 @@ typedef struct {
     i32 tile_x, tile_y;
     i32 tile_w, tile_h;
 } tile_job;
+
+/* Pre-allocated job pool to avoid malloc per tile */
+static tile_job *job_pool = NULL;
+static i32 job_pool_size = 0;
 
 /* Tile clipping bounds structure */
 typedef struct {
@@ -496,12 +504,19 @@ static void render_shutdown(void)
     * Returns 1 if triangle is completely behind opaque pixels (can be skipped), 0 otherwise. */
 static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw, const tile_bounds *bounds)
 {
+    i32 width = x1 - x0;
+    i32 height = y1 - y0;
+    
+    /* Adaptive step size: check more frequently for small triangles */
+    i32 step_x = (width > 16) ? 4 : 1;
+    i32 step_y = (height > 16) ? 4 : 1;
+    
     i32 x, y, checked = 0;
-    for (y = y0; y <= y1; y += 4)
+    for (y = y0; y <= y1; y += step_y)
     {
         if (y < bounds->y0 || y >= bounds->y1) continue;
         i32 row_base = y * fw;
-        for (x = x0; x <= x1; x += 4)
+        for (x = x0; x <= x1; x += step_x)
         {
             if (x < bounds->x0 || x >= bounds->x1) continue;
             checked = 1;
@@ -2363,8 +2378,6 @@ static void render_tile(void *arg)
                 break;
         }
     }
-    
-    free(job);
 }
 
 /* Initialize tile binning system */
@@ -2407,6 +2420,12 @@ static void tile_shutdown(void)
         free(tile_bins);
         tile_bins = NULL;
     }
+    if (job_pool)
+    {
+        free(job_pool);
+        job_pool = NULL;
+        job_pool_size = 0;
+    }
     tile_thread_count = 0;
 }
 
@@ -2444,9 +2463,10 @@ static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
     
     for (i32 ty = tile_min_y; ty <= tile_max_y; ty++)
     {
+        i32 base_idx = ty * num_tiles_x;
         for (i32 tx = tile_min_x; tx <= tile_max_x; tx++)
         {
-            i32 idx = ty * num_tiles_x + tx;
+            i32 idx = base_idx + tx;
             if (idx >= total_tiles) continue;
             
             tile_bin *bin = &tile_bins[idx];
@@ -2466,21 +2486,58 @@ static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
 /* Render all tiles in parallel using thread pool */
 static void tile_render_all(void)
 {
+    /* Count tiles with actual triangles for efficient work distribution */
+    i32 active_tiles = 0;
     for (i32 i = 0; i < total_tiles; i++)
     {
-        i32 ty = i / num_tiles_x;
-        i32 tx = i % num_tiles_x;
-        
-        tile_job *job = (tile_job*)malloc(sizeof(tile_job));
-        if (!job) continue;
-        
-        job->tile_idx = i;
-        job->tile_x = tx * TILE_SIZE;
-        job->tile_y = ty * TILE_SIZE;
-        job->tile_w = (tx == num_tiles_x - 1) ? (fw - job->tile_x) : TILE_SIZE;
-        job->tile_h = (ty == num_tiles_y - 1) ? (fh - job->tile_y) : TILE_SIZE;
-        
-        thpool_add_work(tile_threadpool, render_tile, job);
+        if (tile_bins[i].tri_count > 0) active_tiles++;
+    }
+    
+    /* If not enough active tiles, render sequentially to avoid thread overhead */
+    if (active_tiles < MIN_TILES_PER_THREAD * tile_thread_count)
+    {
+        for (i32 i = 0; i < total_tiles; i++)
+        {
+            if (tile_bins[i].tri_count > 0)
+            {
+                tile_job job;
+                job.tile_idx = i;
+                job.tile_x = (i % num_tiles_x) * TILE_SIZE;
+                job.tile_y = (i / num_tiles_x) * TILE_SIZE;
+                job.tile_w = ((i % num_tiles_x) == num_tiles_x - 1) ? (fw - job.tile_x) : TILE_SIZE;
+                job.tile_h = ((i / num_tiles_x) == num_tiles_y - 1) ? (fh - job.tile_y) : TILE_SIZE;
+                render_tile(&job);
+            }
+        }
+        return;
+    }
+    
+    /* Allocate job pool if needed */
+    if (job_pool_size < total_tiles)
+    {
+        if (job_pool) free(job_pool);
+        job_pool = (tile_job*)malloc(total_tiles * sizeof(tile_job));
+        job_pool_size = total_tiles;
+    }
+    
+    i32 job_count = 0;
+    for (i32 i = 0; i < total_tiles; i++)
+    {
+        if (tile_bins[i].tri_count > 0)
+        {
+            i32 ty = i / num_tiles_x;
+            i32 tx = i % num_tiles_x;
+            
+            tile_job *job = &job_pool[job_count++];
+            
+            job->tile_idx = i;
+            job->tile_x = tx * TILE_SIZE;
+            job->tile_y = ty * TILE_SIZE;
+            job->tile_w = (tx == num_tiles_x - 1) ? (fw - job->tile_x) : TILE_SIZE;
+            job->tile_h = (ty == num_tiles_y - 1) ? (fh - job->tile_y) : TILE_SIZE;
+            
+            thpool_add_work(tile_threadpool, render_tile, job);
+        }
     }
     
     thpool_wait(tile_threadpool);
