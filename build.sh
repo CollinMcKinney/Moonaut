@@ -3,6 +3,7 @@
 mkdir -p ./build
 
 if [ "$(uname -s)" = "Linux" ]; then
+    rm -rf ./build/Moonaut  
     OUTPUT="./build/Moonaut"
     LIBS=(-lm -lX11 -lXrandr -ldl -lpthread)
 else

@@ -1045,8 +1045,12 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
             swapi(&sx, &ex);
             swapr(&siw, &eiw);
         }
+        /* Compute iw_step first so we can adjust siw when clipping */
+        iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth interpolation */
         if (sx < bounds->x0)
         {
+            siw += (bounds->x0 - sx) * iw_step;
             sx = bounds->x0;
         }
         if (ex > bounds->x1)
@@ -1057,7 +1061,6 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
         {
             continue;
         }
-        iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
 
         i32 row_base = y * fw;
 
@@ -1203,13 +1206,25 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
             swapr(&siw, &eiw);
             swapv(&cs, &ce);
         }
-        if (sx < bounds->x0) sx = bounds->x0;
-        if (ex > bounds->x1) ex = bounds->x1;
-        if (ex <= sx) continue;
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
         dc_step.color.r = (ex > sx) ? (ce.color.r - cs.color.r) / (ex - sx) : 0;
         dc_step.color.g = (ex > sx) ? (ce.color.g - cs.color.g) / (ex - sx) : 0;
         dc_step.color.b = (ex > sx) ? (ce.color.b - cs.color.b) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth/color interpolation */
+        if (sx < bounds->x0)
+        {
+            siw += (bounds->x0 - sx) * iw_step;
+            cs.color.r += (bounds->x0 - sx) * dc_step.color.r;
+            cs.color.g += (bounds->x0 - sx) * dc_step.color.g;
+            cs.color.b += (bounds->x0 - sx) * dc_step.color.b;
+            sx = bounds->x0;
+        }
+        if (ex > bounds->x1)
+        {
+            ex = bounds->x1;
+        }
+        if (ex <= sx) continue;
 
         i32 row_base = y * fw;
 
@@ -1372,10 +1387,19 @@ static void raster_triangle_quadratic(
             swapi(&sx, &ex);
             swapr(&siw, &eiw);
         }
-        if (sx < bounds->x0) sx = bounds->x0;
-        if (ex > bounds->x1) ex = bounds->x1;
-        if (ex <= sx) continue;
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth interpolation */
+        if (sx < bounds->x0)
+        {
+            siw += (bounds->x0 - sx) * iw_step;
+            sx = bounds->x0;
+        }
+        if (ex > bounds->x1)
+        {
+            ex = bounds->x1;
+        }
+        if (ex <= sx) continue;
 
         i32 row_base = y * fw;
 
@@ -1618,10 +1642,19 @@ static void raster_triangle_cubic(
             swapi(&sx, &ex);
             swapr(&siw, &eiw);
         }
-        if (sx < bounds->x0) sx = bounds->x0;
-        if (ex > bounds->x1) ex = bounds->x1;
-        if (ex <= sx) continue;
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth interpolation */
+        if (sx < bounds->x0)
+        {
+            siw += (bounds->x0 - sx) * iw_step;
+            sx = bounds->x0;
+        }
+        if (ex > bounds->x1)
+        {
+            ex = bounds->x1;
+        }
+        if (ex <= sx) continue;
 
         i32 row_base = y * fw;
 
@@ -1887,16 +1920,34 @@ dlpw2 = vec3_init_from_3(0, 0, 0);
             tmp = lps_y;
             lps_y = lpe_y;
             lpe_y = tmp;
-            tmp = lps_z;
-            lps_z = lpe_z;
-            lpe_z = tmp;
-        }
-        if (sx < bounds->x0) sx = bounds->x0;
-        if (ex > bounds->x1) ex = bounds->x1;
-        if (ex <= sx) continue;
-        iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+tmp = lps_z;
+             lps_z = lpe_z;
+             lpe_z = tmp;
+         }
+         /* Compute iw_step first so we can adjust siw when clipping */
+         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+         /* Clip to tile bounds and adjust depth interpolation */
+         if (sx < bounds->x0)
+         {
+             siw += (bounds->x0 - sx) * iw_step;
+             /* Adjust normal interpolation */
+             nws_x += (bounds->x0 - sx) * (nwe_x - nws_x) / (ex - sx);
+             nws_y += (bounds->x0 - sx) * (nwe_y - nws_y) / (ex - sx);
+             nws_z += (bounds->x0 - sx) * (nwe_z - nws_z) / (ex - sx);
+             /* Adjust world pos interpolation */
+             wps_x += (bounds->x0 - sx) * (wpe_x - wps_x) / (ex - sx);
+             wps_y += (bounds->x0 - sx) * (wpe_y - wps_y) / (ex - sx);
+             wps_z += (bounds->x0 - sx) * (wpe_z - wps_z) / (ex - sx);
+             /* Adjust local pos interpolation */
+             lps_x += (bounds->x0 - sx) * (lpe_x - lps_x) / (ex - sx);
+             lps_y += (bounds->x0 - sx) * (lpe_y - lps_y) / (ex - sx);
+             lps_z += (bounds->x0 - sx) * (lpe_z - lps_z) / (ex - sx);
+             sx = bounds->x0;
+         }
+         if (ex > bounds->x1) ex = bounds->x1;
+         if (ex <= sx) continue;
 
-        if (ex > sx)
+         if (ex > sx)
         {
             /* Compute per-pixel step values - SoA sequential access */
             dnw_step_x = (nwe_x - nws_x) / (ex - sx);
