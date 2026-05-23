@@ -72,6 +72,8 @@ static vec3 fog_color;
 static real fog_start;
 static real fog_end;
 
+static tile_bounds screen_bounds;
+
 /* -------------------------------------------------------------------------
  *  Tile function forward declarations
  *  ------------------------------------------------------------------------- */
@@ -2194,52 +2196,97 @@ static void draw_triangle_shaded(
             vec3 cn0 = cn[t*3 + 0], cn1 = cn[t*3 + 1], cn2 = cn[t*3 + 2];
             vec3 cl0_t = cl[t*3 + 0], cl1_t = cl[t*3 + 1], cl2_t = cl[t*3 + 2];
 
-            /* Bin clipped triangles to tiles */
-            tile_bin_triangle(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat);
+            if (tile_thread_count <= 1)
+            {
+                draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat, &screen_bounds);
+            }
+            else
+            {
+                tile_bin_triangle(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat);
+            }
         }
         return;
     }
 
-    /* Bin opaque triangle to tiles */
-    tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+    /* Render directly for single-thread, or bin to tiles for multithreading */
+    if (tile_thread_count <= 1)
+    {
+        draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, &screen_bounds);
+    }
+    else
+    {
+        tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+    }
 }
 
 /* -------------------------------------------------------------------------
-   *  Render frame with multithreading: sort transparent, render opaque tiles,  *
-   *  then draw transparent triangles. Called after all draw_triangle calls.   *
-   *  ------------------------------------------------------------------------- */
+    *  Render frame with multithreading: sort transparent, render opaque tiles,  *
+    *  then draw transparent triangles. Called after all draw_triangle calls.   *
+    *  ------------------------------------------------------------------------- */
 static void render_finish(void)
 {
-    /* Render all opaque triangles that were binned to tiles */
-    tile_render_all();
-    
-    /* Clear bins for next frame */
-    tile_clear_bins();
-    
-    /* Handle transparent triangles - they need back-to-front sorting */
-    if (transparent_count > 0)
+    /* For single-thread, transparent triangles were already drawn directly */
+    if (tile_thread_count <= 1)
     {
-        radix_sort_transparent();
-        
-        in_transparent_pass = 1;
-        i32 i;
-        for (i = 0; i < transparent_count; i++)
+        /* Handle transparent triangles - they need back-to-front sorting */
+        if (transparent_count > 0)
         {
-            if (!is_bbox_occluded(
-                    transparent_queue[i].min_x, transparent_queue[i].min_y,
-                    transparent_queue[i].max_x, transparent_queue[i].max_y,
-                    transparent_queue[i].depth, &tile_clip))
+            radix_sort_transparent();
+            
+            in_transparent_pass = 1;
+            i32 i;
+            for (i = 0; i < transparent_count; i++)
             {
-                draw_triangle_internal(
-                    transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
-                    transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
-                    transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
-                    transparent_queue[i].mat, &tile_clip);
+                if (!is_bbox_occluded(
+                        transparent_queue[i].min_x, transparent_queue[i].min_y,
+                        transparent_queue[i].max_x, transparent_queue[i].max_y,
+                        transparent_queue[i].depth, &screen_bounds))
+                {
+                    draw_triangle_internal(
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                        transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].mat, &screen_bounds);
+                }
             }
+            
+            transparent_count = 0;
+            in_transparent_pass = 0;
         }
+    }
+    else
+    {
+        /* Render all opaque triangles that were binned to tiles */
+        tile_render_all();
         
-        transparent_count = 0;
-        in_transparent_pass = 0;
+        /* Clear bins for next frame */
+        tile_clear_bins();
+        
+        /* Handle transparent triangles - they need back-to-front sorting */
+        if (transparent_count > 0)
+        {
+            radix_sort_transparent();
+            
+            in_transparent_pass = 1;
+            i32 i;
+            for (i = 0; i < transparent_count; i++)
+            {
+                if (!is_bbox_occluded(
+                        transparent_queue[i].min_x, transparent_queue[i].min_y,
+                        transparent_queue[i].max_x, transparent_queue[i].max_y,
+                        transparent_queue[i].depth, &tile_clip))
+                {
+                    draw_triangle_internal(
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                        transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].mat, &tile_clip);
+                }
+            }
+            
+            transparent_count = 0;
+            in_transparent_pass = 0;
+        }
     }
     
     /* Swap buffers */
@@ -2323,6 +2370,11 @@ static void render_tile(void *arg)
 /* Initialize tile binning system */
 static void tile_init(i32 width, i32 height)
 {
+    screen_bounds.x0 = 0;
+    screen_bounds.y0 = 0;
+    screen_bounds.x1 = width;
+    screen_bounds.y1 = height;
+    
     num_tiles_x = (width + TILE_SIZE - 1) / TILE_SIZE;
     num_tiles_y = (height + TILE_SIZE - 1) / TILE_SIZE;
     total_tiles = num_tiles_x * num_tiles_y;
