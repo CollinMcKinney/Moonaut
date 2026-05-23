@@ -885,6 +885,23 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
                 }
             }
 
+            /* Interpolate iw for the new clipped endpoint */
+            {
+                real t = 0;
+                real dx_line = (real)(x1 - x0), dy_line = (real)(y1 - y0);
+                real len_sq = dx_line * dx_line + dy_line * dy_line;
+                if (len_sq > 0)
+                {
+                    if (outcode == code0)
+                        t = real_sqrt((x - x0) * (x - x0) + (y - y0) * (y - y0)) / real_sqrt(len_sq);
+                    else
+                        t = real_sqrt((x - x1) * (x - x1) + (y - y1) * (y - y1)) / real_sqrt(len_sq);
+                }
+                real new_iw = outcode == code0 ? iw0 + t * (iw1 - iw0) : iw1 + t * (iw0 - iw1);
+                if (outcode == code0) iw0 = new_iw;
+                else iw1 = new_iw;
+            }
+
             if (outcode == code0)
             {
                 x0 = (i32)x;
@@ -902,11 +919,12 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
 
     if (!accept) return;
 
-    i32 dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    i32 dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    i32 err = dx + dy, e2;
+    i32 dx_abs = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    i32 dy_abs = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    i32 err = dx_abs + dy_abs, e2;
 
-    real steps = (real)(dx > dy ? dx : dy);
+    /* Interpolate iw values based on clipped endpoints */
+    real steps = (real)(dx_abs > -dy_abs ? dx_abs : -dy_abs);
     if (steps == 0) steps = 1;
     real diw = (iw1 - iw0) / steps;
     real iw = iw0;
@@ -923,15 +941,15 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
             }
             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
-            if (e2 >= dy)
+            if (e2 >= dy_abs)
             {
-                err += dy;
+                err += dy_abs;
                 x0 += sx;
                 iw += diw;
             }
-            if (e2 <= dx)
+            if (e2 <= dx_abs)
             {
-                err += dx;
+                err += dx_abs;
                 y0 += sy;
                 iw += diw;
             }
@@ -945,15 +963,15 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
             write_transparent_pixel(idx, iw, color, alpha, effects);
             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
-            if (e2 >= dy)
+            if (e2 >= dy_abs)
             {
-                err += dy;
+                err += dy_abs;
                 x0 += sx;
                 iw += diw;
             }
-            if (e2 <= dx)
+            if (e2 <= dx_abs)
             {
-                err += dx;
+                err += dx_abs;
                 y0 += sy;
                 iw += diw;
             }
@@ -970,10 +988,7 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
 
-    /* All vertices must be in front of the camera and within tile bounds */
-    if (x0 < bounds->x0 || x1 < bounds->x0 || x2 < bounds->x0) return;
-
-    /* Bresenham line drawing for each edge with z */
+    /* Draw wireframe edges - let draw_line_z handle clipping */
     draw_line_z(x0, y0, iw0, x1, y1, iw1, edge_color, alpha, effects, bounds);
     draw_line_z(x1, y1, iw1, x2, y2, iw2, edge_color, alpha, effects, bounds);
     draw_line_z(x2, y2, iw2, x0, y0, iw0, edge_color, alpha, effects, bounds);
