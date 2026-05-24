@@ -275,7 +275,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     /*.saturation               =*/ 1.00f,
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
     /*.cel_bands                =*/ 0,
-    /*.diffuse_wrap             =*/ 0.20f,
+    /*.diffuse_wrap             =*/ 1,
     /*.oren_nayar_sigma         =*/ 0.30f,
     /*.minnaert_k               =*/ 0.00f,
     /*.bump_amplitude           =*/ 0.40f,
@@ -860,7 +860,7 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
-    /*.mode                     =*/ SHADE_CUBIC,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.61f, 0.27f, 0.23f},   /* #9B443B */
     /*.ambient_light_factor     =*/ 0.70f,

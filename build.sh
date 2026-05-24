@@ -11,9 +11,9 @@ else
     LIBS=(-lm -lgdi32)
 fi
 
-GCC_OPTS=(-std=gnu99 -O3 -ffast-math -march=native)
+GCC_OPTS=(-std=gnu89 -O3 -ffast-math -march=native)
 
-gcc "${GCC_OPTS[@]}" \
+clang "${GCC_OPTS[@]}" \
   -I libs/lua-5.5.0/src -o $OUTPUT main.c \
   libs/lua-5.5.0/src/lapi.c \
   libs/lua-5.5.0/src/lauxlib.c \

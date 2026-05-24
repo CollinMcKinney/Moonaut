@@ -161,7 +161,8 @@ static i32 get_physical_core_count(void)
     int core_count = 0;
     char path[256];
     
-    for (int cpu = 0; cpu < 256; cpu++) {
+    int cpu;
+    for (cpu = 0; cpu < 256; cpu++) {
         snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
         FILE *cfp = fopen(path, "r");
         if (!cfp) continue;

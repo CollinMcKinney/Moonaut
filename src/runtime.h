@@ -168,7 +168,7 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 
     if (!mat) {
-        static material_definition fallback = DEFAULT_MATERIAL_FLAT;
+        static material_definition fallback = DEFAULT_MATERIAL_BRICK;
         mat = &fallback;
     }
 

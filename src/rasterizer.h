@@ -2389,7 +2389,8 @@ static void render_tile(void *arg)
     bounds.x1 = job->tile_x + job->tile_w;
     bounds.y1 = job->tile_y + job->tile_h;
     
-    for (i32 t = 0; t < bin->tri_count; t++)
+    i32 t;
+    for (t = 0; t < bin->tri_count; t++)
     {
         tile_tri *tri = &bin->tris[t];
         
@@ -2449,7 +2450,8 @@ static void tile_init(i32 width, i32 height)
     total_tiles = num_tiles_x * num_tiles_y;
     
     tile_bins = (tile_bin*)malloc(total_tiles * sizeof(tile_bin));
-    for (i32 i = 0; i < total_tiles; i++)
+    i32 i;
+    for (i = 0; i < total_tiles; i++)
     {
         tile_bins[i].tri_count = 0;
     }
@@ -2516,11 +2518,12 @@ static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
     i32 tile_max_y = max_y / TILE_SIZE;
     
     real depth = (iw0 < iw1) ? ((iw0 < iw2) ? iw0 : iw2) : ((iw1 < iw2) ? iw1 : iw2);
-    
-    for (i32 ty = tile_min_y; ty <= tile_max_y; ty++)
+    i32 ty;
+    for (ty = tile_min_y; ty <= tile_max_y; ty++)
     {
         i32 base_idx = ty * num_tiles_x;
-        for (i32 tx = tile_min_x; tx <= tile_max_x; tx++)
+        i32 tx;
+        for (tx = tile_min_x; tx <= tile_max_x; tx++)
         {
             i32 idx = base_idx + tx;
             if (idx >= total_tiles) continue;
@@ -2544,7 +2547,8 @@ static void tile_render_all(void)
 {
     /* Count tiles with actual triangles for efficient work distribution */
     i32 active_tiles = 0;
-    for (i32 i = 0; i < total_tiles; i++)
+    i32 i;
+    for (i = 0; i < total_tiles; i++)
     {
         if (tile_bins[i].tri_count > 0) active_tiles++;
     }
@@ -2552,7 +2556,8 @@ static void tile_render_all(void)
     /* If not enough active tiles, render sequentially to avoid thread overhead */
     if (active_tiles < MIN_TILES_PER_THREAD * tile_thread_count)
     {
-        for (i32 i = 0; i < total_tiles; i++)
+        i32 i;
+        for (i = 0; i < total_tiles; i++)
         {
             if (tile_bins[i].tri_count > 0)
             {
@@ -2577,7 +2582,7 @@ static void tile_render_all(void)
     }
     
     i32 job_count = 0;
-    for (i32 i = 0; i < total_tiles; i++)
+    for (i = 0; i < total_tiles; i++)
     {
         if (tile_bins[i].tri_count > 0)
         {
@@ -2602,7 +2607,8 @@ static void tile_render_all(void)
 /* Clear tile bins for next frame */
 static void tile_clear_bins(void)
 {
-    for (i32 i = 0; i < total_tiles; i++)
+    i32 i;
+    for (i = 0; i < total_tiles; i++)
     {
         tile_bins[i].tri_count = 0;
     }
