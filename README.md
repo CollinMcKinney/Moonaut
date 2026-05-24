@@ -21,7 +21,7 @@ At its core, the engine runs a fixed-timestep physics simulation integrated with
 
 ## Building
 
-### Windows
+### Bash (planning on moving to CMake eventually)
 ```bash
 ./build.sh
 ```
