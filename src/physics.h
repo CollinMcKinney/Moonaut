@@ -400,7 +400,7 @@ static void physics_step(physics_world *w, real dt) {
                     jt = jt_stick;
                 } else {
                     real mu = raw_f / (1.0f - raw_f);      /* 0→0, 0.5→1, 0.9→9 */
-                    real jt_max = mu * fabsf(j);           /* Coulomb limit */
+                    real jt_max = mu * real_abs(j);           /* Coulomb limit */
                     jt = jt_stick;
                     if (jt >  jt_max) jt =  jt_max;
                     else if (jt < -jt_max) jt = -jt_max;

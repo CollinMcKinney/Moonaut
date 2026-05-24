@@ -734,7 +734,7 @@ static i32 tag_load_from(
         if (f->type == TAG_FIELD_BLOCK) {
             tag_block *blk = (tag_block*)((u8*)data + off);
             if (blk->address)
-                tag_postprocess_block_elements(blk, f->extra);
+                tag_postprocess_block_elements(blk, (tag_block_definition*)f->extra);
         }
         off += tag_field_size(f);
     }

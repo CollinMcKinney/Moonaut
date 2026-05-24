@@ -1,6 +1,7 @@
 #ifndef INPUT_H
 #define INPUT_H
 
+#include "window.h"
 #include <stdio.h>
 
 #ifdef __cplusplus

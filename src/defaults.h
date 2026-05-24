@@ -2,6 +2,7 @@
 #define DEFAULTS_H
 
 #include "reflection.h"
+#include "tags/lua_script.h"
 #include "tags/material.h"
 #include "tags/globals.h"
 #include "tags/camera.h"
@@ -13,7 +14,7 @@
 extern "C" {
 #endif
 
-i32 tag_register_default(const char *name, tag group_tag, const void *data)
+static i32 tag_register_default(const char *name, tag group_tag, const void *data)
 {
     fprintf(stderr, "[tag] registering '%s.%c%c%c%c'\n", name, TAG_FOURCC(group_tag));
 
@@ -101,7 +102,7 @@ i32 tag_register_default(const char *name, tag group_tag, const void *data)
     return handle;
 }
 
-void tag_register_default_all(void){
+static void tag_register_default_all(void){
     /* Set up the tag system if not already done */
     tag_system_init();
 
