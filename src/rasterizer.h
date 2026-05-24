@@ -4,11 +4,13 @@
  * Uses material_definition.h for shading parameters.
  * Supports: Wireframe, Flat, Gouraud, Quadratic, Cubic, and Phong.
  * Transparent triangles are automatically sorted and drawn back‑to‑front.
-*/
+ */
 #ifndef RASTERIZER_H
 #define RASTERIZER_H
 
 #include "common.h"
+#include "cpu_threads.h" /* for get_optimal_thread_count() */
+#include "../libs/C-Thread-Pool/thpool.h" /* for threadpool */
 #include "tags/material.h"   /* shading_mode enum, struct material_definition */
 
 #ifdef __cplusplus
@@ -16,20 +18,59 @@ extern "C" {
 #endif
 
 /* -------------------------------------------------------------------------
- *  Global render state
- *  ------------------------------------------------------------------------- */
+  *  Tile-based multithreading (forward declarations)
+  *  ------------------------------------------------------------------------- */
+#define TILE_SIZE 128
+
+/* Minimum tiles per thread for multithreading to be beneficial */
+#define MIN_TILES_PER_THREAD 4
+
+/* Maximum triangles per tile before we consider splitting work */
+#define MAX_TRIS_PER_TILE 1024
+
+typedef struct tile_tri {
+    vec3 v0, v1, v2;
+    vec3 n0, n1, n2;
+    vec3 l0, l1, l2;
+    const struct material_definition *mat;
+    shading_mode mode;
+    real depth;
+} tile_tri;
+
+typedef struct tile_bin {
+    tile_tri tris[MAX_TRIS_PER_TILE];
+    i32 tri_count;
+} tile_bin;
+
+static tile_bin *tile_bins = NULL;
+static i32 num_tiles_x = 0;
+static i32 num_tiles_y = 0;
+static i32 total_tiles = 0;
+static threadpool tile_threadpool = NULL;
+static i32 tile_thread_count = 0;
+
+typedef struct {
+    i32 tile_idx;
+    i32 tile_x, tile_y;
+    i32 tile_w, tile_h;
+} tile_job;
+
+/* Pre-allocated job pool to avoid malloc per tile */
+static tile_job *job_pool = NULL;
+static i32 job_pool_size = 0;
+
+/* Tile clipping bounds structure */
+typedef struct {
+    i32 x0, y0, x1, y1;
+} tile_bounds;
+
+/* Current tile clipping bounds - only used as fallback for transparent pass */
+static tile_bounds tile_clip = {0, 0, 0, 0};
+
 /* Double-buffered framebuffer and depth buffer */
-/* Pitch-aligned framebuffer for 16-byte boundary optimization */
-static u32  *fb_front = NULL;   /* displayed buffer */
-static real *zbuf_front = NULL;
-static u32  *fb_back  = NULL;   /* rendered-to buffer */
-static real *zbuf_back = NULL;
-
-static u32  *fb   = NULL;   /* currently active back buffer (points to fb_back or fb_front after swap) */
-static real *zbuf = NULL;
-
-static i32  fw, fh;
-static i32  fb_pitch;   /* aligned pitch (pixels), may be >= fw */
+static u32  *fb_front = NULL, *fb_back = NULL, *fb = NULL;
+static real *zbuf_front = NULL, *zbuf_back = NULL, *zbuf = NULL;
+static i32  fw = 0, fh = 0, fb_pitch = 0;
 
 static mat4 vp;
 static vec3 light_dir, light_col, ambient_col;
@@ -38,6 +79,20 @@ static vec3 cam_eye;
 static vec3 fog_color;
 static real fog_start;
 static real fog_end;
+
+static tile_bounds screen_bounds;
+
+/* -------------------------------------------------------------------------
+ *  Tile function forward declarations
+ *  ------------------------------------------------------------------------- */
+static void tile_init(i32 width, i32 height);
+static void tile_shutdown(void);
+static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
+                              vec3 n0, vec3 n1, vec3 n2,
+                              vec3 l0, vec3 l1, vec3 l2,
+                              const struct material_definition *mat);
+static void tile_render_all(void);
+static void tile_clear_bins(void);
 
 /* -------------------------------------------------------------------------
  *  View frustum planes (extracted from VP matrix)
@@ -350,7 +405,7 @@ static INLINE u32 pack_color_real(real r, real g, real b)
 
 /* - Transparent pixel write - */
 /* Optimized: uses fixed-point integer math for faster blending */
-static INLINE void write_transparent_pixel(i32 idx, real iw, vec3 color, real alpha)
+static INLINE void write_transparent_pixel(i32 idx, real iw, vec3 color, real alpha, i32 effects)
 {
     if (iw <= 0.0f) return;
     if (iw <= zbuf[idx]) return;
@@ -393,6 +448,14 @@ static i32 render_init(i32 w, i32 h)
     /* Initially render into the back buffer */
     fb   = fb_back;
     zbuf = zbuf_back;
+    
+    /* Initialize tile clipping to full framebuffer by default */
+    tile_clip.x0 = 0; tile_clip.y0 = 0;
+    tile_clip.x1 = fw; tile_clip.y1 = fh;
+    
+    /* Initialize tile binning system for multithreaded rendering */
+    tile_init(w, h);
+    
     return 0;
 }
 
@@ -431,21 +494,31 @@ static void render_shutdown(void)
     free(fb_back);  free(zbuf_back);
     fb_front = fb_back = fb = NULL;
     zbuf_front = zbuf_back = zbuf = NULL;
+    
+    /* Shutdown tile binning system */
+    tile_shutdown();
 }
 
 /* Check if screen-space bounding box is fully occluded by opaque geometry.
     * min_iw: minimum inverse W (1/clip_w) of transparent triangle (farthest point).
     * Returns 1 if triangle is completely behind opaque pixels (can be skipped), 0 otherwise. */
-static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw)
+static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw, const tile_bounds *bounds)
 {
+    i32 width = x1 - x0;
+    i32 height = y1 - y0;
+    
+    /* Adaptive step size: check more frequently for small triangles */
+    i32 step_x = (width > 16) ? 4 : 1;
+    i32 step_y = (height > 16) ? 4 : 1;
+    
     i32 x, y, checked = 0;
-    for (y = y0; y <= y1; y += 4)
+    for (y = y0; y <= y1; y += step_y)
     {
-        if (y < 0 || y >= fh) continue;
+        if (y < bounds->y0 || y >= bounds->y1) continue;
         i32 row_base = y * fw;
-        for (x = x0; x <= x1; x += 4)
+        for (x = x0; x <= x1; x += step_x)
         {
-            if (x < 0 || x >= fw) continue;
+            if (x < bounds->x0 || x >= bounds->x1) continue;
             checked = 1;
             real z = zbuf[row_base + x];
             /* If no opaque (z==0) or opaque is behind farthest transparent point (z < min_iw),
@@ -459,9 +532,9 @@ static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw)
 /* -------------------------------------------------------------------------
  *  Pixel write (wireframe helper)
  *  ------------------------------------------------------------------------- */
-static INLINE void set_pix(i32 x, i32 y, u8 r, u8 g, u8 b)
+static INLINE void set_pix(i32 x, i32 y, u8 r, u8 g, u8 b, const tile_bounds *bounds)
 {
-    if (x < 0 || x >= fw || y < 0 || y >= fh) return;
+    if (x < bounds->x0 || x >= bounds->x1 || y < bounds->y0 || y >= bounds->y1) return;
     fb[y * fw + x] = pack_color(r, g, b);
 }
 
@@ -744,22 +817,22 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
 #define CLIP_BOTTOM 4
 #define CLIP_TOP    8
 
-static INLINE i32 clip_code(i32 x, i32 y)
+static INLINE i32 clip_code(i32 x, i32 y, const tile_bounds *bounds)
 {
     i32 code = 0;
 
-    if (x < 0) code |= CLIP_LEFT;
-    else if (x >= fw) code |= CLIP_RIGHT;
-    if (y < 0) code |= CLIP_BOTTOM;
-    else if (y >= fh) code |= CLIP_TOP;
+    if (x < bounds->x0) code |= CLIP_LEFT;
+    else if (x >= bounds->x1) code |= CLIP_RIGHT;
+    if (y < bounds->y0) code |= CLIP_BOTTOM;
+    else if (y >= bounds->y1) code |= CLIP_TOP;
     return code;
 }
 
 /* Bresenham line drawing with z-buffer */
-static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3 color, real alpha, enum32 effects)
+static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3 color, real alpha, enum32 effects, const tile_bounds *bounds)
 {
-    i32 code0 = clip_code(x0, y0);
-    i32 code1 = clip_code(x1, y1);
+    i32 code0 = clip_code(x0, y0, bounds);
+    i32 code1 = clip_code(x1, y1, bounds);
     i32 outcode;
     i32 accept = 0;
 
@@ -783,57 +856,75 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
             {
                 if (y1 != y0)
                 {
-                    x = x0 + (real)(x1 - x0) * (fh - 1 - y0) / (y1 - y0);
-                    y = fh - 1;
+                    x = x0 + (real)(x1 - x0) * (bounds->y1 - 1 - y0) / (y1 - y0);
+                    y = bounds->y1 - 1;
                 }
             }
             else if (outcode & CLIP_BOTTOM)
             {
                 if (y1 != y0)
                 {
-                    x = x0 + (real)(x1 - x0) * (0 - y0) / (y1 - y0);
-                    y = 0;
+                    x = x0 + (real)(x1 - x0) * (bounds->y0 - y0) / (y1 - y0);
+                    y = bounds->y0;
                 }
             }
             else if (outcode & CLIP_RIGHT)
             {
                 if (x1 != x0)
                 {
-                    y = y0 + (real)(y1 - y0) * (fw - 1 - x0) / (x1 - x0);
-                    x = fw - 1;
+                    y = y0 + (real)(y1 - y0) * (bounds->x1 - 1 - x0) / (x1 - x0);
+                    x = bounds->x1 - 1;
                 }
             }
             else if (outcode & CLIP_LEFT)
             {
                 if (x1 != x0)
                 {
-                    y = y0 + (real)(y1 - y0) * (0 - x0) / (x1 - x0);
-                    x = 0;
+                    y = y0 + (real)(y1 - y0) * (bounds->x0 - x0) / (x1 - x0);
+                    x = bounds->x0;
                 }
+            }
+
+            /* Interpolate iw for the new clipped endpoint */
+            {
+                real t = 0;
+                real dx_line = (real)(x1 - x0), dy_line = (real)(y1 - y0);
+                real len_sq = dx_line * dx_line + dy_line * dy_line;
+                if (len_sq > 0)
+                {
+                    if (outcode == code0)
+                        t = real_sqrt((x - x0) * (x - x0) + (y - y0) * (y - y0)) / real_sqrt(len_sq);
+                    else
+                        t = real_sqrt((x - x1) * (x - x1) + (y - y1) * (y - y1)) / real_sqrt(len_sq);
+                }
+                real new_iw = outcode == code0 ? iw0 + t * (iw1 - iw0) : iw1 + t * (iw0 - iw1);
+                if (outcode == code0) iw0 = new_iw;
+                else iw1 = new_iw;
             }
 
             if (outcode == code0)
             {
                 x0 = (i32)x;
                 y0 = (i32)y;
-                code0 = clip_code(x0, y0);
+                code0 = clip_code(x0, y0, bounds);
             }
             else
             {
                 x1 = (i32)x;
                 y1 = (i32)y;
-                code1 = clip_code(x1, y1);
+                code1 = clip_code(x1, y1, bounds);
             }
         }
     } while (1);
 
     if (!accept) return;
 
-    i32 dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    i32 dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    i32 err = dx + dy, e2;
+    i32 dx_abs = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    i32 dy_abs = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    i32 err = dx_abs + dy_abs, e2;
 
-    real steps = (real)(dx > dy ? dx : dy);
+    /* Interpolate iw values based on clipped endpoints */
+    real steps = (real)(dx_abs > -dy_abs ? dx_abs : -dy_abs);
     if (steps == 0) steps = 1;
     real diw = (iw1 - iw0) / steps;
     real iw = iw0;
@@ -850,15 +941,15 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
             }
             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
-            if (e2 >= dy)
+            if (e2 >= dy_abs)
             {
-                err += dy;
+                err += dy_abs;
                 x0 += sx;
                 iw += diw;
             }
-            if (e2 <= dx)
+            if (e2 <= dx_abs)
             {
-                err += dx;
+                err += dx_abs;
                 y0 += sy;
                 iw += diw;
             }
@@ -869,18 +960,18 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
         while (1)
         {
             i32 idx = y0 * fw + x0;
-            write_transparent_pixel(idx, iw, color, alpha);
+            write_transparent_pixel(idx, iw, color, alpha, effects);
             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
-            if (e2 >= dy)
+            if (e2 >= dy_abs)
             {
-                err += dy;
+                err += dy_abs;
                 x0 += sx;
                 iw += diw;
             }
-            if (e2 <= dx)
+            if (e2 <= dx_abs)
             {
-                err += dx;
+                err += dx_abs;
                 y0 += sy;
                 iw += diw;
             }
@@ -888,7 +979,7 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
     }
 }
 
-static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color, real alpha, enum32 effects)
+static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color, real alpha, enum32 effects, const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -897,20 +988,18 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
 
-    /* All vertices must be in front of the camera */
-    if (x0 < 0 || x1 < 0 || x2 < 0) return;
-
-    /* Bresenham line drawing for each edge with z */
-    draw_line_z(x0, y0, iw0, x1, y1, iw1, edge_color, alpha, effects);
-    draw_line_z(x1, y1, iw1, x2, y2, iw2, edge_color, alpha, effects);
-    draw_line_z(x2, y2, iw2, x0, y0, iw0, edge_color, alpha, effects);
+    /* Draw wireframe edges - let draw_line_z handle clipping */
+    draw_line_z(x0, y0, iw0, x1, y1, iw1, edge_color, alpha, effects, bounds);
+    draw_line_z(x1, y1, iw1, x2, y2, iw2, edge_color, alpha, effects, bounds);
+    draw_line_z(x2, y2, iw2, x0, y0, iw0, edge_color, alpha, effects, bounds);
 }
 
 /* -----------------------------------------------------------------------*\
- *  Per-face/triangle rasterization                                         *
- *  -----------------------------------------------------------------------*/
+  *  Per-face/triangle rasterization                                         *
+  *  -----------------------------------------------------------------------*/
 static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
-                                 const struct material_definition *mat)
+                                 const struct material_definition *mat,
+                                 const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -960,8 +1049,8 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
     }
 
     /* Half-open coverage keeps shared mesh edges from being blended twice. */
-    i32 y_start = y0 < 0 ? 0 : y0;
-    i32 y_end = y2 > fh ? fh : y2;
+    i32 y_start = y0 < bounds->y0 ? bounds->y0 : y0;
+    i32 y_end = y2 > bounds->y1 ? bounds->y1 : y2;
     i32 y, sx, ex, x;
     real siw, eiw, iw_step, iw;
 
@@ -988,19 +1077,22 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
             swapi(&sx, &ex);
             swapr(&siw, &eiw);
         }
-        if (sx < 0)
+        /* Compute iw_step first so we can adjust siw when clipping */
+        iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth interpolation */
+        if (sx < bounds->x0)
         {
-            sx = 0;
+            siw += (bounds->x0 - sx) * iw_step;
+            sx = bounds->x0;
         }
-        if (ex > fw)
+        if (ex > bounds->x1)
         {
-            ex = fw;
+            ex = bounds->x1;
         }
         if (ex <= sx)
         {
             continue;
         }
-        iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
 
         i32 row_base = y * fw;
 
@@ -1025,7 +1117,7 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
             for (x = sx; x < ex; x++)
             {
                 i32 idx = row_base + x;
-                write_transparent_pixel(idx, iw, color, mat->alpha);
+                write_transparent_pixel(idx, iw, color, mat->alpha, mat->effects);
                 iw += iw_step;
             }
         }
@@ -1033,11 +1125,12 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
 }
 
 /* -----------------------------------------------------------------------*\
- *  Per-vertex rasterization with interpolation                              *
- *  -----------------------------------------------------------------------*/
+  *  Per-vertex rasterization with interpolation                              *
+  *  -----------------------------------------------------------------------*/
 static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
-                                    vec3 c0, vec3 c1, vec3 c2,
-                                    const struct material_definition *mat)
+                                     vec3 c0, vec3 c1, vec3 c2,
+                                     const struct material_definition *mat,
+                                     const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -1103,8 +1196,8 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
         dc2.color.b = (c2.color.b - c0.color.b) * idy;
     }
 
-    i32 y_start = y0 < 0 ? 0 : y0;
-    i32 y_end = y2 > fh ? fh : y2;
+    i32 y_start = y0 < bounds->y0 ? bounds->y0 : y0;
+    i32 y_end = y2 > bounds->y1 ? bounds->y1 : y2;
     i32 y, sx, ex, x;
     real siw, eiw, iw_step, iw;
     vec3 cs, ce, col, dc_step;
@@ -1145,13 +1238,25 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
             swapr(&siw, &eiw);
             swapv(&cs, &ce);
         }
-        if (sx < 0) sx = 0;
-        if (ex > fw) ex = fw;
-        if (ex <= sx) continue;
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
         dc_step.color.r = (ex > sx) ? (ce.color.r - cs.color.r) / (ex - sx) : 0;
         dc_step.color.g = (ex > sx) ? (ce.color.g - cs.color.g) / (ex - sx) : 0;
         dc_step.color.b = (ex > sx) ? (ce.color.b - cs.color.b) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth/color interpolation */
+        if (sx < bounds->x0)
+        {
+            siw += (bounds->x0 - sx) * iw_step;
+            cs.color.r += (bounds->x0 - sx) * dc_step.color.r;
+            cs.color.g += (bounds->x0 - sx) * dc_step.color.g;
+            cs.color.b += (bounds->x0 - sx) * dc_step.color.b;
+            sx = bounds->x0;
+        }
+        if (ex > bounds->x1)
+        {
+            ex = bounds->x1;
+        }
+        if (ex <= sx) continue;
 
         i32 row_base = y * fw;
 
@@ -1181,7 +1286,7 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
             for (x = sx; x < ex; x++)
             {
                 i32 idx = row_base + x;
-                write_transparent_pixel(idx, iw, col, mat->alpha);
+                write_transparent_pixel(idx, iw, col, mat->alpha, mat->effects);
                 iw += iw_step;
                 col.color.r += dc_step.color.r;
                 col.color.g += dc_step.color.g;
@@ -1192,18 +1297,19 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
 }
 
 /* -----------------------------------------------------------------------*\
- *  Fast Quadratic / X-shading rasterization                                *
- *      Computes shade_surface at 6 points (3 vertices + 3 edge midpoints)    *
- *      and uses quadratic interpolation for smooth results.                  *
- *      True quadratic: c = λ₀c₀ + λ₁c₁ + λ₂c₂ + 2λ₀λ₁cm₀₁ + 2λ₁λ₂cm₁₂ +    *
- *      2λ₂λ₀cm₂₀. We compute barycentric coordinates via edge distances and   *
- *      evaluate per-pixel.                                                   *
- *  -----------------------------------------------------------------------*/
+  *  Fast Quadratic / X-shading rasterization                                *
+  *      Computes shade_surface at 6 points (3 vertices + 3 edge midpoints)    *
+  *      and uses quadratic interpolation for smooth results.                  *
+  *      True quadratic: c = λ₀c₀ + λ₁c₁ + λ₂c₂ + 2λ₀λ₁cm₀₁ + 2λ₁λ₂cm₁₂ +    *
+  *      2λ₂λ₀cm₂₀. We compute barycentric coordinates via edge distances and   *
+  *      evaluate per-pixel.                                                   *
+  *  -----------------------------------------------------------------------*/
 static void raster_triangle_quadratic(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
+    const struct material_definition *mat,
+    const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -1285,8 +1391,8 @@ static void raster_triangle_quadratic(
         diw2 = (iw2 - iw0) * idy;
     }
 
-    i32 y_start = y0 < 0 ? 0 : y0;
-    i32 y_end = y2 > fh ? fh : y2;
+    i32 y_start = y0 < bounds->y0 ? bounds->y0 : y0;
+    i32 y_end = y2 > bounds->y1 ? bounds->y1 : y2;
     i32 y, sx, ex, x;
     real siw, eiw, iw_step, iw;
 
@@ -1313,10 +1419,19 @@ static void raster_triangle_quadratic(
             swapi(&sx, &ex);
             swapr(&siw, &eiw);
         }
-        if (sx < 0) sx = 0;
-        if (ex > fw) ex = fw;
-        if (ex <= sx) continue;
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth interpolation */
+        if (sx < bounds->x0)
+        {
+            siw += (bounds->x0 - sx) * iw_step;
+            sx = bounds->x0;
+        }
+        if (ex > bounds->x1)
+        {
+            ex = bounds->x1;
+        }
+        if (ex <= sx) continue;
 
         i32 row_base = y * fw;
 
@@ -1393,7 +1508,7 @@ static void raster_triangle_quadratic(
                 final_col.color.b = l0_val * l0_val * c0.color.b + l1_val * l1_val * c1.color.b + l2_val * l2_val * c2.color.b
                                     + 2.0f * l0_val * l1_val * cm01.color.b + 2.0f * l1_val * l2_val * cm12.color.b + 2.0f * l2_val * l0_val * cm20.color.b;
 
-                write_transparent_pixel(idx, iw, final_col, mat->alpha);
+write_transparent_pixel(idx, iw, final_col, mat->alpha, mat->effects);
                 iw += iw_step;
             }
         }
@@ -1401,16 +1516,17 @@ static void raster_triangle_quadratic(
 }
 
 /* -----------------------------------------------------------------------*\
- *  Fast Cubic / X-shading rasterization                                 *
- *      Computes shade_surface at 10 points (3 vertices + 3 edge thirds +*\
- *      3 edge midpoints + centroid) and uses cubic interpolation.       *\
- *      True cubic: c = λ₀³c₀ + λ₁³c₁ + λ₂³c₂ + 3λ₀²λ₁cm₀₁ + ...        *\
- *  -----------------------------------------------------------------------*/
+  *  Fast Cubic / X-shading rasterization                                 *
+  *      Computes shade_surface at 10 points (3 vertices + 3 edge thirds +*\
+  *      3 edge midpoints + centroid) and uses cubic interpolation.       *
+  *      True cubic: c = λ₀³c₀ + λ₁³c₁ + λ₂³c₂ + 3λ₀²λ₁cm₀₁ + ...        *
+  *  -----------------------------------------------------------------------*/
 static void raster_triangle_cubic(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
+    const struct material_definition *mat,
+    const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -1531,7 +1647,7 @@ static void raster_triangle_cubic(
         diw2 = (iw2 - iw0) * idy;
     }
 
-    i32 y_start = y0 < 0 ? 0 : y0, y_end = y2 > fh ? fh : y2;
+    i32 y_start = y0 < bounds->y0 ? bounds->y0 : y0, y_end = y2 > bounds->y1 ? bounds->y1 : y2;
     i32 y, sx, ex, x;
     real siw, eiw, iw_step, iw;
 
@@ -1558,10 +1674,19 @@ static void raster_triangle_cubic(
             swapi(&sx, &ex);
             swapr(&siw, &eiw);
         }
-        if (sx < 0) sx = 0;
-        if (ex > fw) ex = fw;
-        if (ex <= sx) continue;
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
+        /* Clip to tile bounds and adjust depth interpolation */
+        if (sx < bounds->x0)
+        {
+            siw += (bounds->x0 - sx) * iw_step;
+            sx = bounds->x0;
+        }
+        if (ex > bounds->x1)
+        {
+            ex = bounds->x1;
+        }
+        if (ex <= sx) continue;
 
         i32 row_base = y * fw;
 
@@ -1660,7 +1785,7 @@ static void raster_triangle_cubic(
                                     + 3.0f*l0_val*l1_sq*ct01_2.color.b + 3.0f*l1_val*l2_sq*ct12_2.color.b + 3.0f*l2_val*l0_sq*ct20_2.color.b
                                     + 6.0f*l0_val*l1_val*l2_val*cc.color.b;
 
-                write_transparent_pixel(idx, iw, final_col, mat->alpha);
+write_transparent_pixel(idx, iw, final_col, mat->alpha, mat->effects);
                 iw += iw_step;
             }
         }
@@ -1668,13 +1793,14 @@ static void raster_triangle_cubic(
 }
 
 /* -----------------------------------------------------------------------*\
- *  Per-pixel rasterization                                                *\
- *  -----------------------------------------------------------------------*/
+  *  Per-pixel rasterization                                                *\
+  *  -----------------------------------------------------------------------*/
 static void raster_triangle_phong(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
+    const struct material_definition *mat,
+    const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -1773,10 +1899,8 @@ static void raster_triangle_phong(
         dlpw2.position.z = (lp2w.position.z - lp0w.position.z) * idy;
     }
 
-    /* Structure of Arrays for interpolants - split vec3 into scalar components
-       for sequential memory access and better cache locality */
-    i32 y_start = y0 < 0 ? 0 : y0;
-    i32 y_end = y2 > fh ? fh : y2;
+    i32 y_start = y0 < bounds->y0 ? bounds->y0 : y0;
+    i32 y_end = y2 > bounds->y1 ? bounds->y1 : y2;
     i32 y, sx, ex, x;
     real siw, eiw, iw_step, iw;
 
@@ -1878,11 +2002,10 @@ static void raster_triangle_phong(
             lps_z = lpe_z;
             lpe_z = tmp;
         }
-        if (sx < 0) sx = 0;
-        if (ex > fw) ex = fw;
-        if (ex <= sx) continue;
+        
+        /* Compute iw_step first so we can adjust siw when clipping */
         iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
-
+        /* Compute per-pixel steps first for interpolation adjustment */
         if (ex > sx)
         {
             /* Compute per-pixel step values - SoA sequential access */
@@ -1898,16 +2021,30 @@ static void raster_triangle_phong(
         }
         else
         {
-            dnw_step_x = 0;
-            dnw_step_y = 0;
-            dnw_step_z = 0;
-            dwp_step_x = 0;
-            dwp_step_y = 0;
-            dwp_step_z = 0;
-            dlp_step_x = 0;
-            dlp_step_y = 0;
-            dlp_step_z = 0;
+            dnw_step_x = dnw_step_y = dnw_step_z = 0;
+            dwp_step_x = dwp_step_y = dwp_step_z = 0;
+            dlp_step_x = dlp_step_y = dlp_step_z = 0;
         }
+        /* Clip to tile bounds and adjust interpolants */
+        if (sx < bounds->x0)
+        {
+            i32 clipped = bounds->x0 - sx;
+            siw += clipped * iw_step;
+            nws_x += clipped * dnw_step_x;
+            nws_y += clipped * dnw_step_y;
+            nws_z += clipped * dnw_step_z;
+            wps_x += clipped * dwp_step_x;
+            wps_y += clipped * dwp_step_y;
+            wps_z += clipped * dwp_step_z;
+            lps_x += clipped * dlp_step_x;
+            lps_y += clipped * dlp_step_y;
+            lps_z += clipped * dlp_step_z;
+            sx = bounds->x0;
+        }
+
+        if (ex > bounds->x1) ex = bounds->x1;
+        if (ex <= sx) continue;
+
         iw = siw;
         nw_val_x = nws_x;
         nw_val_y = nws_y;
@@ -1969,7 +2106,7 @@ static void raster_triangle_phong(
                         vec3_init_from_3(nw_val_x / iw, nw_val_y / iw, nw_val_z / iw),
                         vec3_init_from_3(wp_val_x / iw, wp_val_y / iw, wp_val_z / iw),
                         vec3_init_from_3(lp_val_x / iw, lp_val_y / iw, lp_val_z / iw), mat);
-                    write_transparent_pixel(idx, iw, color, mat->alpha);
+                    write_transparent_pixel(idx, iw, color, mat->alpha, mat->effects);
                 }
                 iw += iw_step;
                 nw_val_x += dnw_step_x;
@@ -1987,13 +2124,14 @@ static void raster_triangle_phong(
 }
 
 /* -------------------------------------------------------------------------
- *  Internal triangle drawing (no clipping)
- *  ------------------------------------------------------------------------- */
+  *  Internal triangle drawing (no clipping)
+  *  ------------------------------------------------------------------------- */
 static void draw_triangle_internal(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
+    const struct material_definition *mat,
+    const tile_bounds *bounds)
 {
     vec3 face_normal, face_center, local_center, color;
     vec3 c0, c1, c2;
@@ -2005,43 +2143,43 @@ static void draw_triangle_internal(
             face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
             local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
             color = shade_surface(face_normal, face_center, local_center, mat);
-            raster_triangle_wireframe(v0, v1, v2, color, mat->alpha, mat->effects);
+            raster_triangle_wireframe(v0, v1, v2, color, mat->alpha, mat->effects, bounds);
             return;
         case SHADE_FLAT:
             face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
             face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
             local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
             color = shade_surface(face_normal, face_center, local_center, mat);
-            raster_triangle_flat(v0, v1, v2, color, mat);
+            raster_triangle_flat(v0, v1, v2, color, mat, bounds);
             return;
         case SHADE_GOURAUD:
             c0 = shade_surface(n0, v0, l0, mat);
             c1 = shade_surface(n1, v1, l1, mat);
             c2 = shade_surface(n2, v2, l2, mat);
-            raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat);
+            raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat, bounds);
             return;
         case SHADE_PHONG:
-            raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+            raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, bounds);
             return;
         case SHADE_QUADRATIC:
-            raster_triangle_quadratic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+            raster_triangle_quadratic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, bounds);
             return;
         case SHADE_CUBIC:
-            raster_triangle_cubic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+            raster_triangle_cubic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, bounds);
             return;
         default:
             face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
             face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
             local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
             color = shade_surface(face_normal, face_center, local_center, mat);
-            raster_triangle_flat(v0, v1, v2, color, mat);
+            raster_triangle_flat(v0, v1, v2, color, mat, bounds);
             return;
     }
 }
 
 /* -------------------------------------------------------------------------
- *  Main triangle dispatch
- *  ------------------------------------------------------------------------- */
+  *  Main triangle dispatch
+  *  ------------------------------------------------------------------------- */
 static void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
@@ -2061,7 +2199,6 @@ static void draw_triangle_shaded(
     if (triangle_outside_frustum(v0, v1, v2)) return;
 
     /* Check if triangle intersects any frustum plane for clipping */
-    /* Quick near/far test - skip clipping if all vertices are comfortably within frustum */
     i32 needs_clip = 0;
     real min_dist_sq = 100.0f * 100.0f;
     real d0_sq = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
@@ -2073,17 +2210,15 @@ static void draw_triangle_shaded(
         needs_clip = 1;
     }
 
-    /* - Enqueue transparent triangles for later back‑to‑front sorting - */
+    /* Transparent triangles - deferred queue for back-to-front sorting */
     if ((mat->effects & EFFECT_ALPHA) && !in_transparent_pass && transparent_count < MAX_TRANSPARENT)
     {
-        /* Project vertices to screen space for bounds calculation */
         i32 sx0, sy0, sx1, sy1, sx2, sy2;
         real iw0, iw1, iw2;
         project(v0, &sx0, &sy0, &iw0);
         project(v1, &sx1, &sy1, &iw1);
         project(v2, &sx2, &sy2, &iw2);
         
-        /* Clamp bounds to screen */
         i32 min_x = sx0, max_x = sx0;
         i32 min_y = sy0, max_y = sy0;
         if (sx1 < min_x) min_x = sx1; if (sx1 > max_x) max_x = sx1;
@@ -2091,14 +2226,11 @@ static void draw_triangle_shaded(
         if (sy1 < min_y) min_y = sy1; if (sy1 > max_y) max_y = sy1;
         if (sy2 < min_y) min_y = sy2; if (sy2 > max_y) max_y = sy2;
         
-        /* Clip to screen bounds */
         if (min_x < 0) min_x = 0;
         if (max_x >= fw) max_x = fw - 1;
         if (min_y < 0) min_y = 0;
         if (max_y >= fh) max_y = fh - 1;
         
-        /* Store projected bounds for early occlusion test.
-           Use MAX iw for conservative culling: if farthest point is behind opaque, skip. */
         transparent_queue[transparent_count].v0 = v0;
         transparent_queue[transparent_count].v1 = v1;
         transparent_queue[transparent_count].v2 = v2;
@@ -2110,13 +2242,13 @@ static void draw_triangle_shaded(
         transparent_queue[transparent_count].l2 = l2;
         transparent_queue[transparent_count].mat = mat;
         transparent_queue[transparent_count].mode = mat->mode;
-        transparent_queue[transparent_count].depth = (iw0 < iw1 ? (iw0 < iw2 ? iw0 : iw2) : (iw1 < iw2 ? iw1 : iw2));
+        transparent_queue[transparent_count].depth = (iw0 < iw1) ? ((iw0 < iw2) ? iw0 : iw2) : ((iw1 < iw2) ? iw1 : iw2);
         transparent_queue[transparent_count].min_x = min_x;
         transparent_queue[transparent_count].max_x = max_x;
         transparent_queue[transparent_count].min_y = min_y;
         transparent_queue[transparent_count].max_y = max_y;
         transparent_count++;
-        return;   /* deferred */
+        return;
     }
 
     /* Clip triangle against all frustum planes */
@@ -2128,7 +2260,6 @@ static void draw_triangle_shaded(
         i32 tri_count = clip_triangle_full(v0, v1, v2, n0, n1, n2, l0, l1, l2, cv, cn, cl);
         if (tri_count == 0) return;
 
-        /* Draw each clipped triangle */
         i32 t;
         for (t = 0; t < tri_count; t++)
         {
@@ -2136,48 +2267,100 @@ static void draw_triangle_shaded(
             vec3 cn0 = cn[t*3 + 0], cn1 = cn[t*3 + 1], cn2 = cn[t*3 + 2];
             vec3 cl0_t = cl[t*3 + 0], cl1_t = cl[t*3 + 1], cl2_t = cl[t*3 + 2];
 
-            draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat);
+            if (tile_thread_count <= 1)
+            {
+                draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat, &screen_bounds);
+            }
+            else
+            {
+                tile_bin_triangle(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat);
+            }
         }
         return;
     }
 
-    draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+    /* Render directly for single-thread, or bin to tiles for multithreading */
+    if (tile_thread_count <= 1)
+    {
+        draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, &screen_bounds);
+    }
+    else
+    {
+        tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+    }
 }
 
-/* ------------------------------------------------------------------------- *
- *  Finish frame: sort and draw all transparent triangles (called after all   *
- *  draw_triangle_shaded calls, before reading the framebuffer).               *
- *  ------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------
+    *  Render frame with multithreading: sort transparent, render opaque tiles,  *
+    *  then draw transparent triangles. Called after all draw_triangle calls.   *
+    *  ------------------------------------------------------------------------- */
 static void render_finish(void)
 {
-    if (transparent_count > 0)
+    /* For single-thread, transparent triangles were already drawn directly */
+    if (tile_thread_count <= 1)
     {
-        /* Radix sort back-to-front by depth */
-        radix_sort_transparent();
-
-        in_transparent_pass = 1;
-        i32 i;
-        for (i = 0; i < transparent_count; i++)
+        /* Handle transparent triangles - they need back-to-front sorting */
+        if (transparent_count > 0)
         {
-            /* Early occlusion test - skip if bbox is fully behind opaque geometry */
-            if (!is_bbox_occluded(
-                    transparent_queue[i].min_x, transparent_queue[i].min_y,
-                    transparent_queue[i].max_x, transparent_queue[i].max_y,
-                    transparent_queue[i].depth))
+            radix_sort_transparent();
+            
+            in_transparent_pass = 1;
+            i32 i;
+            for (i = 0; i < transparent_count; i++)
             {
-                draw_triangle_shaded(
-                    transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
-                    transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
-                    transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
-                    transparent_queue[i].mat);
+                if (!is_bbox_occluded(
+                        transparent_queue[i].min_x, transparent_queue[i].min_y,
+                        transparent_queue[i].max_x, transparent_queue[i].max_y,
+                        transparent_queue[i].depth, &screen_bounds))
+                {
+                    draw_triangle_internal(
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                        transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].mat, &screen_bounds);
+                }
             }
+            
+            transparent_count = 0;
+            in_transparent_pass = 0;
         }
-
-        transparent_count = 0;
-        in_transparent_pass = 0;
     }
-
-    /* Swap buffers – present the back buffer, make the old front buffer the new back */
+    else
+    {
+        /* Render all opaque triangles that were binned to tiles */
+        tile_render_all();
+        
+        /* Clear bins for next frame */
+        tile_clear_bins();
+        
+        /* Handle transparent triangles - they need back-to-front sorting */
+        if (transparent_count > 0)
+        {
+            radix_sort_transparent();
+            
+            in_transparent_pass = 1;
+            i32 i;
+            for (i = 0; i < transparent_count; i++)
+            {
+                if (!is_bbox_occluded(
+                        transparent_queue[i].min_x, transparent_queue[i].min_y,
+                        transparent_queue[i].max_x, transparent_queue[i].max_y,
+                        transparent_queue[i].depth, &tile_clip))
+                {
+                    draw_triangle_internal(
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                        transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].mat, &tile_clip);
+                }
+            }
+            
+            transparent_count = 0;
+            in_transparent_pass = 0;
+        }
+    }
+    
+    /* Swap buffers */
     if (fb_front && fb_back) {
         u32  *tmp_fb   = fb_front;
         real *tmp_zbuf = zbuf_front;
@@ -2185,10 +2368,243 @@ static void render_finish(void)
         zbuf_front = zbuf_back;
         fb_back    = tmp_fb;
         zbuf_back  = tmp_zbuf;
-
-        /* fb / zbuf now point to the new back buffer */
+        
         fb   = fb_back;
         zbuf = zbuf_back;
+    }
+}
+
+/* Tile rendering function - executes rasterization for a single tile */
+static void render_tile(void *arg)
+{
+    tile_job *job = (tile_job*)arg;
+    tile_bin *bin = &tile_bins[job->tile_idx];
+    
+    if (bin->tri_count == 0) return;
+    
+    /* Local tile bounds */
+    tile_bounds bounds;
+    bounds.x0 = job->tile_x;
+    bounds.y0 = job->tile_y;
+    bounds.x1 = job->tile_x + job->tile_w;
+    bounds.y1 = job->tile_y + job->tile_h;
+    
+    for (i32 t = 0; t < bin->tri_count; t++)
+    {
+        tile_tri *tri = &bin->tris[t];
+        
+        switch (tri->mode)
+        {
+            case SHADE_WIREFRAME:
+            {
+                vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(tri->v1, tri->v0), vec3_sub(tri->v2, tri->v0)));
+                vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(tri->v0, tri->v1), tri->v2), 1.0f / 3.0f);
+                vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(tri->l0, tri->l1), tri->l2), 1.0f / 3.0f);
+                vec3 color = shade_surface(face_normal, face_center, local_center, tri->mat);
+                raster_triangle_wireframe(tri->v0, tri->v1, tri->v2, color, tri->mat->alpha, tri->mat->effects, &bounds);
+                break;
+            }
+            case SHADE_FLAT:
+            {
+                vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(tri->v1, tri->v0), vec3_sub(tri->v2, tri->v0)));
+                vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(tri->v0, tri->v1), tri->v2), 1.0f / 3.0f);
+                vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(tri->l0, tri->l1), tri->l2), 1.0f / 3.0f);
+                vec3 color = shade_surface(face_normal, face_center, local_center, tri->mat);
+                raster_triangle_flat(tri->v0, tri->v1, tri->v2, color, tri->mat, &bounds);
+                break;
+            }
+            case SHADE_GOURAUD:
+            {
+                vec3 c0 = shade_surface(tri->n0, tri->v0, tri->l0, tri->mat);
+                vec3 c1 = shade_surface(tri->n1, tri->v1, tri->l1, tri->mat);
+                vec3 c2 = shade_surface(tri->n2, tri->v2, tri->l2, tri->mat);
+                raster_triangle_gouraud(tri->v0, tri->v1, tri->v2, c0, c1, c2, tri->mat, &bounds);
+                break;
+            }
+            case SHADE_PHONG:
+                raster_triangle_phong(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->mat, &bounds);
+                break;
+            case SHADE_QUADRATIC:
+                raster_triangle_quadratic(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->mat, &bounds);
+                break;
+            case SHADE_CUBIC:
+                raster_triangle_cubic(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->mat, &bounds);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+/* Initialize tile binning system */
+static void tile_init(i32 width, i32 height)
+{
+    screen_bounds.x0 = 0;
+    screen_bounds.y0 = 0;
+    screen_bounds.x1 = width;
+    screen_bounds.y1 = height;
+    
+    num_tiles_x = (width + TILE_SIZE - 1) / TILE_SIZE;
+    num_tiles_y = (height + TILE_SIZE - 1) / TILE_SIZE;
+    total_tiles = num_tiles_x * num_tiles_y;
+    
+    tile_bins = (tile_bin*)malloc(total_tiles * sizeof(tile_bin));
+    for (i32 i = 0; i < total_tiles; i++)
+    {
+        tile_bins[i].tri_count = 0;
+    }
+    
+    tile_thread_count = get_optimal_thread_count();
+    if (tile_thread_count > total_tiles)
+        tile_thread_count = total_tiles;
+    if (tile_thread_count < 1)
+        tile_thread_count = 1;
+    
+    tile_threadpool = thpool_init(tile_thread_count);
+}
+
+/* Shutdown tile binning system */
+static void tile_shutdown(void)
+{
+    if (tile_threadpool)
+    {
+        thpool_destroy(tile_threadpool);
+        tile_threadpool = NULL;
+    }
+    if (tile_bins)
+    {
+        free(tile_bins);
+        tile_bins = NULL;
+    }
+    if (job_pool)
+    {
+        free(job_pool);
+        job_pool = NULL;
+        job_pool_size = 0;
+    }
+    tile_thread_count = 0;
+}
+
+/* Add triangle to appropriate tile bins based on screen-space bounding box */
+static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
+                              vec3 n0, vec3 n1, vec3 n2,
+                              vec3 l0, vec3 l1, vec3 l2,
+                              const struct material_definition *mat)
+{
+    i32 sx0, sy0, sx1, sy1, sx2, sy2;
+    real iw0, iw1, iw2;
+    
+    project(v0, &sx0, &sy0, &iw0);
+    project(v1, &sx1, &sy1, &iw1);
+    project(v2, &sx2, &sy2, &iw2);
+    
+    i32 min_x = sx0, max_x = sx0;
+    i32 min_y = sy0, max_y = sy0;
+    if (sx1 < min_x) min_x = sx1; if (sx1 > max_x) max_x = sx1;
+    if (sx2 < min_x) min_x = sx2; if (sx2 > max_x) max_x = sx2;
+    if (sy1 < min_y) min_y = sy1; if (sy1 > max_y) max_y = sy1;
+    if (sy2 < min_y) min_y = sy2; if (sy2 > max_y) max_y = sy2;
+    
+    min_x = (min_x < 0) ? 0 : min_x;
+    min_y = (min_y < 0) ? 0 : min_y;
+    max_x = (max_x >= fw) ? fw - 1 : max_x;
+    max_y = (max_y >= fh) ? fh - 1 : max_y;
+    
+    i32 tile_min_x = min_x / TILE_SIZE;
+    i32 tile_min_y = min_y / TILE_SIZE;
+    i32 tile_max_x = max_x / TILE_SIZE;
+    i32 tile_max_y = max_y / TILE_SIZE;
+    
+    real depth = (iw0 < iw1) ? ((iw0 < iw2) ? iw0 : iw2) : ((iw1 < iw2) ? iw1 : iw2);
+    
+    for (i32 ty = tile_min_y; ty <= tile_max_y; ty++)
+    {
+        i32 base_idx = ty * num_tiles_x;
+        for (i32 tx = tile_min_x; tx <= tile_max_x; tx++)
+        {
+            i32 idx = base_idx + tx;
+            if (idx >= total_tiles) continue;
+            
+            tile_bin *bin = &tile_bins[idx];
+            if (bin->tri_count >= MAX_TRIS_PER_TILE) continue;
+            
+            tile_tri *t = &bin->tris[bin->tri_count++];
+            t->v0 = v0; t->v1 = v1; t->v2 = v2;
+            t->n0 = n0; t->n1 = n1; t->n2 = n2;
+            t->l0 = l0; t->l1 = l1; t->l2 = l2;
+            t->mat = mat;
+            t->mode = mat->mode;
+            t->depth = depth;
+        }
+    }
+}
+
+/* Render all tiles in parallel using thread pool */
+static void tile_render_all(void)
+{
+    /* Count tiles with actual triangles for efficient work distribution */
+    i32 active_tiles = 0;
+    for (i32 i = 0; i < total_tiles; i++)
+    {
+        if (tile_bins[i].tri_count > 0) active_tiles++;
+    }
+    
+    /* If not enough active tiles, render sequentially to avoid thread overhead */
+    if (active_tiles < MIN_TILES_PER_THREAD * tile_thread_count)
+    {
+        for (i32 i = 0; i < total_tiles; i++)
+        {
+            if (tile_bins[i].tri_count > 0)
+            {
+                tile_job job;
+                job.tile_idx = i;
+                job.tile_x = (i % num_tiles_x) * TILE_SIZE;
+                job.tile_y = (i / num_tiles_x) * TILE_SIZE;
+                job.tile_w = ((i % num_tiles_x) == num_tiles_x - 1) ? (fw - job.tile_x) : TILE_SIZE;
+                job.tile_h = ((i / num_tiles_x) == num_tiles_y - 1) ? (fh - job.tile_y) : TILE_SIZE;
+                render_tile(&job);
+            }
+        }
+        return;
+    }
+    
+    /* Allocate job pool if needed */
+    if (job_pool_size < total_tiles)
+    {
+        if (job_pool) free(job_pool);
+        job_pool = (tile_job*)malloc(total_tiles * sizeof(tile_job));
+        job_pool_size = total_tiles;
+    }
+    
+    i32 job_count = 0;
+    for (i32 i = 0; i < total_tiles; i++)
+    {
+        if (tile_bins[i].tri_count > 0)
+        {
+            i32 ty = i / num_tiles_x;
+            i32 tx = i % num_tiles_x;
+            
+            tile_job *job = &job_pool[job_count++];
+            
+            job->tile_idx = i;
+            job->tile_x = tx * TILE_SIZE;
+            job->tile_y = ty * TILE_SIZE;
+            job->tile_w = (tx == num_tiles_x - 1) ? (fw - job->tile_x) : TILE_SIZE;
+            job->tile_h = (ty == num_tiles_y - 1) ? (fh - job->tile_y) : TILE_SIZE;
+            
+            thpool_add_work(tile_threadpool, render_tile, job);
+        }
+    }
+    
+    thpool_wait(tile_threadpool);
+}
+
+/* Clear tile bins for next frame */
+static void tile_clear_bins(void)
+{
+    for (i32 i = 0; i < total_tiles; i++)
+    {
+        tile_bins[i].tri_count = 0;
     }
 }
 

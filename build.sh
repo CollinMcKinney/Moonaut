@@ -3,6 +3,7 @@
 mkdir -p ./build
 
 if [ "$(uname -s)" = "Linux" ]; then
+    rm -rf ./build/Moonaut  
     OUTPUT="./build/Moonaut"
     LIBS=(-lm -lX11 -lXrandr -ldl -lpthread)
 else
@@ -46,6 +47,7 @@ gcc "${GCC_OPTS[@]}" \
   libs/lua-5.5.0/src/lutf8lib.c \
   libs/lua-5.5.0/src/lvm.c \
   libs/lua-5.5.0/src/lzio.c \
+  libs/C-Thread-Pool/thpool.c \
   "${LIBS[@]}" -Wno-multichar 2>&1 | grep -E "undefined|error|warning" | head -30
 
 $OUTPUT
