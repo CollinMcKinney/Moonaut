@@ -21,7 +21,9 @@ At its core, the engine runs a fixed-timestep physics simulation integrated with
 
 ## Building
 
-### Bash (planning on moving to CMake eventually)
+### Bash (planning on moving to CMake eventually
+Currently the build.sh script uses `clang` but if GCC is preferred you can just replace `clang` in the script with `gcc`
 ```bash
 ./build.sh
 ```
+
