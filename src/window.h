@@ -5,6 +5,7 @@
 #define RGFW_X11
 #define RGFW_UNIX
 #define RGFW_IMPLEMENTATION
+#define RGFW_NO_UNPREFIXED_INTS
 
 #include "rasterizer.h"
 #include "../libs/rgfw/RGFW.h"

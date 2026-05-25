@@ -8,7 +8,7 @@
 #ifndef CPU_THREADS_H
 #define CPU_THREADS_H
 
-#include "common.h"
+#include "vectors.h"
 
 /* Feature test macros for POSIX functions */
 #ifndef _POSIX_C_SOURCE
@@ -17,6 +17,7 @@
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 500
 #endif
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -132,7 +133,6 @@ static i32 get_physical_core_count(void)
 #elif defined(__linux__) || defined(__unix__)
     /* Linux: read /proc/cpuinfo for core count */
     #include <stdio.h>
-    #include <stdlib.h>
     
     /* Try to read cpu cores directly */
     FILE *fp = fopen("/proc/cpuinfo", "r");

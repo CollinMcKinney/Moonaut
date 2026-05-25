@@ -1,6 +1,7 @@
 #ifndef INPUT_H
 #define INPUT_H
 
+#include "window.h"
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -25,14 +26,14 @@ static void input_process_events(RGFW_window *win)
                        event.type == RGFW_mouseButtonPressed ? "pressed" : "released",
                        event.button.value);
                 break;
-            case RGFW_mousePosChanged:
-                printf("[INPUT] mouse moved: (%d, %d) vec=(%f, %f)\n", event.mouse.x, event.mouse.y, event.mouse.vecX, event.mouse.vecY);
+            case RGFW_mouseMotion:
+                printf("[INPUT] mouse moved: (%d, %d)\n", event.mouse.x, event.mouse.y);
                 break;
             case RGFW_mouseEnter:
                 printf("[INPUT] mouse entered at (%d, %d)\n", event.mouse.x, event.mouse.y);
                 break;
             case RGFW_mouseScroll:
-                printf("[INPUT] mouse wheel: scroll=(%f, %f)\n", event.scroll.x, event.scroll.y);
+                printf("[INPUT] mouse wheel: scroll=(%f, %f)\n", event.delta.x, event.delta.y);
                 break;
         }
     }

@@ -5,9 +5,6 @@
 #include <limits.h>
 #include <float.h>
 
-
-
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -2301,8 +2298,8 @@ static INLINE mat4 mat4_perspective(real fov_y, real aspect, real near_plane, re
     mat4 r;
     i32 i, j;
     for (i = 0; i < 4; i++)
-    for (j = 0; j < 4; j++)
-    r.transpose[i][j] = 0;
+        for (j = 0; j < 4; j++)
+            r.transpose[i][j] = 0;
     
     real tan_half_fov;
     tan_half_fov = real_tan(fov_y * 0.5f);

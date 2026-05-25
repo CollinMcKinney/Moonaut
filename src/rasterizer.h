@@ -33,7 +33,7 @@ typedef struct tile_tri {
     vec3 n0, n1, n2;
     vec3 l0, l1, l2;
     const struct material_definition *mat;
-    shading_mode mode;
+    enum32 mode;
     real depth;
 } tile_tri;
 
@@ -287,7 +287,7 @@ typedef struct transparent_tri
     vec3 n0, n1, n2;
     vec3 l0, l1, l2;
     const struct material_definition *mat;
-    shading_mode mode;
+    enum32 mode;
     real  depth;
     i32 min_x, max_x, min_y, max_y;
 } transparent_tri;
