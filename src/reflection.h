@@ -293,26 +293,26 @@ typedef struct tag_enum_definition {
 /* ------------------------------------------------------------------------
  * Public API
  * ------------------------------------------------------------------------ */
-void                        tag_system_init(void);
-void                        tag_register_group(tag_group_definition *def);
-const tag_group_definition *tag_group_get(tag group_tag);
-i32                         tag_load(const char *name, tag group_tag);
-i32                         tag_load_from_memory(const void *buffer, u32 size, tag group_tag);
-void                       *tag_get(i32 tag_index, tag group_tag);
-void                        tag_release(i32 tag_index);
-i32                         tag_reload(i32 tag_index);
-void                        tag_poll_reloads(void);
-i32                         tag_spawn_instance(i32 backup_index);
-i32                         tag_kill_instance(i32 active_index);
+static void                        tag_system_init(void);
+static void                        tag_register_group(tag_group_definition *def);
+static const tag_group_definition *tag_group_get(tag group_tag);
+static i32                         tag_load(const char *name, tag group_tag);
+static i32                         tag_load_from_memory(const void *buffer, u32 size, tag group_tag);
+static void                       *tag_get(i32 tag_index, tag group_tag);
+static void                        tag_release(i32 tag_index);
+static i32                         tag_reload(i32 tag_index);
+static void                        tag_poll_reloads(void);
+static i32                         tag_spawn_instance(i32 backup_index);
+static i32                         tag_kill_instance(i32 active_index);
 
 /* Enum helper */
-const char *tag_enum_get_name(const tag_field_definition *field, i32 value);
+static const char *tag_enum_get_name(const tag_field_definition *field, i32 value);
 
 /* String table API */
-void        string_table_init(void);
-string_id   string_id_intern(const char *str);
-const char *string_id_lookup(string_id id);
-u32         string_table_get_count(void);
+static void        string_table_init(void);
+static string_id   string_id_intern(const char *str);
+static const char *string_id_lookup(string_id id);
+static u32         string_table_get_count(void);
 
 /* ======================================================================
  * IMPLEMENTATION  (included only once in the main .c file)
@@ -554,13 +554,13 @@ static void tag_postprocess_tag(i32 idx) {
 /* ------------------------------------------------------------------------
  * String table implementation – index‑based
  * ------------------------------------------------------------------------ */
-void string_table_init(void) {
+static void string_table_init(void) {
     if (g_string_table.initialized) return;
     g_string_table.count = 0;
     g_string_table.initialized = 1;
 }
 
-string_id string_id_intern(const char *str) {
+static string_id string_id_intern(const char *str) {
     u32 i;
     size_t len;
 
@@ -588,20 +588,20 @@ string_id string_id_intern(const char *str) {
     return (string_id)(g_string_table.count++);
 }
 
-const char *string_id_lookup(string_id id) {
+static const char *string_id_lookup(string_id id) {
     if (id == TAG_NULL(string_id)) return NULL;
     if (id >= g_string_table.count) return NULL;
     return g_string_table.entries[id].string;
 }
 
-u32 string_table_get_count(void) {
+static u32 string_table_get_count(void) {
     return g_string_table.count;
 }
 
 /* ------------------------------------------------------------------------
  * Enum value name lookup
  * ------------------------------------------------------------------------ */
-const char *tag_enum_get_name(const tag_field_definition *field, i32 value) {
+static const char *tag_enum_get_name(const tag_field_definition *field, i32 value) {
     const tag_enum_definition *def;
     u32 i;
 
@@ -815,7 +815,7 @@ static i32 tag_copy_recursive(i32 source_idx, void *source_data) {
 /* ------------------------------------------------------------------------
  * Public API implementation
  * ------------------------------------------------------------------------ */
-void tag_system_init(void) {
+static void tag_system_init(void) {
     if (tag_sys.initialized) return;
     fprintf(stderr, "[tag] tag_system_init\n");
     memset(&tag_sys, 0, sizeof(tag_sys));
@@ -823,19 +823,19 @@ void tag_system_init(void) {
     string_table_init();
 }
 
-void tag_register_group(tag_group_definition *def) {
+static void tag_register_group(tag_group_definition *def) {
     if (!def || !tag_sys.initialized) return;
     fprintf(stderr, "[tag] tag_register_group %s\n", def->name);
     def->next = tag_sys.group_list;
     tag_sys.group_list = def;
 }
 
-const tag_group_definition *tag_group_get(tag group_tag) {
+static const tag_group_definition *tag_group_get(tag group_tag) {
     fprintf(stderr, "[tag] tag_group_get %u\n", (u32)group_tag);
     return tag_find_group_internal(group_tag);
 }
 
-i32 tag_load(const char *name, tag group_tag) {
+static i32 tag_load(const char *name, tag group_tag) {
     FILE *fp;
     i32 idx;
     if (!tag_sys.initialized || !name) return -1;
@@ -854,7 +854,7 @@ i32 tag_load(const char *name, tag group_tag) {
     return idx;
 }
 
-i32 tag_load_from_memory(const void *buffer, u32 size, tag group_tag) {
+static i32 tag_load_from_memory(const void *buffer, u32 size, tag group_tag) {
     membuf_ctx ctx;
     ctx.buf = (const u8*)buffer;
     ctx.size = size;
@@ -862,7 +862,7 @@ i32 tag_load_from_memory(const void *buffer, u32 size, tag group_tag) {
     return tag_load_from(mem_read_fn, &ctx, "<memory>", group_tag);
 }
 
-void *tag_get(i32 tag_index, tag group_tag) {
+static void *tag_get(i32 tag_index, tag group_tag) {
     tag_instance *inst;
     if (tag_index < 0 || (u32)tag_index >= tag_sys.instance_count)
         return NULL;
@@ -872,7 +872,7 @@ void *tag_get(i32 tag_index, tag group_tag) {
     return inst->active_data;
 }
 
-void tag_release(i32 tag_index) {
+static void tag_release(i32 tag_index) {
     tag_instance *inst;
     if (tag_index < 0 || (u32)tag_index >= tag_sys.instance_count)
         return;
@@ -888,7 +888,7 @@ void tag_release(i32 tag_index) {
     }
 }
 
-i32 tag_reload(i32 tag_index) {
+static i32 tag_reload(i32 tag_index) {
     tag_instance *inst;
     if (tag_index < 0 || (u32)tag_index >= tag_sys.instance_count) return -1;
     inst = &tag_sys.instances[tag_index];
@@ -898,11 +898,11 @@ i32 tag_reload(i32 tag_index) {
     return 0;
 }
 
-void tag_poll_reloads(void) {
+static void tag_poll_reloads(void) {
     /* stub */
 }
 
-i32 tag_spawn_instance(i32 backup_index) {
+static i32 tag_spawn_instance(i32 backup_index) {
     tag_instance *inst;
     if (backup_index < 0 || (u32)backup_index >= tag_sys.instance_count) return -1;
     inst = &tag_sys.instances[backup_index];
@@ -910,7 +910,7 @@ i32 tag_spawn_instance(i32 backup_index) {
     return tag_copy_recursive(backup_index, inst->backup_data);
 }
 
-i32 tag_kill_instance(i32 active_index) {
+static i32 tag_kill_instance(i32 active_index) {
     tag_instance *inst;
     if (active_index < 0 || (u32)active_index >= tag_sys.instance_count) return -1;
     inst = &tag_sys.instances[active_index];

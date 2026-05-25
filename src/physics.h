@@ -14,7 +14,6 @@
 #include "tags/entity.h"
 #include "tags/rigid_body.h"
 
-#include <math.h>
 #include <string.h>
 
 #ifdef __cplusplus
