@@ -3,6 +3,14 @@ project(Moonaut LANGUAGES C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/compile_commands.json")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "${CMAKE_BINARY_DIR}/compile_commands.json"
+        "${CMAKE_SOURCE_DIR}/compile_commands.json"
+    )
+endif()
+
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     add_compile_options(-std=c89 -O3 -ffast-math -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK)
 else()

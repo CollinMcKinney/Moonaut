@@ -1,6 +1,7 @@
 
 build/
-*.exe
+
+compile_commands.json
 
 *.md
 !LICENSE.md
