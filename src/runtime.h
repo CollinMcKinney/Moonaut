@@ -797,41 +797,52 @@ static i32 lua_tag_set_block_field(lua_State *L)
    Lua registration
    ------------------------------------------------------------------------ */
 static void scenario_register_lua_functions(lua_state *state) {
-    lua_register_builtin(state, "vec2",            lua_builtin_vec2);
-    lua_register_builtin(state, "vec3",            lua_builtin_vec3);
-    lua_register_builtin(state, "vec4",            lua_builtin_vec4);
-    lua_register_builtin(state, "clear",           lua_clear);
-    lua_register_builtin(state, "camera_eye",      lua_camera_eye);
-    lua_register_builtin(state, "camera_lookat",   lua_camera_lookat);
-    lua_register_builtin(state, "camera_fov",      lua_camera_fov);
-    lua_register_builtin(state, "light",           lua_light);
-    lua_register_builtin(state, "light_direction", lua_light_direction);
-    lua_register_builtin(state, "light_color",     lua_light_color);
-    lua_register_builtin(state, "light_ambient",   lua_light_ambient);
-    lua_register_builtin(state, "clear_color",     lua_clear_color);
-    lua_register_builtin(state, "load_scenario",   lua_load_scenario);
-    lua_register_builtin(state, "import_model",    lua_import_model);
-    lua_register_builtin(state, "tag_load",        lua_tag_load);
-    lua_register_builtin(state, "tag_get_field",   lua_tag_get_field);
-    lua_register_builtin(state, "tag_set_field",   lua_tag_set_field);
-    lua_register_builtin(state, "tag_get_block_count", lua_tag_get_block_count);
-    lua_register_builtin(state, "tag_get_block_field", lua_tag_get_block_field);
-    lua_register_builtin(state, "tag_set_block_field", lua_tag_set_block_field);
-    lua_register_builtin(state, "tag_get_script",  lua_tag_get_script);
+    lua_register_builtin(state, "clear",                lua_clear);
+    lua_register_builtin(state, "camera_eye",           lua_camera_eye);
+    lua_register_builtin(state, "camera_lookat",        lua_camera_lookat);
+    lua_register_builtin(state, "camera_fov",           lua_camera_fov);
+    lua_register_builtin(state, "light",                lua_light);
+    lua_register_builtin(state, "light_direction",      lua_light_direction);
+    lua_register_builtin(state, "light_color",          lua_light_color);
+    lua_register_builtin(state, "light_ambient",        lua_light_ambient);
+    lua_register_builtin(state, "clear_color",          lua_clear_color);
+    
+    lua_register_builtin(state, "import_model",         lua_import_model);
+    
+    lua_register_builtin(state, "load_scenario",        lua_load_scenario);
+    lua_register_builtin(state, "tag_load",             lua_tag_load);
+    lua_register_builtin(state, "tag_get_field",        lua_tag_get_field);
+    lua_register_builtin(state, "tag_set_field",        lua_tag_set_field);
+    lua_register_builtin(state, "tag_get_block_count",  lua_tag_get_block_count);
+    lua_register_builtin(state, "tag_get_block_field",  lua_tag_get_block_field);
+    lua_register_builtin(state, "tag_set_block_field",  lua_tag_set_block_field);
+    lua_register_builtin(state, "tag_get_script",       lua_tag_get_script);
 
-    /* constants */
-    lua_set_global_number(state, "SHADE_WIREFRAME", SHADE_WIREFRAME);
-    lua_set_global_number(state, "SHADE_FLAT",      SHADE_FLAT);
-    lua_set_global_number(state, "SHADE_GOURAUD",   SHADE_GOURAUD);
-    lua_set_global_number(state, "SHADE_PHONG",     SHADE_PHONG);
-    lua_set_global_number(state, "TAG_material",     TAG_material);
-    lua_set_global_number(state, "TAG_model",        TAG_model);
-    lua_set_global_number(state, "TAG_entity",       TAG_entity);
-    lua_set_global_number(state, "TAG_rigid_body",   TAG_rigid_body);
-    lua_set_global_number(state, "TAG_scenario",     TAG_scenario);
-    lua_set_global_number(state, "TAG_globals",      TAG_globals);
-    lua_set_global_number(state, "TAG_camera",       TAG_camera);
-    lua_set_global_number(state, "TAG_lua_script",   TAG_lua_script);
+    lua_register_builtin(state, "vec2",                 lua_builtin_vec2);
+    lua_register_builtin(state, "vec3",                 lua_builtin_vec3);
+    lua_register_builtin(state, "vec4",                 lua_builtin_vec4);
+
+    /* 
+     *  Constants 
+     */
+
+    /* Shading modes. */
+    lua_set_global_integer(state, "SHADE_WIREFRAME",    SHADE_WIREFRAME);
+    lua_set_global_integer(state, "SHADE_FLAT",         SHADE_FLAT);
+    lua_set_global_integer(state, "SHADE_GOURAUD",      SHADE_GOURAUD);
+    lua_set_global_integer(state, "SHADE_QUADRATIC",    SHADE_QUADRATIC);
+    lua_set_global_integer(state, "SHADE_CUBIC",        SHADE_CUBIC);
+    lua_set_global_integer(state, "SHADE_PHONG",        SHADE_PHONG);
+
+    /* Tag groups. */
+    lua_set_global_integer(state, "TAG_material",       TAG_material);
+    lua_set_global_integer(state, "TAG_model",          TAG_model);
+    lua_set_global_integer(state, "TAG_entity",         TAG_entity);
+    lua_set_global_integer(state, "TAG_rigid_body",     TAG_rigid_body);
+    lua_set_global_integer(state, "TAG_scenario",       TAG_scenario);
+    lua_set_global_integer(state, "TAG_globals",        TAG_globals);
+    lua_set_global_integer(state, "TAG_camera",         TAG_camera);
+    lua_set_global_integer(state, "TAG_lua_script",     TAG_lua_script);
 }
 
 static void scenario_bind_lua_state(lua_state *state, void *userdata) {

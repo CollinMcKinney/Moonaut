@@ -221,6 +221,16 @@ static void lua_set_global_number(lua_state *state, const char *name, lua_Number
     lua_setglobal(state->L, name);
 }
 
+static void lua_set_global_integer(lua_state *state, const char *name, lua_Integer value)
+{
+    if (state == NULL || state->L == NULL)
+    {
+        return;
+    }
+    lua_pushinteger(state->L, value);
+    lua_setglobal(state->L, name);
+}
+
 /* Read the whole file into a dynamically allocated buffer.
    Returns NULL on failure, otherwise a null‑terminated string. */
 static char *scripts_read_whole_file(const char *path, size_t *out_len)
