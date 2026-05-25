@@ -1,0 +1,144 @@
+{
+  "version": 3,
+  "vendor": {
+    "Moonaut": {}
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "base-ninja",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Ninja"
+    },
+    {
+      "name": "base-xcode",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Xcode"
+    },
+    {
+      "name": "base-vs",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Visual Studio 17 2022"
+    },
+    {
+      "name": "release-base",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug-base",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "clang-release",
+      "displayName": "Clang Release",
+      "description": "Release build with Clang",
+      "inherits": ["release-base", "base-ninja"],
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "clang-debug",
+      "displayName": "Clang Debug",
+      "description": "Debug build with Clang",
+      "inherits": ["debug-base", "base-ninja"],
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "gcc-release",
+      "displayName": "GCC Release",
+      "description": "Release build with GCC",
+      "inherits": ["release-base", "base-ninja"],
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc"
+      }
+    },
+    {
+      "name": "gcc-debug",
+      "displayName": "GCC Debug",
+      "description": "Debug build with GCC",
+      "inherits": ["debug-base", "base-ninja"],
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc"
+      }
+    },
+    {
+      "name": "msvc-release",
+      "displayName": "MSVC Release",
+      "description": "Release build with Visual Studio",
+      "inherits": ["release-base", "base-vs"],
+      "architecture": "x64"
+    },
+    {
+      "name": "msvc-debug",
+      "displayName": "MSVC Debug",
+      "description": "Debug build with Visual Studio",
+      "inherits": ["debug-base", "base-vs"],
+      "architecture": "x64"
+    },
+    {
+      "name": "xcode-release",
+      "displayName": "Xcode Release",
+      "description": "Release build with Xcode",
+      "inherits": ["release-base", "base-xcode"]
+    },
+    {
+      "name": "xcode-debug",
+      "displayName": "Xcode Debug",
+      "description": "Debug build with Xcode",
+      "inherits": ["debug-base", "base-xcode"]
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "clang-release",
+      "configurePreset": "clang-release"
+    },
+    {
+      "name": "clang-debug",
+      "configurePreset": "clang-debug"
+    },
+    {
+      "name": "gcc-release",
+      "configurePreset": "gcc-release"
+    },
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug"
+    },
+    {
+      "name": "msvc-release",
+      "configurePreset": "msvc-release"
+    },
+    {
+      "name": "msvc-debug",
+      "configurePreset": "msvc-debug"
+    },
+    {
+      "name": "xcode-release",
+      "configurePreset": "xcode-release"
+    },
+    {
+      "name": "xcode-debug",
+      "configurePreset": "xcode-debug"
+    }
+  ]
+}
