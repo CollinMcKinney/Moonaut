@@ -2,6 +2,7 @@
 #define INPUT_H
 
 #include "window.h"
+#include "runtime.h"
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -9,7 +10,7 @@ extern "C" {
 #endif
 
 /* Process input events - call from main loop, logs to console */
-static void input_process_events(RGFW_window *win)
+static void input_process_events(RGFW_window *win, scenario_world *w)
 {
     RGFW_event event;
     while (RGFW_window_checkEvent(win, &event)) {
@@ -34,6 +35,11 @@ static void input_process_events(RGFW_window *win)
                 break;
             case RGFW_mouseScroll:
                 printf("[INPUT] mouse wheel: scroll=(%f, %f)\n", event.delta.x, event.delta.y);
+                break;
+            case RGFW_windowResized:
+                printf("[INPUT] window resized: (%d, %d)\n", event.update.w, event.update.h);
+                window_resize(event.update.w, event.update.h);
+                if (w) scenario_resize(w, event.update.w, event.update.h);
                 break;
         }
     }

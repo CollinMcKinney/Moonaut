@@ -67,10 +67,22 @@ typedef struct {
 /* Current tile clipping bounds - only used as fallback for transparent pass */
 static tile_bounds tile_clip = {0, 0, 0, 0};
 
-/* Double-buffered framebuffer and depth buffer */
+/* Fixed internal render resolution */
+#define RENDER_WIDTH  1024
+#define RENDER_HEIGHT 576
+
+/* Double-buffered framebuffer and depth buffer (window size) */
 static u32  *fb_front = NULL, *fb_back = NULL, *fb = NULL;
 static real *zbuf_front = NULL, *zbuf_back = NULL, *zbuf = NULL;
 static i32  fw = 0, fh = 0, fb_pitch = 0;
+
+/* Internal render buffers (fixed 1024x576) */
+static u32  *fb_render = NULL;
+static real *zbuf_render = NULL;
+static i32   internal_pitch = 0;
+
+/* Scaling factors for upscaling from render resolution to window size */
+static real scale_x = 1.0f, scale_y = 1.0f;
 
 static mat4 vp;
 static vec3 light_dir, light_col, ambient_col;
@@ -403,14 +415,32 @@ static INLINE u32 pack_color_real(real r, real g, real b)
     return pack_color(color_to_u8(r), color_to_u8(g), color_to_u8(b));
 }
 
-/* - Transparent pixel write - */
-/* Optimized: uses fixed-point integer math for faster blending */
-static INLINE void write_transparent_pixel(i32 idx, real iw, vec3 color, real alpha, i32 effects)
+/* - Scaled opaque pixel write -
+ * Writes to internal render buffer at render resolution */
+static INLINE void write_scaled_opaque_pixel(i32 rx, i32 ry, real iw, u32 color)
 {
-    if (iw <= 0.0f) return;
-    if (iw <= zbuf[idx]) return;
+    if (rx < 0 || rx >= RENDER_WIDTH || ry < 0 || ry >= RENDER_HEIGHT) return;
     
-    u32 dst = fb[idx];
+    i32 ridx = ry * RENDER_WIDTH + rx;
+    if (iw > zbuf_render[ridx])
+    {
+        zbuf_render[ridx] = iw;
+        fb_render[ridx] = color;
+    }
+}
+
+/* - Scaled transparent pixel write -
+ * Writes to internal render buffer at render resolution (for blending at render resolution) */
+static INLINE void write_scaled_transparent_pixel(i32 rx, i32 ry, real iw, vec3 color, real alpha, i32 effects)
+{
+    if (rx < 0 || rx >= RENDER_WIDTH || ry < 0 || ry >= RENDER_HEIGHT) return;
+    if (iw <= 0.0f) return;
+    
+    i32 ridx = ry * RENDER_WIDTH + rx;
+    real prev_z = zbuf_render[ridx];
+    if (iw <= prev_z) return;
+    
+    u32 dst = fb_render[ridx];
     u8 dr = (u8)((dst >> 16) & 0xFF);
     u8 dg = (u8)((dst >> 8) & 0xFF);
     u8 db = (u8)(dst & 0xFF);
@@ -420,20 +450,26 @@ static INLINE void write_transparent_pixel(i32 idx, real iw, vec3 color, real al
     u8 sb = color_to_u8(color.color.b);
     u8 ia = (u8)(alpha * 255.0f + 0.5f);
     
-    fb[idx] = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
-              ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
-              ((u32)((sb * ia + db * (255 - ia)) / 255));
+u32 result = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
+                  ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
+                  ((u32)((sb * ia + db * (255 - ia)) / 255));
+    
+    fb_render[ridx] = result;
+    /* Note: we do NOT update zbuf_render for transparent pixels to allow
+     * back-to-front blending to work correctly */
 }
 
 /* -------------------------------------------------------------------------
- *  Framebuffer management
- *  ------------------------------------------------------------------------- */
+  *  Framebuffer management
+  *  ------------------------------------------------------------------------- */
 /* Framebuffer pitch aligned to 16-byte boundary for SSE optimization */
 static i32 render_init(i32 w, i32 h)
 {
-    /* Align pitch to multiple of 4 pixels (16 bytes for u32 rgba) */
-    fb_pitch = (w + 3) & ~3;
+    /* Store window dimensions */
     fw = w; fh = h;
+    fb_pitch = (w + 3) & ~3;
+    
+    /* Allocate window-sized framebuffer for display */
     fb_front = (u32*)malloc(fb_pitch * h * sizeof(u32));
     zbuf_front = (real*)malloc(fb_pitch * h * sizeof(real));
     fb_back  = (u32*)malloc(fb_pitch * h * sizeof(u32));
@@ -445,13 +481,29 @@ static i32 render_init(i32 w, i32 h)
         fb = NULL; zbuf = NULL;
         return -1;
     }
+    
+    /* Allocate internal render buffers at fixed resolution */
+    internal_pitch = (RENDER_WIDTH + 3) & ~3;
+    fb_render = (u32*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(u32));
+    zbuf_render = (real*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(real));
+    if (!fb_render || !zbuf_render)
+    {
+        free(fb_render); free(zbuf_render);
+        fb_render = NULL; zbuf_render = NULL;
+        return -1;
+    }
+    
     /* Initially render into the back buffer */
     fb   = fb_back;
     zbuf = zbuf_back;
     
-    /* Initialize tile clipping to full framebuffer by default */
+    /* Compute scaling factors from render resolution to window size */
+    scale_x = (real)w / (real)RENDER_WIDTH;
+    scale_y = (real)h / (real)RENDER_HEIGHT;
+    
+    /* Initialize tile clipping to render resolution by default */
     tile_clip.x0 = 0; tile_clip.y0 = 0;
-    tile_clip.x1 = fw; tile_clip.y1 = fh;
+    tile_clip.x1 = RENDER_WIDTH; tile_clip.y1 = RENDER_HEIGHT;
     
     /* Initialize tile binning system for multithreaded rendering */
     tile_init(w, h);
@@ -461,11 +513,31 @@ static i32 render_init(i32 w, i32 h)
 
 static void render_clear(u8 r, u8 g, u8 b)
 {
-    if (!fb || !zbuf) return;
     u32 col = pack_color(r, g, b);
-    u32 *fb32 = (u32*)fb;
-    real *zb = (real*)zbuf;
-    i32 n = fb_pitch * fh;  /* Use pitch-aligned size */
+    
+    /* Clear window framebuffer */
+    if (fb) {
+        u32 *fb32 = (u32*)fb;
+        i32 n = fb_pitch * fh;
+        i32 i;
+        for (i = 0; i + 3 < n; i += 4)
+        {
+            fb32[i] = col;
+            fb32[i+1] = col;
+            fb32[i+2] = col;
+            fb32[i+3] = col;
+        }
+        while (i < n) {
+            fb32[i] = col;
+            i++;
+        }
+    }
+    
+    /* Clear internal render buffers */
+    if (!fb_render || !zbuf_render) return;
+    u32 *fb32 = (u32*)fb_render;
+    real *zb = (real*)zbuf_render;
+    i32 n = internal_pitch * RENDER_HEIGHT;
     i32 i;
     for (i = 0; i + 3 < n; i += 4)
     {
@@ -478,7 +550,6 @@ static void render_clear(u8 r, u8 g, u8 b)
         zb[i+2] = 0;
         zb[i+3] = 0;
     }
-    /* Handle any remaining pixels */
     while (i < n) {
         fb32[i] = col;
         zb[i] = 0;
@@ -495,8 +566,49 @@ static void render_shutdown(void)
     fb_front = fb_back = fb = NULL;
     zbuf_front = zbuf_back = zbuf = NULL;
     
+    free(fb_render);
+    free(zbuf_render);
+    fb_render = NULL;
+    zbuf_render = NULL;
+    
     /* Shutdown tile binning system */
     tile_shutdown();
+}
+
+/* Resize window framebuffer when window changes size (internal buffers stay fixed) */
+static i32 render_resize(i32 new_w, i32 new_h)
+{
+    if (new_w == fw && new_h == fh) return 0;
+    
+    /* Free old window buffers */
+    free(fb_front); free(zbuf_front);
+    free(fb_back); free(zbuf_back);
+    
+    /* Update window dimensions */
+    fw = new_w; fh = new_h;
+    fb_pitch = (new_w + 3) & ~3;
+    
+    /* Reallocate window-sized framebuffer for display */
+    fb_front = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
+    zbuf_front = (real*)malloc(fb_pitch * new_h * sizeof(real));
+    fb_back  = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
+    zbuf_back = (real*)malloc(fb_pitch * new_h * sizeof(real));
+    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back)
+    {
+        free(fb_front); free(zbuf_front);
+        free(fb_back); free(zbuf_back);
+        fb_front = fb_back = fb = NULL;
+        zbuf_front = zbuf_back = zbuf = NULL;
+        return -1;
+    }
+    
+    /* Update active buffers and scale factors */
+    fb = fb_back;
+    zbuf = zbuf_back;
+    scale_x = (real)new_w / (real)RENDER_WIDTH;
+    scale_y = (real)new_h / (real)RENDER_HEIGHT;
+    
+    return 0;
 }
 
 /* Check if screen-space bounding box is fully occluded by opaque geometry.
@@ -515,12 +627,12 @@ static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw, 
     for (y = y0; y <= y1; y += step_y)
     {
         if (y < bounds->y0 || y >= bounds->y1) continue;
-        i32 row_base = y * fw;
+        i32 row_base = y * RENDER_WIDTH;
         for (x = x0; x <= x1; x += step_x)
         {
             if (x < bounds->x0 || x >= bounds->x1) continue;
             checked = 1;
-            real z = zbuf[row_base + x];
+            real z = zbuf_render[row_base + x];
             /* If no opaque (z==0) or opaque is behind farthest transparent point (z < min_iw),
                then transparent is NOT fully occluded at this pixel */
             if (z == 0 || z < min_iw) return 0;
@@ -530,25 +642,17 @@ static INLINE i32 is_bbox_occluded(i32 x0, i32 y0, i32 x1, i32 y1, real min_iw, 
 }
 
 /* -------------------------------------------------------------------------
- *  Pixel write (wireframe helper)
- *  ------------------------------------------------------------------------- */
-static INLINE void set_pix(i32 x, i32 y, u8 r, u8 g, u8 b, const tile_bounds *bounds)
-{
-    if (x < bounds->x0 || x >= bounds->x1 || y < bounds->y0 || y >= bounds->y1) return;
-    fb[y * fw + x] = pack_color(r, g, b);
-}
-
-/* -------------------------------------------------------------------------
- *  Projection helpers
- *  ------------------------------------------------------------------------- */
+  *  Projection helpers
+  *  ------------------------------------------------------------------------- */
 static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw)
 {
     vec4 c = mat4_mul_vec4(vp, vec4_init_from_4(w.position.x, w.position.y, w.position.z, 1.0f));
     if (c.rotation.w <= 1e-6f) { *sx = -1; *sy = -1; *iw = 0; return; }
     *iw = 1.0f / c.rotation.w;
     real ndcx = c.position.x * (*iw), ndcy = c.position.y * (*iw);
-    *sx = (i32)((ndcx * 0.5f + 0.5f) * fw);
-    *sy = (i32)((1.0f - (ndcy * 0.5f + 0.5f)) * fh);
+    /* Project to internal render resolution (1024x576) */
+    *sx = (i32)((ndcx * 0.5f + 0.5f) * RENDER_WIDTH);
+    *sy = (i32)((1.0f - (ndcy * 0.5f + 0.5f)) * RENDER_HEIGHT);
 }
 
 static INLINE void swapi(i32 *a, i32 *b) { i32 t = *a; *a = *b; *b = t; }
@@ -933,12 +1037,7 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
     {
         while (1)
         {
-            i32 idx = y0 * fw + x0;
-            if (iw > zbuf[idx])
-            {
-                zbuf[idx] = iw;
-                fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
-            }
+            write_scaled_opaque_pixel(x0, y0, iw, pack_color_real(color.color.r, color.color.g, color.color.b));
             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
             if (e2 >= dy_abs)
@@ -959,8 +1058,8 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
     {
         while (1)
         {
-            i32 idx = y0 * fw + x0;
-            write_transparent_pixel(idx, iw, color, alpha, effects);
+            i32 idx = y0 * RENDER_WIDTH + x0;
+            write_scaled_transparent_pixel(x0, y0, iw, color, alpha, effects);
             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
             if (e2 >= dy_abs)
@@ -998,8 +1097,8 @@ static void raster_triangle_wireframe(vec3 v0, vec3 v1, vec3 v2, vec3 edge_color
   *  Per-face/triangle rasterization                                         *
   *  -----------------------------------------------------------------------*/
 static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
-                                 const struct material_definition *mat,
-                                 const tile_bounds *bounds)
+                                  const struct material_definition *mat,
+                                  const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
@@ -1094,20 +1193,14 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
             continue;
         }
 
-        i32 row_base = y * fw;
-
         /* Fully inlined opaque write for maximum speed (common case) */
         if (!(mat->effects & EFFECT_ALPHA))
         {
             iw = siw;
+            u32 col = pack_color_real(color.color.r, color.color.g, color.color.b);
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
-                if (iw > zbuf[idx])
-                {
-                    zbuf[idx] = iw;
-                    fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
-                }
+                write_scaled_opaque_pixel(x, y, iw, col);
                 iw += iw_step;
             }
         }
@@ -1116,8 +1209,7 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
-                write_transparent_pixel(idx, iw, color, mat->alpha, mat->effects);
+                write_scaled_transparent_pixel(x, y, iw, color, mat->alpha, mat->effects);
                 iw += iw_step;
             }
         }
@@ -1258,8 +1350,6 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
         }
         if (ex <= sx) continue;
 
-        i32 row_base = y * fw;
-
         /* Fully inlined opaque write for maximum speed (common case) */
         if (!(mat->effects & EFFECT_ALPHA))
         {
@@ -1267,12 +1357,7 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
             col = cs;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
-                if (iw > zbuf[idx])
-                {
-                    zbuf[idx] = iw;
-                    fb[idx] = pack_color_real(col.color.r, col.color.g, col.color.b);
-                }
+                write_scaled_opaque_pixel(x, y, iw, pack_color_real(col.color.r, col.color.g, col.color.b));
                 iw += iw_step;
                 col.color.r += dc_step.color.r;
                 col.color.g += dc_step.color.g;
@@ -1285,8 +1370,7 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
             col = cs;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
-                write_transparent_pixel(idx, iw, col, mat->alpha, mat->effects);
+                write_scaled_transparent_pixel(x, y, iw, col, mat->alpha, mat->effects);
                 iw += iw_step;
                 col.color.r += dc_step.color.r;
                 col.color.g += dc_step.color.g;
@@ -1433,15 +1517,12 @@ static void raster_triangle_quadratic(
         }
         if (ex <= sx) continue;
 
-        i32 row_base = y * fw;
-
         /* Fully inlined opaque write for maximum speed (common case) */
         if (!(mat->effects & EFFECT_ALPHA))
         {
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
                 /* Compute barycentric coordinates via edge distances */
                 real l0_val = (f0x * x + f0y * y + f0_offset) * iarea;
                 real l1_val = (f1x * x + f1y * y + f1_offset) * iarea;
@@ -1468,11 +1549,7 @@ static void raster_triangle_quadratic(
                 final_col.color.b = l0_val * l0_val * c0.color.b + l1_val * l1_val * c1.color.b + l2_val * l2_val * c2.color.b
                                     + 2.0f * l0_val * l1_val * cm01.color.b + 2.0f * l1_val * l2_val * cm12.color.b + 2.0f * l2_val * l0_val * cm20.color.b;
 
-                if (iw > zbuf[idx])
-                {
-                    zbuf[idx] = iw;
-                    fb[idx] = pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b);
-                }
+                write_scaled_opaque_pixel(x, y, iw, pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b));
                 iw += iw_step;
             }
         }
@@ -1481,7 +1558,6 @@ static void raster_triangle_quadratic(
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
                 /* Compute barycentric coordinates via edge distances */
                 real l0_val = (f0x * x + f0y * y + f0_offset) * iarea;
                 real l1_val = (f1x * x + f1y * y + f1_offset) * iarea;
@@ -1508,7 +1584,7 @@ static void raster_triangle_quadratic(
                 final_col.color.b = l0_val * l0_val * c0.color.b + l1_val * l1_val * c1.color.b + l2_val * l2_val * c2.color.b
                                     + 2.0f * l0_val * l1_val * cm01.color.b + 2.0f * l1_val * l2_val * cm12.color.b + 2.0f * l2_val * l0_val * cm20.color.b;
 
-write_transparent_pixel(idx, iw, final_col, mat->alpha, mat->effects);
+                write_scaled_transparent_pixel(x, y, iw, final_col, mat->alpha, mat->effects);
                 iw += iw_step;
             }
         }
@@ -1688,15 +1764,12 @@ static void raster_triangle_cubic(
         }
         if (ex <= sx) continue;
 
-        i32 row_base = y * fw;
-
         /* Fully inlined opaque write for maximum speed (common case) */
         if (!(mat->effects & EFFECT_ALPHA))
         {
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
                 /* Compute barycentric coordinates via edge distances */
                 real l0_val = (f0x * x + f0y * y + f0_offset) * iarea;
                 real l1_val = (f1x * x + f1y * y + f1_offset) * iarea;
@@ -1734,11 +1807,7 @@ static void raster_triangle_cubic(
                                     + 3.0f*l0_val*l1_sq*ct01_2.color.b + 3.0f*l1_val*l2_sq*ct12_2.color.b + 3.0f*l2_val*l0_sq*ct20_2.color.b
                                     + 6.0f*l0_val*l1_val*l2_val*cc.color.b;
 
-                if (iw > zbuf[idx])
-                {
-                    zbuf[idx] = iw;
-                    fb[idx] = pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b);
-                }
+                write_scaled_opaque_pixel(x, y, iw, pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b));
                 iw += iw_step;
             }
         }
@@ -1747,7 +1816,6 @@ static void raster_triangle_cubic(
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
                 /* Compute barycentric coordinates via edge distances */
                 real l0_val = (f0x * x + f0y * y + f0_offset) * iarea;
                 real l1_val = (f1x * x + f1y * y + f1_offset) * iarea;
@@ -1785,7 +1853,7 @@ static void raster_triangle_cubic(
                                     + 3.0f*l0_val*l1_sq*ct01_2.color.b + 3.0f*l1_val*l2_sq*ct12_2.color.b + 3.0f*l2_val*l0_sq*ct20_2.color.b
                                     + 6.0f*l0_val*l1_val*l2_val*cc.color.b;
 
-write_transparent_pixel(idx, iw, final_col, mat->alpha, mat->effects);
+                write_scaled_transparent_pixel(x, y, iw, final_col, mat->alpha, mat->effects);
                 iw += iw_step;
             }
         }
@@ -2056,16 +2124,13 @@ static void raster_triangle_phong(
         lp_val_y = lps_y;
         lp_val_z = lps_z;
 
-        i32 row_base = y * fw;
-
         /* Fully inlined opaque write for maximum speed (common case) */
         if (!(mat->effects & EFFECT_ALPHA))
         {
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
-                if (iw > zbuf[idx])
+                if (iw > zbuf_render[y * RENDER_WIDTH + x])
                 {
                     real inv_w = 1.0f / iw;
                     vec3 normal, world_pos, local_pos;
@@ -2079,8 +2144,8 @@ static void raster_triangle_phong(
                     local_pos.position.y = lp_val_y * inv_w;
                     local_pos.position.z = lp_val_z * inv_w;
                     vec3 color = shade_surface(normal, world_pos, local_pos, mat);
-                    zbuf[idx] = iw;
-                    fb[idx] = pack_color_real(color.color.r, color.color.g, color.color.b);
+                    zbuf_render[y * RENDER_WIDTH + x] = iw;
+                    fb_render[y * RENDER_WIDTH + x] = pack_color_real(color.color.r, color.color.g, color.color.b);
                 }
                 iw += iw_step;
                 nw_val_x += dnw_step_x;
@@ -2099,14 +2164,14 @@ static void raster_triangle_phong(
             iw = siw;
             for (x = sx; x < ex; x++)
             {
-                i32 idx = row_base + x;
-                if (iw >= zbuf[idx])
+                i32 ridx = y * RENDER_WIDTH + x;
+                if (iw > zbuf_render[ridx])
                 {
                     vec3 color = shade_surface(
                         vec3_init_from_3(nw_val_x / iw, nw_val_y / iw, nw_val_z / iw),
                         vec3_init_from_3(wp_val_x / iw, wp_val_y / iw, wp_val_z / iw),
                         vec3_init_from_3(lp_val_x / iw, lp_val_y / iw, lp_val_z / iw), mat);
-                    write_transparent_pixel(idx, iw, color, mat->alpha, mat->effects);
+                    write_scaled_transparent_pixel(x, y, iw, color, mat->alpha, mat->effects);
                 }
                 iw += iw_step;
                 nw_val_x += dnw_step_x;
@@ -2227,9 +2292,9 @@ static void draw_triangle_shaded(
         if (sy2 < min_y) min_y = sy2; if (sy2 > max_y) max_y = sy2;
         
         if (min_x < 0) min_x = 0;
-        if (max_x >= fw) max_x = fw - 1;
+        if (max_x >= RENDER_WIDTH) max_x = RENDER_WIDTH - 1;
         if (min_y < 0) min_y = 0;
-        if (max_y >= fh) max_y = fh - 1;
+        if (max_y >= RENDER_HEIGHT) max_y = RENDER_HEIGHT - 1;
         
         transparent_queue[transparent_count].v0 = v0;
         transparent_queue[transparent_count].v1 = v1;
@@ -2290,13 +2355,10 @@ static void draw_triangle_shaded(
     }
 }
 
-/* -------------------------------------------------------------------------
-    *  Render frame with multithreading: sort transparent, render opaque tiles,  *
-    *  then draw transparent triangles. Called after all draw_triangle calls.   *
-    *  ------------------------------------------------------------------------- */
+/* Call this once per frame after all draw_triangle calls to finalize rendering. */
 static void render_finish(void)
 {
-    /* For single-thread, transparent triangles were already drawn directly */
+    /* For single-thread, triangles were drawn to fb_render */
     if (tile_thread_count <= 1)
     {
         /* Handle transparent triangles - they need back-to-front sorting */
@@ -2360,6 +2422,27 @@ static void render_finish(void)
         }
     }
     
+    /* Upscale all rendered content from fb_render to fb (final output) */
+    i32 y;
+    real inv_scale_x = (real)RENDER_WIDTH / (real)fw;
+    real inv_scale_y = (real)RENDER_HEIGHT / (real)fh;
+    for (y = 0; y < fh; y++)
+    {
+        i32 ry = (i32)(y * inv_scale_y);
+        if (ry >= RENDER_HEIGHT) ry = RENDER_HEIGHT - 1;
+        
+        i32 row_base = y * fw;
+        i32 src_base = ry * RENDER_WIDTH;
+        
+        i32 x;
+        for (x = 0; x < fw; x++)
+        {
+            i32 rx = (i32)(x * inv_scale_x);
+            if (rx >= RENDER_WIDTH) rx = RENDER_WIDTH - 1;
+            fb[row_base + x] = fb_render[src_base + rx];
+        }
+    }
+    
     /* Swap buffers */
     if (fb_front && fb_back) {
         u32  *tmp_fb   = fb_front;
@@ -2373,8 +2456,6 @@ static void render_finish(void)
         zbuf = zbuf_back;
     }
 }
-
-/* Tile rendering function - executes rasterization for a single tile */
 static void render_tile(void *arg)
 {
     tile_job *job = (tile_job*)arg;
@@ -2382,12 +2463,12 @@ static void render_tile(void *arg)
     
     if (bin->tri_count == 0) return;
     
-    /* Local tile bounds */
+    /* Local tile bounds - render resolution */
     tile_bounds bounds;
     bounds.x0 = job->tile_x;
     bounds.y0 = job->tile_y;
-    bounds.x1 = job->tile_x + job->tile_w;
-    bounds.y1 = job->tile_y + job->tile_h;
+    bounds.x1 = (job->tile_x + job->tile_w > RENDER_WIDTH) ? RENDER_WIDTH : job->tile_x + job->tile_w;
+    bounds.y1 = (job->tile_y + job->tile_h > RENDER_HEIGHT) ? RENDER_HEIGHT : job->tile_y + job->tile_h;
     
     i32 t;
     for (t = 0; t < bin->tri_count; t++)
@@ -2440,13 +2521,15 @@ static void render_tile(void *arg)
 /* Initialize tile binning system */
 static void tile_init(i32 width, i32 height)
 {
+    /* Set screen bounds to render resolution for clipping */
     screen_bounds.x0 = 0;
     screen_bounds.y0 = 0;
-    screen_bounds.x1 = width;
-    screen_bounds.y1 = height;
+    screen_bounds.x1 = RENDER_WIDTH;
+    screen_bounds.y1 = RENDER_HEIGHT;
     
-    num_tiles_x = (width + TILE_SIZE - 1) / TILE_SIZE;
-    num_tiles_y = (height + TILE_SIZE - 1) / TILE_SIZE;
+    /* Tile grid based on render resolution */
+    num_tiles_x = (RENDER_WIDTH + TILE_SIZE - 1) / TILE_SIZE;
+    num_tiles_y = (RENDER_HEIGHT + TILE_SIZE - 1) / TILE_SIZE;
     total_tiles = num_tiles_x * num_tiles_y;
     
     tile_bins = (tile_bin*)malloc(total_tiles * sizeof(tile_bin));
@@ -2509,8 +2592,8 @@ static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
     
     min_x = (min_x < 0) ? 0 : min_x;
     min_y = (min_y < 0) ? 0 : min_y;
-    max_x = (max_x >= fw) ? fw - 1 : max_x;
-    max_y = (max_y >= fh) ? fh - 1 : max_y;
+    max_x = (max_x >= RENDER_WIDTH) ? RENDER_WIDTH - 1 : max_x;
+    max_y = (max_y >= RENDER_HEIGHT) ? RENDER_HEIGHT - 1 : max_y;
     
     i32 tile_min_x = min_x / TILE_SIZE;
     i32 tile_min_y = min_y / TILE_SIZE;
@@ -2565,8 +2648,8 @@ static void tile_render_all(void)
                 job.tile_idx = i;
                 job.tile_x = (i % num_tiles_x) * TILE_SIZE;
                 job.tile_y = (i / num_tiles_x) * TILE_SIZE;
-                job.tile_w = ((i % num_tiles_x) == num_tiles_x - 1) ? (fw - job.tile_x) : TILE_SIZE;
-                job.tile_h = ((i / num_tiles_x) == num_tiles_y - 1) ? (fh - job.tile_y) : TILE_SIZE;
+                job.tile_w = ((i % num_tiles_x) == num_tiles_x - 1) ? (RENDER_WIDTH - job.tile_x) : TILE_SIZE;
+                job.tile_h = ((i / num_tiles_x) == num_tiles_y - 1) ? (RENDER_HEIGHT - job.tile_y) : TILE_SIZE;
                 render_tile(&job);
             }
         }
@@ -2594,8 +2677,8 @@ static void tile_render_all(void)
             job->tile_idx = i;
             job->tile_x = tx * TILE_SIZE;
             job->tile_y = ty * TILE_SIZE;
-            job->tile_w = (tx == num_tiles_x - 1) ? (fw - job->tile_x) : TILE_SIZE;
-            job->tile_h = (ty == num_tiles_y - 1) ? (fh - job->tile_y) : TILE_SIZE;
+            job->tile_w = (tx == num_tiles_x - 1) ? (RENDER_WIDTH - job->tile_x) : TILE_SIZE;
+            job->tile_h = (ty == num_tiles_y - 1) ? (RENDER_HEIGHT - job->tile_y) : TILE_SIZE;
             
             thpool_add_work(tile_threadpool, render_tile, job);
         }

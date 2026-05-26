@@ -79,6 +79,12 @@ static void window_shutdown(void)
     g_window_inited = 0;
 }
 
+/* Resize window and framebuffer - called on RGFW_windowResized event */
+static void window_resize(int new_w, int new_h)
+{
+    render_resize(new_w, new_h);
+}
+
 #ifdef __cplusplus
 }
 #endif

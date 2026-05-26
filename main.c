@@ -101,7 +101,7 @@ int main(void)
         double frame_time;
         i32 step_count;
 
-        input_process_events(window_get());
+        input_process_events(window_get(), &world);
 
         now = app_time_seconds();
         frame_time = now - last_time;
