@@ -70,7 +70,7 @@ static void print_fps(double now)
    ====================================================================== */
 int main(void)
 {
-    const int window_size = 5;
+    const int window_size = 4;
     const int width  = 256 * window_size;
     const int height = 144 * window_size;
     const double max_frame_time = 0.25;
