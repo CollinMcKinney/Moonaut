@@ -14,7 +14,7 @@ endif()
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     add_compile_options(-std=c89 -O3 -ffast-math -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK)
 else()
-    add_compile_options(-std=c89 -O3 -ffast-math -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK)
+    add_compile_options(-std=c89 -O3 -ffast-math -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK -fno-tree-vectorize)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

@@ -12,6 +12,7 @@
 #include "cpu_threads.h" /* for get_optimal_thread_count() */
 #include "../libs/C-Thread-Pool/thpool.h" /* for threadpool */
 #include "tags/material.h"   /* shading_mode enum, struct material_definition */
+#include <string.h> /* for memcpy */
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,8 +47,8 @@ static tile_bin *tile_bins = NULL;
 static i32 num_tiles_x = 0;
 static i32 num_tiles_y = 0;
 static i32 total_tiles = 0;
-static threadpool tile_threadpool = NULL;
-static i32 tile_thread_count = 0;
+static threadpool render_threadpool = NULL;
+static i32        render_thread_count = 0;
 
 typedef struct {
     i32 tile_idx;
@@ -55,17 +56,37 @@ typedef struct {
     i32 tile_w, tile_h;
 } tile_job;
 
+typedef struct {
+    i32 y_start, y_end;
+    i32 x_start, x_end;
+    u32 *fb_dst;
+    const u32 *fb_src;
+    i32 dst_width, dst_height;
+    i32 src_width, src_height;
+} upscale_job;
+
 /* Pre-allocated job pool to avoid malloc per tile */
 static tile_job *job_pool = NULL;
 static i32 job_pool_size = 0;
+static upscale_job *upscale_jobs = NULL;
+static i32 upscale_job_count = 0;
+
+/* Transparent triangle rendering job */
+typedef struct {
+    i32 start_idx;
+    i32 end_idx;
+} transparent_render_job;
+
+/* Clear framebuffer job - one tile per job */
+typedef struct {
+    i32 tile_idx;
+    u32 color;
+} clear_job;
 
 /* Tile clipping bounds structure */
 typedef struct {
     i32 x0, y0, x1, y1;
 } tile_bounds;
-
-/* Current tile clipping bounds - only used as fallback for transparent pass */
-static tile_bounds tile_clip = {0, 0, 0, 0};
 
 /* Fixed internal render resolution */
 #define RENDER_WIDTH  1024
@@ -81,6 +102,17 @@ static u32  *fb_render = NULL;
 static real *zbuf_render = NULL;
 static i32   internal_pitch = 0;
 
+/* Job buffers for parallel work */
+static clear_job *clear_jobs = NULL;
+static i32 clear_job_count = 0;
+static transparent_render_job *transparent_render_jobs = NULL;
+static i32 transparent_render_job_count = 0;
+
+/* Pre-allocated radix sort buffers */
+static i32 *radix_indices = NULL;
+static i32 *radix_temp = NULL;
+static struct transparent_tri *radix_sorted = NULL;
+
 /* Scaling factors for upscaling from render resolution to window size */
 static real scale_x = 1.0f, scale_y = 1.0f;
 
@@ -95,8 +127,8 @@ static real fog_end;
 static tile_bounds screen_bounds;
 
 /* -------------------------------------------------------------------------
- *  Tile function forward declarations
- *  ------------------------------------------------------------------------- */
+  *  Tile function forward declarations
+  *  ------------------------------------------------------------------------- */
 static void tile_init(i32 width, i32 height);
 static void tile_shutdown(void);
 static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
@@ -105,9 +137,13 @@ static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
                               const struct material_definition *mat);
 static void tile_render_all(void);
 static void tile_clear_bins(void);
+static void upscale_tile(void *arg);
+static void clear_tile_range(void *arg);
+static void render_transparent_range(void *arg);
+static void tile_clear_bins_range(void *arg);
 
 /* -------------------------------------------------------------------------
- *  View frustum planes (extracted from VP matrix)
+  *  View frustum planes (extracted from VP matrix)
  *  Each plane: ax + by + cz + d = 0, where (a,b,c) is the normal
  *  Points inside frustum satisfy: a*x + b*y + c*z + d >= 0 for all planes
  *  ------------------------------------------------------------------------- */
@@ -314,8 +350,11 @@ static void radix_sort_transparent(void)
 {
     if (transparent_count <= 1) return;
     
-    i32 *indices = (i32*)malloc(transparent_count * sizeof(i32));
-    i32 *temp = (i32*)malloc(transparent_count * sizeof(i32));
+    /* Ensure buffers are allocated */
+    if (!radix_indices || !radix_temp || !radix_sorted) return;
+    
+    i32 *indices = radix_indices;
+    i32 *temp = radix_temp;
     i32 i, pass;
     
     for (i = 0; i < transparent_count; i++) indices[i] = i;
@@ -356,13 +395,15 @@ static void radix_sort_transparent(void)
         }
     }
     
-    struct transparent_tri *sorted = (struct transparent_tri*)malloc(transparent_count * sizeof(struct transparent_tri));
-    for (i = 0; i < transparent_count; i++) sorted[i] = transparent_queue[indices[i]];
-    for (i = 0; i < transparent_count; i++) transparent_queue[i] = sorted[i];
-    
-    free(indices);
-    free(temp);
-    free(sorted);
+    /* Copy sorted results back */
+    for (i = 0; i < transparent_count; i++)
+    {
+        radix_sorted[i] = transparent_queue[indices[i]];
+    }
+    for (i = 0; i < transparent_count; i++)
+    {
+        transparent_queue[i] = radix_sorted[i];
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -435,16 +476,13 @@ static INLINE void write_scaled_transparent_pixel(i32 rx, i32 ry, real iw, vec3 
 {
     if (rx < 0 || rx >= RENDER_WIDTH || ry < 0 || ry >= RENDER_HEIGHT) return;
     if (iw <= 0.0f) return;
-    
+
     i32 ridx = ry * RENDER_WIDTH + rx;
-    real prev_z = zbuf_render[ridx];
-    if (iw <= prev_z) return;
-    
     u32 dst = fb_render[ridx];
     u8 dr = (u8)((dst >> 16) & 0xFF);
     u8 dg = (u8)((dst >> 8) & 0xFF);
     u8 db = (u8)(dst & 0xFF);
-    
+
     u8 sr = color_to_u8(color.color.r);
     u8 sg = color_to_u8(color.color.g);
     u8 sb = color_to_u8(color.color.b);
@@ -501,10 +539,6 @@ static i32 render_init(i32 w, i32 h)
     scale_x = (real)w / (real)RENDER_WIDTH;
     scale_y = (real)h / (real)RENDER_HEIGHT;
     
-    /* Initialize tile clipping to render resolution by default */
-    tile_clip.x0 = 0; tile_clip.y0 = 0;
-    tile_clip.x1 = RENDER_WIDTH; tile_clip.y1 = RENDER_HEIGHT;
-    
     /* Initialize tile binning system for multithreaded rendering */
     tile_init(w, h);
     
@@ -514,11 +548,16 @@ static i32 render_init(i32 w, i32 h)
 static void render_clear(u8 r, u8 g, u8 b)
 {
     u32 col = pack_color(r, g, b);
+
+    /* Clear internal render buffers only (window buffer is overwritten by upscale) */
+    if (!fb_render || !zbuf_render) return;
     
-    /* Clear window framebuffer */
-    if (fb) {
-        u32 *fb32 = (u32*)fb;
-        i32 n = fb_pitch * fh;
+    /* Single-threaded fast path: use simple unrolled loop */
+    if (render_thread_count <= 1)
+    {
+        u32 *fb32 = (u32*)fb_render;
+        real *zb = (real*)zbuf_render;
+        i32 n = internal_pitch * RENDER_HEIGHT;
         i32 i;
         for (i = 0; i + 3 < n; i += 4)
         {
@@ -526,34 +565,62 @@ static void render_clear(u8 r, u8 g, u8 b)
             fb32[i+1] = col;
             fb32[i+2] = col;
             fb32[i+3] = col;
+            zb[i] = 0.0f;
+            zb[i+1] = 0.0f;
+            zb[i+2] = 0.0f;
+            zb[i+3] = 0.0f;
         }
         while (i < n) {
             fb32[i] = col;
+            zb[i] = 0.0f;
             i++;
         }
+        return;
     }
     
-    /* Clear internal render buffers */
-    if (!fb_render || !zbuf_render) return;
-    u32 *fb32 = (u32*)fb_render;
-    real *zb = (real*)zbuf_render;
-    i32 n = internal_pitch * RENDER_HEIGHT;
-    i32 i;
-    for (i = 0; i + 3 < n; i += 4)
+    /* Parallel tile-based clearing (only if enough tiles for benefit) */
+    if (total_tiles >= MIN_TILES_PER_THREAD * render_thread_count)
     {
-        fb32[i] = col;
-        fb32[i+1] = col;
-        fb32[i+2] = col;
-        fb32[i+3] = col;
-        zb[i] = 0;
-        zb[i+1] = 0;
-        zb[i+2] = 0;
-        zb[i+3] = 0;
+        if (clear_job_count < total_tiles)
+        {
+            if (clear_jobs) free(clear_jobs);
+            clear_jobs = (clear_job*)malloc(total_tiles * sizeof(clear_job));
+            clear_job_count = total_tiles;
+        }
+        
+        i32 j;
+        for (j = 0; j < total_tiles; j++)
+        {
+            clear_jobs[j].tile_idx = j;
+            clear_jobs[j].color = col;
+            thpool_add_work(render_threadpool, clear_tile_range, &clear_jobs[j]);
+        }
+        
+        thpool_wait(render_threadpool);
     }
-    while (i < n) {
-        fb32[i] = col;
-        zb[i] = 0;
-        i++;
+    else
+    {
+        /* Fall back to sequential unrolled clear for small tile counts */
+        u32 *fb32 = (u32*)fb_render;
+        real *zb = (real*)zbuf_render;
+        i32 n = internal_pitch * RENDER_HEIGHT;
+        i32 i;
+        for (i = 0; i + 3 < n; i += 4)
+        {
+            fb32[i] = col;
+            fb32[i+1] = col;
+            fb32[i+2] = col;
+            fb32[i+3] = col;
+            zb[i] = 0.0f;
+            zb[i+1] = 0.0f;
+            zb[i+2] = 0.0f;
+            zb[i+3] = 0.0f;
+        }
+        while (i < n) {
+            fb32[i] = col;
+            zb[i] = 0.0f;
+            i++;
+        }
     }
 }
 
@@ -2332,7 +2399,7 @@ static void draw_triangle_shaded(
             vec3 cn0 = cn[t*3 + 0], cn1 = cn[t*3 + 1], cn2 = cn[t*3 + 2];
             vec3 cl0_t = cl[t*3 + 0], cl1_t = cl[t*3 + 1], cl2_t = cl[t*3 + 2];
 
-            if (tile_thread_count <= 1)
+            if (render_thread_count <= 1)
             {
                 draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat, &screen_bounds);
             }
@@ -2343,9 +2410,9 @@ static void draw_triangle_shaded(
         }
         return;
     }
-
+    
     /* Render directly for single-thread, or bin to tiles for multithreading */
-    if (tile_thread_count <= 1)
+    if (render_thread_count <= 1)
     {
         draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, &screen_bounds);
     }
@@ -2354,12 +2421,32 @@ static void draw_triangle_shaded(
         tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
     }
 }
+ 
+/* Multithreaded tile-based upscaling function */
+static void upscale_tile(void *arg)
+{
+    upscale_job *job = (upscale_job*)arg;
+    i32 y, x;
+    
+    for (y = job->y_start; y < job->y_end; y++)
+    {
+        i32 ry = (y * job->src_height) / job->dst_height;
+        i32 row_base = y * job->dst_width;
+        i32 src_base = ry * job->src_width;
+
+        for (x = job->x_start; x < job->x_end; x++)
+        {
+            i32 rx = (x * job->src_width) / job->dst_width;
+            job->fb_dst[row_base + x] = job->fb_src[src_base + rx];
+        }
+    }
+}
 
 /* Call this once per frame after all draw_triangle calls to finalize rendering. */
 static void render_finish(void)
 {
     /* For single-thread, triangles were drawn to fb_render */
-    if (tile_thread_count <= 1)
+    if (render_thread_count <= 1)
     {
         /* Handle transparent triangles - they need back-to-front sorting */
         if (transparent_count > 0)
@@ -2383,17 +2470,17 @@ static void render_finish(void)
                 }
             }
             
-            transparent_count = 0;
+transparent_count = 0;
             in_transparent_pass = 0;
         }
     }
     else
     {
-        /* Render all opaque triangles that were binned to tiles */
-        tile_render_all();
-        
-        /* Clear bins for next frame */
-        tile_clear_bins();
+/* Render all opaque triangles that were binned to tiles */
+         tile_render_all();
+         
+         /* Clear bins for next frame (parallel if multiple threads) */
+         tile_clear_bins();
         
         /* Handle transparent triangles - they need back-to-front sorting */
         if (transparent_count > 0)
@@ -2401,45 +2488,106 @@ static void render_finish(void)
             radix_sort_transparent();
             
             in_transparent_pass = 1;
-            i32 i;
-            for (i = 0; i < transparent_count; i++)
+            
+            /* Parallel transparent rendering using threadpool */
+            i32 tris_per_job = (transparent_count + render_thread_count - 1) / render_thread_count;
+            if (tris_per_job < 4) tris_per_job = 4;
+            
+            i32 job_count = (transparent_count + tris_per_job - 1) / tris_per_job;
+            if (transparent_render_job_count < job_count)
             {
-                if (!is_bbox_occluded(
-                        transparent_queue[i].min_x, transparent_queue[i].min_y,
-                        transparent_queue[i].max_x, transparent_queue[i].max_y,
-                        transparent_queue[i].depth, &tile_clip))
-                {
-                    draw_triangle_internal(
-                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
-                        transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
-                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
-                        transparent_queue[i].mat, &tile_clip);
-                }
+                if (transparent_render_jobs) free(transparent_render_jobs);
+                transparent_render_jobs = (transparent_render_job*)malloc(job_count * sizeof(transparent_render_job));
+                transparent_render_job_count = job_count;
             }
+            
+            i32 j;
+            for (j = 0; j < job_count; j++)
+            {
+                transparent_render_jobs[j].start_idx = j * tris_per_job;
+                transparent_render_jobs[j].end_idx = (j + 1) * tris_per_job;
+                if (transparent_render_jobs[j].end_idx > transparent_count)
+                    transparent_render_jobs[j].end_idx = transparent_count;
+                thpool_add_work(render_threadpool, render_transparent_range, &transparent_render_jobs[j]);
+            }
+            
+            thpool_wait(render_threadpool);
             
             transparent_count = 0;
             in_transparent_pass = 0;
         }
     }
     
-    /* Upscale all rendered content from fb_render to fb (final output) */
-    i32 y;
-    real inv_scale_x = (real)RENDER_WIDTH / (real)fw;
-    real inv_scale_y = (real)RENDER_HEIGHT / (real)fh;
-    for (y = 0; y < fh; y++)
+    /* Upscale all rendered content from fb_render to fb (final output) - integer nearest-neighbor */
+    /* Fast path: if window size equals render resolution, just memcpy */
+    if (fw == RENDER_WIDTH && fh == RENDER_HEIGHT)
     {
-        i32 ry = (i32)(y * inv_scale_y);
-        if (ry >= RENDER_HEIGHT) ry = RENDER_HEIGHT - 1;
+        /* If we do fb_back = fb_render; here instead of memcpy
+             we get a considerable framerate boost, but it segfaults on
+             window resize        
+         */
+        memcpy(fb, fb_render, RENDER_WIDTH * RENDER_HEIGHT * sizeof(u32));
+    }
+    else if (render_thread_count > 1)
+    {
+        /* Parallel upscaling: TILE_SIZE x TILE_SIZE tiles for cache efficiency */
+        i32 upscale_tiles_x = (fw + TILE_SIZE - 1) / TILE_SIZE;
+        i32 upscale_tiles_y = (fh + TILE_SIZE - 1) / TILE_SIZE;
+        i32 num_jobs = upscale_tiles_x * upscale_tiles_y;
         
-        i32 row_base = y * fw;
-        i32 src_base = ry * RENDER_WIDTH;
-        
-        i32 x;
-        for (x = 0; x < fw; x++)
+        if (upscale_job_count < num_jobs)
         {
-            i32 rx = (i32)(x * inv_scale_x);
-            if (rx >= RENDER_WIDTH) rx = RENDER_WIDTH - 1;
-            fb[row_base + x] = fb_render[src_base + rx];
+            if (upscale_jobs) free(upscale_jobs);
+            upscale_jobs = (upscale_job*)malloc(num_jobs * sizeof(upscale_job));
+            upscale_job_count = num_jobs;
+        }
+        
+        i32 job_idx = 0;
+        i32 ty;
+        for (ty = 0; ty < fh; ty += TILE_SIZE)
+        {
+            i32 end_ty = ty + TILE_SIZE;
+            if (end_ty > fh) end_ty = fh;
+            
+            i32 tx;
+            for (tx = 0; tx < fw; tx += TILE_SIZE)
+            {
+                i32 end_tx = tx + TILE_SIZE;
+                if (end_tx > fw) end_tx = fw;
+                
+                upscale_jobs[job_idx].y_start = ty;
+                upscale_jobs[job_idx].y_end = end_ty;
+                upscale_jobs[job_idx].x_start = tx;
+                upscale_jobs[job_idx].x_end = end_tx;
+                upscale_jobs[job_idx].fb_dst = fb;
+                upscale_jobs[job_idx].fb_src = fb_render;
+                upscale_jobs[job_idx].dst_width = fw;
+                upscale_jobs[job_idx].dst_height = fh;
+                upscale_jobs[job_idx].src_width = RENDER_WIDTH;
+                upscale_jobs[job_idx].src_height = RENDER_HEIGHT;
+                
+                thpool_add_work(render_threadpool, upscale_tile, &upscale_jobs[job_idx]);
+                job_idx++;
+            }
+        }
+        thpool_wait(render_threadpool);
+    }
+    else
+    {
+        /* Single-threaded upscaling */
+        i32 y;
+        for (y = 0; y < fh; y++)
+        {
+            i32 ry = (y * RENDER_HEIGHT) / fh;
+            i32 row_base = y * fw;
+            i32 src_base = ry * RENDER_WIDTH;
+
+            i32 x;
+            for (x = 0; x < fw; x++)
+            {
+                i32 rx = (x * RENDER_WIDTH) / fw;
+                fb[row_base + x] = fb_render[src_base + rx];
+            }
         }
     }
     
@@ -2456,6 +2604,7 @@ static void render_finish(void)
         zbuf = zbuf_back;
     }
 }
+
 static void render_tile(void *arg)
 {
     tile_job *job = (tile_job*)arg;
@@ -2539,22 +2688,27 @@ static void tile_init(i32 width, i32 height)
         tile_bins[i].tri_count = 0;
     }
     
-    tile_thread_count = get_optimal_thread_count();
-    if (tile_thread_count > total_tiles)
-        tile_thread_count = total_tiles;
-    if (tile_thread_count < 1)
-        tile_thread_count = 1;
+    render_thread_count = get_optimal_thread_count();
+    if (render_thread_count > total_tiles)
+        render_thread_count = total_tiles;
+    if (render_thread_count < 1)
+        render_thread_count = 1;
     
-    tile_threadpool = thpool_init(tile_thread_count);
-}
+render_threadpool = thpool_init(render_thread_count);
+     
+     /* Allocate radix sort buffers */
+     radix_indices = (i32*)malloc(MAX_TRANSPARENT * sizeof(i32));
+     radix_temp = (i32*)malloc(MAX_TRANSPARENT * sizeof(i32));
+     radix_sorted = (struct transparent_tri*)malloc(MAX_TRANSPARENT * sizeof(struct transparent_tri));
+ }
 
 /* Shutdown tile binning system */
 static void tile_shutdown(void)
 {
-    if (tile_threadpool)
+    if (render_threadpool)
     {
-        thpool_destroy(tile_threadpool);
-        tile_threadpool = NULL;
+        thpool_destroy(render_threadpool);
+        render_threadpool = NULL;
     }
     if (tile_bins)
     {
@@ -2567,7 +2721,28 @@ static void tile_shutdown(void)
         job_pool = NULL;
         job_pool_size = 0;
     }
-    tile_thread_count = 0;
+    if (upscale_jobs)
+    {
+        free(upscale_jobs);
+        upscale_jobs = NULL;
+        upscale_job_count = 0;
+    }
+    if (clear_jobs)
+    {
+        free(clear_jobs);
+        clear_jobs = NULL;
+        clear_job_count = 0;
+    }
+    if (transparent_render_jobs)
+    {
+        free(transparent_render_jobs);
+        transparent_render_jobs = NULL;
+        transparent_render_job_count = 0;
+    }
+    if (radix_indices) { free(radix_indices); radix_indices = NULL; }
+    if (radix_temp) { free(radix_temp); radix_temp = NULL; }
+    if (radix_sorted) { free(radix_sorted); radix_sorted = NULL; }
+    render_thread_count = 0;
 }
 
 /* Add triangle to appropriate tile bins based on screen-space bounding box */
@@ -2637,7 +2812,7 @@ static void tile_render_all(void)
     }
     
     /* If not enough active tiles, render sequentially to avoid thread overhead */
-    if (active_tiles < MIN_TILES_PER_THREAD * tile_thread_count)
+    if (active_tiles < MIN_TILES_PER_THREAD * render_thread_count)
     {
         i32 i;
         for (i = 0; i < total_tiles; i++)
@@ -2680,20 +2855,118 @@ static void tile_render_all(void)
             job->tile_w = (tx == num_tiles_x - 1) ? (RENDER_WIDTH - job->tile_x) : TILE_SIZE;
             job->tile_h = (ty == num_tiles_y - 1) ? (RENDER_HEIGHT - job->tile_y) : TILE_SIZE;
             
-            thpool_add_work(tile_threadpool, render_tile, job);
+            thpool_add_work(render_threadpool, render_tile, job);
         }
     }
     
-    thpool_wait(tile_threadpool);
+    thpool_wait(render_threadpool);
 }
 
-/* Clear tile bins for next frame */
+/* Clear tile bins for next frame (parallel when beneficial) */
 static void tile_clear_bins(void)
 {
-    i32 i;
-    for (i = 0; i < total_tiles; i++)
+    /* Use parallel clearing when we have enough tiles */
+    if (render_thread_count > 1 && total_tiles >= MIN_TILES_PER_THREAD * render_thread_count)
     {
-        tile_bins[i].tri_count = 0;
+        transparent_render_job jobs_on_stack[32];
+        i32 max_threads = render_thread_count;
+        if (max_threads > 32) max_threads = 32;
+        
+        i32 bins_per_job = (total_tiles + max_threads - 1) / max_threads;
+        
+        i32 j;
+        for (j = 0; j < max_threads; j++)
+        {
+            jobs_on_stack[j].start_idx = j * bins_per_job;
+            jobs_on_stack[j].end_idx = (j + 1) * bins_per_job;
+            if (jobs_on_stack[j].end_idx > total_tiles)
+                jobs_on_stack[j].end_idx = total_tiles;
+            thpool_add_work(render_threadpool, tile_clear_bins_range, &jobs_on_stack[j]);
+        }
+        
+        thpool_wait(render_threadpool);
+    }
+    else
+    {
+        i32 i;
+        for (i = 0; i < total_tiles; i++)
+        {
+            tile_bins[i].tri_count = 0;
+        }
+    }
+}
+ 
+ /* Clear a range of tile bins (for parallel execution) */
+ static void tile_clear_bins_range(void *arg)
+ {
+     transparent_render_job *job = (transparent_render_job*)arg;
+     i32 i;
+     for (i = job->start_idx; i < job->end_idx; i++)
+    {
+        if (i < total_tiles) tile_bins[i].tri_count = 0;
+    }
+}
+
+/* Render transparent triangles in parallel */
+static void render_transparent_range(void *arg)
+{
+    transparent_render_job *job = (transparent_render_job*)arg;
+    i32 i;
+    for (i = job->start_idx; i < job->end_idx; i++)
+    {
+        if (i >= transparent_count) break;
+        
+        if (!is_bbox_occluded(
+                transparent_queue[i].min_x, transparent_queue[i].min_y,
+                transparent_queue[i].max_x, transparent_queue[i].max_y,
+                transparent_queue[i].depth, &screen_bounds))
+        {
+            draw_triangle_internal(
+                transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                transparent_queue[i].mat, &screen_bounds);
+        }
+    }
+}
+
+static void clear_tile_range(void *arg)
+{
+    clear_job *job = (clear_job*)arg;
+    u32 *fb32 = (u32*)fb_render;
+    real *zb = (real*)zbuf_render;
+    u32 col = job->color;
+    
+    i32 tile_idx = job->tile_idx;
+    i32 ty = tile_idx / num_tiles_x;
+    i32 tx = tile_idx % num_tiles_x;
+    i32 tile_x = tx * TILE_SIZE;
+    i32 tile_y = ty * TILE_SIZE;
+    i32 tile_w = (tx == num_tiles_x - 1) ? (RENDER_WIDTH - tile_x) : TILE_SIZE;
+    i32 tile_h = (ty == num_tiles_y - 1) ? (RENDER_HEIGHT - tile_y) : TILE_SIZE;
+    
+    i32 y;
+    for (y = 0; y < tile_h; y++)
+    {
+        i32 row_off = (tile_y + y) * RENDER_WIDTH + tile_x;
+        i32 x;
+        for (x = 0; x + 3 < tile_w; x += 4)
+        {
+            fb32[row_off + x] = col;
+            fb32[row_off + x + 1] = col;
+            fb32[row_off + x + 2] = col;
+            fb32[row_off + x + 3] = col;
+            zb[row_off + x] = 0.0f;
+            zb[row_off + x + 1] = 0.0f;
+            zb[row_off + x + 2] = 0.0f;
+            zb[row_off + x + 3] = 0.0f;
+        }
+        while (x < tile_w)
+        {
+            fb32[row_off + x] = col;
+            zb[row_off + x] = 0.0f;
+            x++;
+        }
     }
 }
 
