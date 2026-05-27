@@ -488,7 +488,7 @@ static INLINE void write_scaled_transparent_pixel(i32 rx, i32 ry, real iw, vec3 
     u8 sb = color_to_u8(color.color.b);
     u8 ia = (u8)(alpha * 255.0f + 0.5f);
     
-u32 result = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
+    u32 result = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
                   ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
                   ((u32)((sb * ia + db * (255 - ia)) / 255));
     
@@ -570,11 +570,6 @@ static void render_clear(u8 r, u8 g, u8 b)
             zb[i+2] = 0.0f;
             zb[i+3] = 0.0f;
         }
-        while (i < n) {
-            fb32[i] = col;
-            zb[i] = 0.0f;
-            i++;
-        }
         return;
     }
     
@@ -615,11 +610,6 @@ static void render_clear(u8 r, u8 g, u8 b)
             zb[i+1] = 0.0f;
             zb[i+2] = 0.0f;
             zb[i+3] = 0.0f;
-        }
-        while (i < n) {
-            fb32[i] = col;
-            zb[i] = 0.0f;
-            i++;
         }
     }
 }
@@ -2694,7 +2684,7 @@ static void tile_init(i32 width, i32 height)
     if (render_thread_count < 1)
         render_thread_count = 1;
     
-render_threadpool = thpool_init(render_thread_count);
+    render_threadpool = thpool_init(render_thread_count);
      
      /* Allocate radix sort buffers */
      radix_indices = (i32*)malloc(MAX_TRANSPARENT * sizeof(i32));
