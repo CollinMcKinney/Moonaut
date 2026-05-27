@@ -2,10 +2,8 @@
 #define WINDOW_H
 
 /* RGFW configuration - X11 for Linux, with UNIX backend */
-#define RGFW_X11
-#define RGFW_UNIX
 #define RGFW_IMPLEMENTATION
-#define RGFW_NO_UNPREFIXED_INTS
+#define RGFW_INT_DEFINED /* avoid using RGFW u8, i32, etc. implementations. */
 
 #include "rasterizer.h"
 #include "../libs/rgfw/RGFW.h"
