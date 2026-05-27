@@ -209,7 +209,8 @@ static i32 get_optimal_thread_count(void)
     
     /* If we have hyperthreading, use physical cores (avoid cache contention) */
     if (logical >= physical * 2 && physical >= 2) {
-        return physical * 2 - 2; /* For some reason *2-2 works better on my laptop. */
+        /* For some reason *2-1 better than logical - 1 on my laptop. */
+        return logical - 1;
     }
     
     /* No hyperthreading or single core: use all logical threads */

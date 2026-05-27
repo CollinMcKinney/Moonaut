@@ -1,7 +1,11 @@
+.cache/
 
 build/
 
 compile_commands.json
+
+perf.data*
+flamegraph.svg
 
 *.md
 !LICENSE.md

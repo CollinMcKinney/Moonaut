@@ -197,11 +197,18 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 }
 
+/* Resize callback for window resize events */
+static void scenario_resize(scenario_world *w, i32 new_width, i32 new_height)
+{
+    w->width = new_width;
+    w->height = new_height;
+}
+
 /* ------------------------------------------------------------------------
-   Main render call
-   ------------------------------------------------------------------------ */
+    Main render call
+    ------------------------------------------------------------------------ */
 static void scenario_render(scenario_world *w) {
-    real aspect = (real)w->width / (real)w->height;
+    real aspect = (real)RENDER_WIDTH / (real)RENDER_HEIGHT;
     i32 i;
 
     render_set_camera(sc_cam_eye, sc_cam_center, sc_cam_up,
