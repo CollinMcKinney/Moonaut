@@ -13,9 +13,9 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/compile_commands.json")
 endif()
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-std=c89 -O3 -ffast-math -flto -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK)
+    add_compile_options(-std=c89 -g -O3 -ffast-math -flto -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK)
 else()
-    add_compile_options(-std=c89 -O3 -ffast-math -flto -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK -fno-tree-vectorize)
+    add_compile_options(-std=c89 -g -O3 -ffast-math -flto -Wno-multichar -D_POSIX_C_SOURCE=200809L -DRGFW_NO_UNIX_CLOCK -fno-tree-vectorize)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
