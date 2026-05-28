@@ -238,7 +238,6 @@ typedef struct
 static INLINE i32 clip_triangle_plane(
     clip_vertex *in, i32 in_count,
     clip_vertex *out,
-    i32 plane_idx,
     vec3 normal, real d)
 {
     i32 out_count = 0;
@@ -291,28 +290,39 @@ static INLINE i32 clip_triangle_full(
     vec3 *cv_out, vec3 *cn_out, vec3 *cl_out)
 {
     clip_vertex in[MAX_CLIPPED_VERTS], out[MAX_CLIPPED_VERTS];
-    i32 in_count, out_count, i;
+    i32 in_count = 3, out_count, i, j, k;
 
     /* Initialize with input triangle */
     in[0].v = v0; in[0].n = n0; in[0].l = l0;
     in[1].v = v1; in[1].n = n1; in[1].l = l1;
     in[2].v = v2; in[2].n = n2; in[2].l = l2;
-    in_count = 3;
 
     /* Clip against each frustum plane */
-    i32 j;
     for (i = 0; i < 6; i++)
     {
-        if (in_count < 3) return 0;  /* Nothing left after previous clip */
-        out_count = clip_triangle_plane(in, in_count, out, i, frustum[i].normal, frustum[i].d);
-        if (out_count < 3) return 0;  /* Degenerate result */
+        if (in_count < 3)
+            return 0;
+
+        /* Early-out: skip plane if all vertices are already inside */
+        i32 all_in = 1;
+        for (k = 0; k < in_count; k++)
+        {
+            real d = vec3_dot(frustum[i].normal, in[k].v) + frustum[i].d;
+            if (d < 0.0f) all_in = 0;
+        }
+        if (all_in)
+            continue;
+
+        out_count = clip_triangle_plane(in, in_count, out, frustum[i].normal, frustum[i].d);
+        if (out_count < 3)
+            return 0;
+
         /* Swap in/out for next iteration */
         for (j = 0; j < out_count; j++) in[j] = out[j];
         in_count = out_count;
     }
 
-    /* Triangulate the clipped polygon and store results */
-    /* For convex polygons (result of clipping), fan triangulate from first vertex */
+    /* Triangulate the clipped polygon (fan triangulation) */
     i32 tri_count = in_count - 2;
     for (i = 0; i < tri_count; i++)
     {
