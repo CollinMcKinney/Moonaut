@@ -33,6 +33,8 @@ typedef struct tile_tri {
     vec3 v0, v1, v2;
     vec3 n0, n1, n2;
     vec3 l0, l1, l2;
+    vec3 orig_v0, orig_v1, orig_v2;  /* Original vertices for stable roughness in midpoints */
+    vec3 orig_l0, orig_l1, orig_l2;  /* Original local_pos for stable roughness */
     const struct material_definition *mat;
     enum32 mode;
     real depth;
@@ -132,9 +134,11 @@ static tile_bounds screen_bounds;
 static void tile_init(i32 width, i32 height);
 static void tile_shutdown(void);
 static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
-                              vec3 n0, vec3 n1, vec3 n2,
-                              vec3 l0, vec3 l1, vec3 l2,
-                              const struct material_definition *mat);
+                               vec3 n0, vec3 n1, vec3 n2,
+                               vec3 l0, vec3 l1, vec3 l2,
+                               vec3 orig_v0, vec3 orig_v1, vec3 orig_v2,
+                               vec3 orig_l0, vec3 orig_l1, vec3 orig_l2,
+                               const struct material_definition *mat);
 static void tile_render_all(void);
 static void tile_clear_bins(void);
 static void upscale_tile(void *arg);
@@ -232,7 +236,8 @@ static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2)
 
 typedef struct
 {
-    vec3 v, n, l;  /* position, normal, local_pos */
+    vec3 v, n, l;          /* position, normal, local_pos */
+    real l0_t, l1_t, l2_t;  /* barycentric coords in original triangle (for stable roughness) */
 } clip_vertex;
 
 static INLINE i32 clip_triangle_plane(
@@ -252,7 +257,7 @@ static INLINE i32 clip_triangle_plane(
 
         if (in1 && in2)
         {
-            /* Both inside - add second vertex */
+            /* Both inside - add second vertex (barycentric already set) */
             out[out_count++] = in[i];
         }
         else if (in1 && !in2)
@@ -263,6 +268,10 @@ static INLINE i32 clip_triangle_plane(
             iv.v = vec3_add(in[prev].v, vec3_mul_scalar(vec3_sub(in[i].v, in[prev].v), t));
             iv.n = vec3_add(in[prev].n, vec3_mul_scalar(vec3_sub(in[i].n, in[prev].n), t));
             iv.l = vec3_add(in[prev].l, vec3_mul_scalar(vec3_sub(in[i].l, in[prev].l), t));
+            /* Interpolate barycentric coords for stable roughness */
+            iv.l0_t = in[prev].l0_t + t * (in[i].l0_t - in[prev].l0_t);
+            iv.l1_t = in[prev].l1_t + t * (in[i].l1_t - in[prev].l1_t);
+            iv.l2_t = in[prev].l2_t + t * (in[i].l2_t - in[prev].l2_t);
             out[out_count++] = iv;
         }
         else if (!in1 && in2)
@@ -273,6 +282,10 @@ static INLINE i32 clip_triangle_plane(
             iv.v = vec3_add(in[prev].v, vec3_mul_scalar(vec3_sub(in[i].v, in[prev].v), t));
             iv.n = vec3_add(in[prev].n, vec3_mul_scalar(vec3_sub(in[i].n, in[prev].n), t));
             iv.l = vec3_add(in[prev].l, vec3_mul_scalar(vec3_sub(in[i].l, in[prev].l), t));
+            /* Interpolate barycentric coords for stable roughness */
+            iv.l0_t = in[prev].l0_t + t * (in[i].l0_t - in[prev].l0_t);
+            iv.l1_t = in[prev].l1_t + t * (in[i].l1_t - in[prev].l1_t);
+            iv.l2_t = in[prev].l2_t + t * (in[i].l2_t - in[prev].l2_t);
             out[out_count++] = iv;
             out[out_count++] = in[i];
         }
@@ -292,10 +305,10 @@ static INLINE i32 clip_triangle_full(
     clip_vertex in[MAX_CLIPPED_VERTS], out[MAX_CLIPPED_VERTS];
     i32 in_count = 3, out_count, i, j, k;
 
-    /* Initialize with input triangle */
-    in[0].v = v0; in[0].n = n0; in[0].l = l0;
-    in[1].v = v1; in[1].n = n1; in[1].l = l1;
-    in[2].v = v2; in[2].n = n2; in[2].l = l2;
+    /* Initialize with input triangle - store barycentric for stable roughness */
+    in[0].v = v0; in[0].n = n0; in[0].l = l0; in[0].l0_t = 1.0f; in[0].l1_t = 0.0f; in[0].l2_t = 0.0f;
+    in[1].v = v1; in[1].n = n1; in[1].l = l1; in[1].l0_t = 0.0f; in[1].l1_t = 1.0f; in[1].l2_t = 0.0f;
+    in[2].v = v2; in[2].n = n2; in[2].l = l2; in[2].l0_t = 0.0f; in[2].l1_t = 0.0f; in[2].l2_t = 1.0f;
 
     /* Clip against each frustum plane */
     for (i = 0; i < 6; i++)
@@ -322,13 +335,24 @@ static INLINE i32 clip_triangle_full(
         in_count = out_count;
     }
 
-    /* Triangulate the clipped polygon (fan triangulation) */
+    /* Triangulate the clipped polygon (fan triangulation) and compute stable local_pos */
     i32 tri_count = in_count - 2;
     for (i = 0; i < tri_count; i++)
     {
-        cv_out[i*3 + 0] = in[0].v;   cn_out[i*3 + 0] = in[0].n;   cl_out[i*3 + 0] = in[0].l;
-        cv_out[i*3 + 1] = in[i+1].v; cn_out[i*3 + 1] = in[i+1].n; cl_out[i*3 + 1] = in[i+1].l;
-        cv_out[i*3 + 2] = in[i+2].v; cn_out[i*3 + 2] = in[i+2].n; cl_out[i*3 + 2] = in[i+2].l;
+        cv_out[i*3 + 0] = in[0].v;   cn_out[i*3 + 0] = in[0].n;
+        cv_out[i*3 + 1] = in[i+1].v; cn_out[i*3 + 1] = in[i+1].n;
+        cv_out[i*3 + 2] = in[i+2].v; cn_out[i*3 + 2] = in[i+2].n;
+        
+        /* Compute local_pos using barycentric coords in original triangle for stable roughness */
+        cl_out[i*3 + 0].position.x = in[0].l0_t * l0.position.x + in[0].l1_t * l1.position.x + in[0].l2_t * l2.position.x;
+        cl_out[i*3 + 0].position.y = in[0].l0_t * l0.position.y + in[0].l1_t * l1.position.y + in[0].l2_t * l2.position.y;
+        cl_out[i*3 + 0].position.z = in[0].l0_t * l0.position.z + in[0].l1_t * l1.position.z + in[0].l2_t * l2.position.z;
+        cl_out[i*3 + 1].position.x = in[i+1].l0_t * l0.position.x + in[i+1].l1_t * l1.position.x + in[i+1].l2_t * l2.position.x;
+        cl_out[i*3 + 1].position.y = in[i+1].l0_t * l0.position.y + in[i+1].l1_t * l1.position.y + in[i+1].l2_t * l2.position.y;
+        cl_out[i*3 + 1].position.z = in[i+1].l0_t * l0.position.z + in[i+1].l1_t * l1.position.z + in[i+1].l2_t * l2.position.z;
+        cl_out[i*3 + 2].position.x = in[i+2].l0_t * l0.position.x + in[i+2].l1_t * l1.position.x + in[i+2].l2_t * l2.position.x;
+        cl_out[i*3 + 2].position.y = in[i+2].l0_t * l0.position.y + in[i+2].l1_t * l1.position.y + in[i+2].l2_t * l2.position.y;
+        cl_out[i*3 + 2].position.z = in[i+2].l0_t * l0.position.z + in[i+2].l1_t * l1.position.z + in[i+2].l2_t * l2.position.z;
     }
 
     return tri_count;
@@ -464,20 +488,6 @@ static INLINE u8 color_to_u8(real x)
 static INLINE u32 pack_color_real(real r, real g, real b)
 {
     return pack_color(color_to_u8(r), color_to_u8(g), color_to_u8(b));
-}
-
-/* - Scaled opaque pixel write -
- * Writes to internal render buffer at render resolution */
-static INLINE void write_scaled_opaque_pixel(i32 rx, i32 ry, real iw, u32 color)
-{
-    if (rx < 0 || rx >= RENDER_WIDTH || ry < 0 || ry >= RENDER_HEIGHT) return;
-    
-    i32 ridx = ry * RENDER_WIDTH + rx;
-    if (iw > zbuf_render[ridx])
-    {
-        zbuf_render[ridx] = iw;
-        fb_render[ridx] = color;
-    }
 }
 
 /* - Scaled transparent pixel write -
@@ -940,7 +950,7 @@ static INLINE vec3 shade_surface(vec3 normal, vec3 world_pos, vec3 local_pos,
     if (effects & EFFECT_ROUGHNESS)
     {
         u32 x = 2166136261u;
-        vec3 q = vec3_floor(vec3_mul_scalar(local_pos, 256.0f));
+        vec3 q = vec3_floor(vec3_mul_scalar(world_pos, 256.0f));
         x ^= (u32)q.components[0]; x *= 16777619u;
         x ^= (u32)q.components[1]; x *= 16777619u;
         x ^= (u32)q.components[2]; x *= 16777619u;
@@ -1101,11 +1111,16 @@ static void draw_line_z(i32 x0, i32 y0, real iw0, i32 x1, i32 y1, real iw1, vec3
     real iw = iw0;
 
     if (!(effects & EFFECT_ALPHA))
-    {
-        while (1)
-        {
-            write_scaled_opaque_pixel(x0, y0, iw, pack_color_real(color.color.r, color.color.g, color.color.b));
-            if (x0 == x1 && y0 == y1) break;
+     {
+         while (1)
+         {
+             i32 ridx = y0 * RENDER_WIDTH + x0;
+             if (x0 >= 0 && x0 < RENDER_WIDTH && y0 >= 0 && y0 < RENDER_HEIGHT && iw > zbuf_render[ridx])
+             {
+                 zbuf_render[ridx] = iw;
+                 fb_render[ridx] = pack_color_real(color.color.r, color.color.g, color.color.b);
+             }
+             if (x0 == x1 && y0 == y1) break;
             e2 = 2 * err;
             if (e2 >= dy_abs)
             {
@@ -1267,7 +1282,12 @@ static void raster_triangle_flat(vec3 v0, vec3 v1, vec3 v2, vec3 color,
             u32 col = pack_color_real(color.color.r, color.color.g, color.color.b);
             for (x = sx; x < ex; x++)
             {
-                write_scaled_opaque_pixel(x, y, iw, col);
+                i32 ridx = y * RENDER_WIDTH + x;
+                if (iw > zbuf_render[ridx])
+                {
+                    zbuf_render[ridx] = iw;
+                    fb_render[ridx] = col;
+                }
                 iw += iw_step;
             }
         }
@@ -1424,7 +1444,12 @@ static void raster_triangle_gouraud(vec3 v0, vec3 v1, vec3 v2,
             col = cs;
             for (x = sx; x < ex; x++)
             {
-                write_scaled_opaque_pixel(x, y, iw, pack_color_real(col.color.r, col.color.g, col.color.b));
+                i32 ridx = y * RENDER_WIDTH + x;
+                if (iw > zbuf_render[ridx])
+                {
+                    zbuf_render[ridx] = iw;
+                    fb_render[ridx] = pack_color_real(col.color.r, col.color.g, col.color.b);
+                }
                 iw += iw_step;
                 col.color.r += dc_step.color.r;
                 col.color.g += dc_step.color.g;
@@ -1459,6 +1484,8 @@ static void raster_triangle_quadratic(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
+    vec3 orig_v0, vec3 orig_v1, vec3 orig_v2,
+    vec3 orig_l0, vec3 orig_l1, vec3 orig_l2,
     const struct material_definition *mat,
     const tile_bounds *bounds)
 {
@@ -1469,7 +1496,23 @@ static void raster_triangle_quadratic(
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
 
-/* Sort vertices by Y and swap all associated values */
+    /* Compute ALL shading values BEFORE sorting to ensure stable roughness */
+    vec3 c0 = shade_surface(n0, orig_v0, orig_l0, mat);
+    vec3 c1 = shade_surface(n1, orig_v1, orig_l1, mat);
+    vec3 c2 = shade_surface(n2, orig_v2, orig_l2, mat);
+    
+    /* Compute midpoints using original vertices/positions for stable roughness */
+    vec3 cm01 = shade_surface(vec3_mul_scalar(vec3_add(n0, n1), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_v0, orig_v1), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_l0, orig_l1), 0.5f), mat);
+    vec3 cm12 = shade_surface(vec3_mul_scalar(vec3_add(n1, n2), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_v1, orig_v2), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_l1, orig_l2), 0.5f), mat);
+    vec3 cm20 = shade_surface(vec3_mul_scalar(vec3_add(n2, n0), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_v2, orig_v0), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_l2, orig_l0), 0.5f), mat);
+
+    /* Sort vertices by Y (only screen-space values, NOT the shading colors) */
     if (y0 > y1)
     {
         swapi(&y0, &y1);
@@ -1478,6 +1521,8 @@ static void raster_triangle_quadratic(
         swapv(&v0, &v1);
         swapv(&n0, &n1);
         swapv(&l0, &l1);
+        swapv(&c0, &c1);
+        swapv(&cm01, &cm20); /* cm01 and cm20 swap when v0/v1 swap */
     }
     if (y1 > y2)
     {
@@ -1487,6 +1532,8 @@ static void raster_triangle_quadratic(
         swapv(&v1, &v2);
         swapv(&n1, &n2);
         swapv(&l1, &l2);
+        swapv(&c1, &c2);
+        vec3 tmp_cm = cm01; cm01 = cm12; cm12 = tmp_cm; /* rotate midpoints */
     }
     if (y0 > y1)
     {
@@ -1496,23 +1543,9 @@ static void raster_triangle_quadratic(
         swapv(&v0, &v1);
         swapv(&n0, &n1);
         swapv(&l0, &l1);
+        swapv(&c0, &c1);
+        swapv(&cm01, &cm20);
     }
-
-    /* Compute shaded colors at vertices */
-    vec3 c0 = shade_surface(n0, v0, l0, mat);
-    vec3 c1 = shade_surface(n1, v1, l1, mat);
-    vec3 c2 = shade_surface(n2, v2, l2, mat);
-
-    /* Compute midpoints and their shaded colors */
-    vec3 cm01 = shade_surface(vec3_mul_scalar(vec3_add(n0, n1), 0.5f),
-                              vec3_mul_scalar(vec3_add(v0, v1), 0.5f),
-                              vec3_mul_scalar(vec3_add(l0, l1), 0.5f), mat);
-    vec3 cm12 = shade_surface(vec3_mul_scalar(vec3_add(n1, n2), 0.5f),
-                              vec3_mul_scalar(vec3_add(v1, v2), 0.5f),
-                              vec3_mul_scalar(vec3_add(l1, l2), 0.5f), mat);
-    vec3 cm20 = shade_surface(vec3_mul_scalar(vec3_add(n2, n0), 0.5f),
-                              vec3_mul_scalar(vec3_add(v2, v0), 0.5f),
-                              vec3_mul_scalar(vec3_add(l2, l0), 0.5f), mat);
 
     /* Compute edge equations for barycentric coordinate calculation */
     real f0x = y1 - y2, f0y = x2 - x1, f0_offset = x1 * y2 - x2 * y1;
@@ -1616,7 +1649,12 @@ static void raster_triangle_quadratic(
                 final_col.color.b = l0_val * l0_val * c0.color.b + l1_val * l1_val * c1.color.b + l2_val * l2_val * c2.color.b
                                     + 2.0f * l0_val * l1_val * cm01.color.b + 2.0f * l1_val * l2_val * cm12.color.b + 2.0f * l2_val * l0_val * cm20.color.b;
 
-                write_scaled_opaque_pixel(x, y, iw, pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b));
+                i32 ridx = y * RENDER_WIDTH + x;
+                if (iw > zbuf_render[ridx])
+                {
+                    zbuf_render[ridx] = iw;
+                    fb_render[ridx] = pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b);
+                }
                 iw += iw_step;
             }
         }
@@ -1660,25 +1698,82 @@ static void raster_triangle_quadratic(
 
 /* -----------------------------------------------------------------------*\
   *  Fast Cubic / X-shading rasterization                                 *
-  *      Computes shade_surface at 10 points (3 vertices + 3 edge thirds +*\
-  *      3 edge midpoints + centroid) and uses cubic interpolation.       *
-  *      True cubic: c = λ₀³c₀ + λ₁³c₁ + λ₂³c₂ + 3λ₀²λ₁cm₀₁ + ...        *
-  *  -----------------------------------------------------------------------*/
-static void raster_triangle_cubic(
-    vec3 v0, vec3 v1, vec3 v2,
-    vec3 n0, vec3 n1, vec3 n2,
-    vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat,
-    const tile_bounds *bounds)
-{
-    i32 x0, y0, x1, y1, x2, y2;
-    real iw0, iw1, iw2;
-
+*      Computes shade_surface at 10 points (3 vertices + 3 edge thirds +*\
+   *      3 edge midpoints + centroid) and uses cubic interpolation.       *\
+   *      True cubic: c = λ₀³c₀ + λ₁³c₁ + λ₂³c₂ + 3λ₀²λ₁cm₀₁ + ...        *\
+   *  -----------------------------------------------------------------------*/\
+static void raster_triangle_cubic(\
+    vec3 v0, vec3 v1, vec3 v2,\
+    vec3 n0, vec3 n1, vec3 n2,\
+    vec3 l0, vec3 l1, vec3 l2,\
+    vec3 orig_v0, vec3 orig_v1, vec3 orig_v2,\
+vec3 orig_l0, vec3 orig_l1, vec3 orig_l2,\
+    const struct material_definition *mat,\
+    const tile_bounds *bounds)\
+{\
+    i32 x0, y0, x1, y1, x2, y2;\
+    real iw0, iw1, iw2;\
+\
     project(v0, &x0, &y0, &iw0);
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
 
-/* Sort vertices by Y and swap all associated values */
+    /* Compute ALL shading values BEFORE sorting to ensure stable roughness */
+    vec3 c0 = shade_surface(n0, orig_v0, orig_l0, mat);
+    vec3 c1 = shade_surface(n1, orig_v1, orig_l1, mat);
+    vec3 c2 = shade_surface(n2, orig_v2, orig_l2, mat);
+    
+    /* Compute edge thirds using original values for stable roughness */
+    vec3 v01_t1 = vec3_add(vec3_mul_scalar(orig_v0, 2.0f/3.0f), vec3_mul_scalar(orig_v1, 1.0f/3.0f));
+    vec3 n01_t1 = vec3_add(vec3_mul_scalar(n0, 2.0f/3.0f), vec3_mul_scalar(n1, 1.0f/3.0f));
+    vec3 l01_t1 = vec3_add(vec3_mul_scalar(orig_l0, 2.0f/3.0f), vec3_mul_scalar(orig_l1, 1.0f/3.0f));
+
+    vec3 v01_t2 = vec3_add(vec3_mul_scalar(orig_v0, 1.0f/3.0f), vec3_mul_scalar(orig_v1, 2.0f/3.0f));
+    vec3 n01_t2 = vec3_add(vec3_mul_scalar(n0, 1.0f/3.0f), vec3_mul_scalar(n1, 2.0f/3.0f));
+    vec3 l01_t2 = vec3_add(vec3_mul_scalar(orig_l0, 1.0f/3.0f), vec3_mul_scalar(orig_l1, 2.0f/3.0f));
+
+    vec3 v12_t1 = vec3_add(vec3_mul_scalar(orig_v1, 2.0f/3.0f), vec3_mul_scalar(orig_v2, 1.0f/3.0f));
+    vec3 n12_t1 = vec3_add(vec3_mul_scalar(n1, 2.0f/3.0f), vec3_mul_scalar(n2, 1.0f/3.0f));
+    vec3 l12_t1 = vec3_add(vec3_mul_scalar(orig_l1, 2.0f/3.0f), vec3_mul_scalar(orig_l2, 1.0f/3.0f));
+
+    vec3 v12_t2 = vec3_add(vec3_mul_scalar(orig_v1, 1.0f/3.0f), vec3_mul_scalar(orig_v2, 2.0f/3.0f));
+    vec3 n12_t2 = vec3_add(vec3_mul_scalar(n1, 1.0f/3.0f), vec3_mul_scalar(n2, 2.0f/3.0f));
+    vec3 l12_t2 = vec3_add(vec3_mul_scalar(orig_l1, 1.0f/3.0f), vec3_mul_scalar(orig_l2, 2.0f/3.0f));
+
+    vec3 v20_t1 = vec3_add(vec3_mul_scalar(orig_v2, 2.0f/3.0f), vec3_mul_scalar(orig_v0, 1.0f/3.0f));
+    vec3 n20_t1 = vec3_add(vec3_mul_scalar(n2, 2.0f/3.0f), vec3_mul_scalar(n0, 1.0f/3.0f));
+    vec3 l20_t1 = vec3_add(vec3_mul_scalar(orig_l2, 2.0f/3.0f), vec3_mul_scalar(orig_l0, 1.0f/3.0f));
+
+    vec3 v20_t2 = vec3_add(vec3_mul_scalar(orig_v2, 1.0f/3.0f), vec3_mul_scalar(orig_v0, 2.0f/3.0f));
+    vec3 n20_t2 = vec3_add(vec3_mul_scalar(n2, 1.0f/3.0f), vec3_mul_scalar(n0, 2.0f/3.0f));
+    vec3 l20_t2 = vec3_add(vec3_mul_scalar(orig_l2, 1.0f/3.0f), vec3_mul_scalar(orig_l0, 2.0f/3.0f));
+
+    /* Shaded colors at edge thirds - using original values for stable roughness */
+    vec3 ct01_1 = shade_surface(n01_t1, v01_t1, l01_t1, mat);
+    vec3 ct01_2 = shade_surface(n01_t2, v01_t2, l01_t2, mat);
+    vec3 ct12_1 = shade_surface(n12_t1, v12_t1, l12_t1, mat);
+    vec3 ct12_2 = shade_surface(n12_t2, v12_t2, l12_t2, mat);
+    vec3 ct20_1 = shade_surface(n20_t1, v20_t1, l20_t1, mat);
+    vec3 ct20_2 = shade_surface(n20_t2, v20_t2, l20_t2, mat);
+
+    /* Compute midpoints using original values for stable roughness */
+    vec3 cm01 = shade_surface(vec3_mul_scalar(vec3_add(n0, n1), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_v0, orig_v1), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_l0, orig_l1), 0.5f), mat);
+    vec3 cm12 = shade_surface(vec3_mul_scalar(vec3_add(n1, n2), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_v1, orig_v2), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_l1, orig_l2), 0.5f), mat);
+    vec3 cm20 = shade_surface(vec3_mul_scalar(vec3_add(n2, n0), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_v2, orig_v0), 0.5f),
+                              vec3_mul_scalar(vec3_add(orig_l2, orig_l0), 0.5f), mat);
+
+    /* Centroid */
+    vec3 centroid_v = vec3_mul_scalar(vec3_add(vec3_add(orig_v0, orig_v1), orig_v2), 1.0f/3.0f);
+    vec3 centroid_n = vec3_mul_scalar(vec3_add(vec3_add(n0, n1), n2), 1.0f/3.0f);
+    vec3 centroid_l = vec3_mul_scalar(vec3_add(vec3_add(orig_l0, orig_l1), orig_l2), 1.0f/3.0f);
+    vec3 cc = shade_surface(centroid_n, centroid_v, centroid_l, mat);
+
+    /* Sort vertices by Y (only screen-space values) */
     if (y0 > y1)
     {
         swapi(&y0, &y1);
@@ -1687,6 +1782,11 @@ static void raster_triangle_cubic(
         swapv(&v0, &v1);
         swapv(&n0, &n1);
         swapv(&l0, &l1);
+        swapv(&c0, &c1);
+        /* Edge thirds swap when vertices swap */
+        vec3 tmp = ct01_1; ct01_1 = ct20_2; ct20_2 = tmp;
+        tmp = ct01_2; ct01_2 = ct20_1; ct20_1 = tmp;
+        tmp = cm01; cm01 = cm20; cm20 = tmp;
     }
     if (y1 > y2)
     {
@@ -1696,6 +1796,11 @@ static void raster_triangle_cubic(
         swapv(&v1, &v2);
         swapv(&n1, &n2);
         swapv(&l1, &l2);
+        swapv(&c1, &c2);
+        /* Rotate edge thirds when vertices 1 and 2 swap */
+        vec3 tmp = ct12_1; ct12_1 = ct01_2; ct01_2 = tmp;
+        tmp = ct12_2; ct12_2 = ct01_1; ct01_1 = tmp;
+        tmp = cm12; cm12 = cm01; cm01 = tmp;
     }
     if (y0 > y1)
     {
@@ -1705,62 +1810,11 @@ static void raster_triangle_cubic(
         swapv(&v0, &v1);
         swapv(&n0, &n1);
         swapv(&l0, &l1);
+        swapv(&c0, &c1);
+        vec3 tmp = ct01_1; ct01_1 = ct20_2; ct20_2 = tmp;
+        tmp = ct01_2; ct01_2 = ct20_1; ct20_1 = tmp;
+        tmp = cm01; cm01 = cm20; cm20 = tmp;
     }
-
-    /* Compute shaded colors at vertices */
-    vec3 c0 = shade_surface(n0, v0, l0, mat);
-    vec3 c1 = shade_surface(n1, v1, l1, mat);
-    vec3 c2 = shade_surface(n2, v2, l2, mat);
-
-    /* Compute edge thirds (1/3 and 2/3 along each edge) */
-    vec3 v01_t1 = vec3_add(vec3_mul_scalar(v0, 2.0f/3.0f), vec3_mul_scalar(v1, 1.0f/3.0f));
-    vec3 n01_t1 = vec3_add(vec3_mul_scalar(n0, 2.0f/3.0f), vec3_mul_scalar(n1, 1.0f/3.0f));
-    vec3 l01_t1 = vec3_add(vec3_mul_scalar(l0, 2.0f/3.0f), vec3_mul_scalar(l1, 1.0f/3.0f));
-
-    vec3 v01_t2 = vec3_add(vec3_mul_scalar(v0, 1.0f/3.0f), vec3_mul_scalar(v1, 2.0f/3.0f));
-    vec3 n01_t2 = vec3_add(vec3_mul_scalar(n0, 1.0f/3.0f), vec3_mul_scalar(n1, 2.0f/3.0f));
-    vec3 l01_t2 = vec3_add(vec3_mul_scalar(l0, 1.0f/3.0f), vec3_mul_scalar(l1, 2.0f/3.0f));
-
-    vec3 v12_t1 = vec3_add(vec3_mul_scalar(v1, 2.0f/3.0f), vec3_mul_scalar(v2, 1.0f/3.0f));
-    vec3 n12_t1 = vec3_add(vec3_mul_scalar(n1, 2.0f/3.0f), vec3_mul_scalar(n2, 1.0f/3.0f));
-    vec3 l12_t1 = vec3_add(vec3_mul_scalar(l1, 2.0f/3.0f), vec3_mul_scalar(l2, 1.0f/3.0f));
-
-    vec3 v12_t2 = vec3_add(vec3_mul_scalar(v1, 1.0f/3.0f), vec3_mul_scalar(v2, 2.0f/3.0f));
-    vec3 n12_t2 = vec3_add(vec3_mul_scalar(n1, 1.0f/3.0f), vec3_mul_scalar(n2, 2.0f/3.0f));
-    vec3 l12_t2 = vec3_add(vec3_mul_scalar(l1, 1.0f/3.0f), vec3_mul_scalar(l2, 2.0f/3.0f));
-
-    vec3 v20_t1 = vec3_add(vec3_mul_scalar(v2, 2.0f/3.0f), vec3_mul_scalar(v0, 1.0f/3.0f));
-    vec3 n20_t1 = vec3_add(vec3_mul_scalar(n2, 2.0f/3.0f), vec3_mul_scalar(n0, 1.0f/3.0f));
-    vec3 l20_t1 = vec3_add(vec3_mul_scalar(l2, 2.0f/3.0f), vec3_mul_scalar(l0, 1.0f/3.0f));
-
-    vec3 v20_t2 = vec3_add(vec3_mul_scalar(v2, 1.0f/3.0f), vec3_mul_scalar(v0, 2.0f/3.0f));
-    vec3 n20_t2 = vec3_add(vec3_mul_scalar(n2, 1.0f/3.0f), vec3_mul_scalar(n0, 2.0f/3.0f));
-    vec3 l20_t2 = vec3_add(vec3_mul_scalar(l2, 1.0f/3.0f), vec3_mul_scalar(l0, 2.0f/3.0f));
-
-    /* Shaded colors at edge thirds */
-    vec3 ct01_1 = shade_surface(n01_t1, v01_t1, l01_t1, mat);
-    vec3 ct01_2 = shade_surface(n01_t2, v01_t2, l01_t2, mat);
-    vec3 ct12_1 = shade_surface(n12_t1, v12_t1, l12_t1, mat);
-    vec3 ct12_2 = shade_surface(n12_t2, v12_t2, l12_t2, mat);
-    vec3 ct20_1 = shade_surface(n20_t1, v20_t1, l20_t1, mat);
-    vec3 ct20_2 = shade_surface(n20_t2, v20_t2, l20_t2, mat);
-
-    /* Compute midpoints and their shaded colors */
-    vec3 cm01 = shade_surface(vec3_mul_scalar(vec3_add(n0, n1), 0.5f),
-                              vec3_mul_scalar(vec3_add(v0, v1), 0.5f),
-                              vec3_mul_scalar(vec3_add(l0, l1), 0.5f), mat);
-    vec3 cm12 = shade_surface(vec3_mul_scalar(vec3_add(n1, n2), 0.5f),
-                              vec3_mul_scalar(vec3_add(v1, v2), 0.5f),
-                              vec3_mul_scalar(vec3_add(l1, l2), 0.5f), mat);
-    vec3 cm20 = shade_surface(vec3_mul_scalar(vec3_add(n2, n0), 0.5f),
-                              vec3_mul_scalar(vec3_add(v2, v0), 0.5f),
-                              vec3_mul_scalar(vec3_add(l2, l0), 0.5f), mat);
-
-    /* Centroid */
-    vec3 centroid_v = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f/3.0f);
-    vec3 centroid_n = vec3_mul_scalar(vec3_add(vec3_add(n0, n1), n2), 1.0f/3.0f);
-    vec3 centroid_l = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f/3.0f);
-    vec3 cc = shade_surface(centroid_n, centroid_v, centroid_l, mat);
 
     /* Compute edge equations for barycentric coordinate calculation */
     real f0x = y1 - y2, f0y = x2 - x1, f0_offset = x1*y2 - x2*y1;
@@ -1874,7 +1928,12 @@ static void raster_triangle_cubic(
                                     + 3.0f*l0_val*l1_sq*ct01_2.color.b + 3.0f*l1_val*l2_sq*ct12_2.color.b + 3.0f*l2_val*l0_sq*ct20_2.color.b
                                     + 6.0f*l0_val*l1_val*l2_val*cc.color.b;
 
-                write_scaled_opaque_pixel(x, y, iw, pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b));
+                i32 ridx = y * RENDER_WIDTH + x;
+                if (iw > zbuf_render[ridx])
+                {
+                    zbuf_render[ridx] = iw;
+                    fb_render[ridx] = pack_color_real(final_col.color.r, final_col.color.g, final_col.color.b);
+                }
                 iw += iw_step;
             }
         }
@@ -2262,6 +2321,8 @@ static void draw_triangle_internal(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
+    vec3 orig_v0, vec3 orig_v1, vec3 orig_v2,
+    vec3 orig_l0, vec3 orig_l1, vec3 orig_l2,
     const struct material_definition *mat,
     const tile_bounds *bounds)
 {
@@ -2278,31 +2339,36 @@ static void draw_triangle_internal(
             raster_triangle_wireframe(v0, v1, v2, color, mat->alpha, mat->effects, bounds);
             return;
         case SHADE_FLAT:
-            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            /* Use original triangle for shading to ensure deterministic roughness */
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(orig_v1, orig_v0), vec3_sub(orig_v2, orig_v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(orig_v0, orig_v1), orig_v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(orig_l0, orig_l1), orig_l2), 1.0f / 3.0f);
             color = shade_surface(face_normal, face_center, local_center, mat);
             raster_triangle_flat(v0, v1, v2, color, mat, bounds);
             return;
         case SHADE_GOURAUD:
-            c0 = shade_surface(n0, v0, l0, mat);
-            c1 = shade_surface(n1, v1, l1, mat);
-            c2 = shade_surface(n2, v2, l2, mat);
+            /* Use original vertices and local_pos for deterministic roughness per vertex */
+            c0 = shade_surface(n0, orig_v0, orig_l0, mat);
+            c1 = shade_surface(n1, orig_v1, orig_l1, mat);
+            c2 = shade_surface(n2, orig_v2, orig_l2, mat);
             raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat, bounds);
             return;
         case SHADE_PHONG:
             raster_triangle_phong(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, bounds);
             return;
         case SHADE_QUADRATIC:
-            raster_triangle_quadratic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, bounds);
+            /* Use original vertices/local_pos for deterministic roughness in vertex/edge midpoints */
+            raster_triangle_quadratic(v0, v1, v2, n0, n1, n2, l0, l1, l2, orig_v0, orig_v1, orig_v2, orig_l0, orig_l1, orig_l2, mat, bounds);
             return;
         case SHADE_CUBIC:
-            raster_triangle_cubic(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, bounds);
+            /* Use original vertices/local_pos for deterministic roughness in vertex/edge midpoints */
+            raster_triangle_cubic(v0, v1, v2, n0, n1, n2, l0, l1, l2, orig_v0, orig_v1, orig_v2, orig_l0, orig_l1, orig_l2, mat, bounds);
             return;
         default:
-            face_normal = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
-            face_center = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f / 3.0f);
-            local_center = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f / 3.0f);
+            /* Use original triangle for shading to ensure deterministic roughness */
+            face_normal = vec3_normalize(vec3_cross(vec3_sub(orig_v1, orig_v0), vec3_sub(orig_v2, orig_v0)));
+            face_center = vec3_mul_scalar(vec3_add(vec3_add(orig_v0, orig_v1), orig_v2), 1.0f / 3.0f);
+            local_center = vec3_mul_scalar(vec3_add(vec3_add(orig_l0, orig_l1), orig_l2), 1.0f / 3.0f);
             color = shade_surface(face_normal, face_center, local_center, mat);
             raster_triangle_flat(v0, v1, v2, color, mat, bounds);
             return;
@@ -2401,11 +2467,11 @@ static void draw_triangle_shaded(
 
             if (render_thread_count <= 1)
             {
-                draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat, &screen_bounds);
+                draw_triangle_internal(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, v0, v1, v2, l0, l1, l2, mat, &screen_bounds);
             }
             else
             {
-                tile_bin_triangle(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, mat);
+                tile_bin_triangle(cv0, cv1, cv2, cn0, cn1, cn2, cl0_t, cl1_t, cl2_t, v0, v1, v2, l0, l1, l2, mat);
             }
         }
         return;
@@ -2414,11 +2480,11 @@ static void draw_triangle_shaded(
     /* Render directly for single-thread, or bin to tiles for multithreading */
     if (render_thread_count <= 1)
     {
-        draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat, &screen_bounds);
+        draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2, v0, v1, v2, l0, l1, l2, mat, &screen_bounds);
     }
     else
     {
-        tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2, mat);
+        tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2, v0, v1, v2, l0, l1, l2, mat);
     }
 }
  
@@ -2465,6 +2531,8 @@ static void render_finish(void)
                     draw_triangle_internal(
                         transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
                         transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
                         transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
                         transparent_queue[i].mat, &screen_bounds);
                 }
@@ -2637,18 +2705,20 @@ static void render_tile(void *arg)
             }
             case SHADE_FLAT:
             {
-                vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(tri->v1, tri->v0), vec3_sub(tri->v2, tri->v0)));
-                vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(tri->v0, tri->v1), tri->v2), 1.0f / 3.0f);
-                vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(tri->l0, tri->l1), tri->l2), 1.0f / 3.0f);
+                /* Use original vertices for shading to ensure deterministic roughness */
+                vec3 face_normal = vec3_normalize(vec3_cross(vec3_sub(tri->orig_v1, tri->orig_v0), vec3_sub(tri->orig_v2, tri->orig_v0)));
+                vec3 face_center = vec3_mul_scalar(vec3_add(vec3_add(tri->orig_v0, tri->orig_v1), tri->orig_v2), 1.0f / 3.0f);
+                vec3 local_center = vec3_mul_scalar(vec3_add(vec3_add(tri->orig_l0, tri->orig_l1), tri->orig_l2), 1.0f / 3.0f);
                 vec3 color = shade_surface(face_normal, face_center, local_center, tri->mat);
                 raster_triangle_flat(tri->v0, tri->v1, tri->v2, color, tri->mat, &bounds);
                 break;
             }
             case SHADE_GOURAUD:
             {
-                vec3 c0 = shade_surface(tri->n0, tri->v0, tri->l0, tri->mat);
-                vec3 c1 = shade_surface(tri->n1, tri->v1, tri->l1, tri->mat);
-                vec3 c2 = shade_surface(tri->n2, tri->v2, tri->l2, tri->mat);
+                /* Use original vertices for deterministic roughness per vertex */
+                vec3 c0 = shade_surface(tri->n0, tri->orig_v0, tri->orig_l0, tri->mat);
+                vec3 c1 = shade_surface(tri->n1, tri->orig_v1, tri->orig_l1, tri->mat);
+                vec3 c2 = shade_surface(tri->n2, tri->orig_v2, tri->orig_l2, tri->mat);
                 raster_triangle_gouraud(tri->v0, tri->v1, tri->v2, c0, c1, c2, tri->mat, &bounds);
                 break;
             }
@@ -2656,10 +2726,12 @@ static void render_tile(void *arg)
                 raster_triangle_phong(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->mat, &bounds);
                 break;
             case SHADE_QUADRATIC:
-                raster_triangle_quadratic(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->mat, &bounds);
+                /* Use original vertices/local_pos for deterministic roughness in vertex/edge midpoints */
+                raster_triangle_quadratic(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->orig_v0, tri->orig_v1, tri->orig_v2, tri->orig_l0, tri->orig_l1, tri->orig_l2, tri->mat, &bounds);
                 break;
             case SHADE_CUBIC:
-                raster_triangle_cubic(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->mat, &bounds);
+                /* Use original vertices/local_pos for deterministic roughness in vertex/edge midpoints */
+                raster_triangle_cubic(tri->v0, tri->v1, tri->v2, tri->n0, tri->n1, tri->n2, tri->l0, tri->l1, tri->l2, tri->orig_v0, tri->orig_v1, tri->orig_v2, tri->orig_l0, tri->orig_l1, tri->orig_l2, tri->mat, &bounds);
                 break;
             default:
                 break;
@@ -2747,34 +2819,36 @@ static void tile_shutdown(void)
 
 /* Add triangle to appropriate tile bins based on screen-space bounding box */
 static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
-                              vec3 n0, vec3 n1, vec3 n2,
-                              vec3 l0, vec3 l1, vec3 l2,
-                              const struct material_definition *mat)
+                               vec3 n0, vec3 n1, vec3 n2,
+                               vec3 l0, vec3 l1, vec3 l2,
+                               vec3 orig_v0, vec3 orig_v1, vec3 orig_v2,
+                               vec3 orig_l0, vec3 orig_l1, vec3 orig_l2,
+                               const struct material_definition *mat)
 {
     i32 sx0, sy0, sx1, sy1, sx2, sy2;
     real iw0, iw1, iw2;
-    
+
     project(v0, &sx0, &sy0, &iw0);
     project(v1, &sx1, &sy1, &iw1);
     project(v2, &sx2, &sy2, &iw2);
-    
+
     i32 min_x = sx0, max_x = sx0;
     i32 min_y = sy0, max_y = sy0;
     if (sx1 < min_x) min_x = sx1; if (sx1 > max_x) max_x = sx1;
     if (sx2 < min_x) min_x = sx2; if (sx2 > max_x) max_x = sx2;
     if (sy1 < min_y) min_y = sy1; if (sy1 > max_y) max_y = sy1;
     if (sy2 < min_y) min_y = sy2; if (sy2 > max_y) max_y = sy2;
-    
+
     min_x = (min_x < 0) ? 0 : min_x;
     min_y = (min_y < 0) ? 0 : min_y;
     max_x = (max_x >= RENDER_WIDTH) ? RENDER_WIDTH - 1 : max_x;
     max_y = (max_y >= RENDER_HEIGHT) ? RENDER_HEIGHT - 1 : max_y;
-    
+
     i32 tile_min_x = min_x / TILE_SIZE;
     i32 tile_min_y = min_y / TILE_SIZE;
     i32 tile_max_x = max_x / TILE_SIZE;
     i32 tile_max_y = max_y / TILE_SIZE;
-    
+
     real depth = (iw0 < iw1) ? ((iw0 < iw2) ? iw0 : iw2) : ((iw1 < iw2) ? iw1 : iw2);
     i32 ty;
     for (ty = tile_min_y; ty <= tile_max_y; ty++)
@@ -2785,14 +2859,16 @@ static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2,
         {
             i32 idx = base_idx + tx;
             if (idx >= total_tiles) continue;
-            
+
             tile_bin *bin = &tile_bins[idx];
             if (bin->tri_count >= MAX_TRIS_PER_TILE) continue;
-            
+
             tile_tri *t = &bin->tris[bin->tri_count++];
             t->v0 = v0; t->v1 = v1; t->v2 = v2;
             t->n0 = n0; t->n1 = n1; t->n2 = n2;
             t->l0 = l0; t->l1 = l1; t->l2 = l2;
+            t->orig_v0 = orig_v0; t->orig_v1 = orig_v1; t->orig_v2 = orig_v2;
+            t->orig_l0 = orig_l0; t->orig_l1 = orig_l1; t->orig_l2 = orig_l2;
             t->mat = mat;
             t->mode = mat->mode;
             t->depth = depth;
@@ -2921,11 +2997,13 @@ static void render_transparent_range(void *arg)
                 transparent_queue[i].max_x, transparent_queue[i].max_y,
                 transparent_queue[i].depth, &screen_bounds))
         {
-            draw_triangle_internal(
-                transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
-                transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
-                transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
-                transparent_queue[i].mat, &screen_bounds);
+                    draw_triangle_internal(
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                        transparent_queue[i].n0, transparent_queue[i].n1, transparent_queue[i].n2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].v0, transparent_queue[i].v1, transparent_queue[i].v2,
+                        transparent_queue[i].l0, transparent_queue[i].l1, transparent_queue[i].l2,
+                        transparent_queue[i].mat, &screen_bounds);
         }
     }
 }
