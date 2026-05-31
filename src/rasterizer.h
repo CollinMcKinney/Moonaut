@@ -95,7 +95,7 @@ static tile_bounds screen_bounds;
 
 static void tile_init(i32 width, i32 height);
 static void tile_shutdown(void);
-static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2, vec3 n0, vec3 n1, vec3 n2, vec3 l0, vec3 l1, vec3 l2, vec3 c0, vec3 c1, vec3 c2, vec3 orig_v0, vec3 orig_v1, vec3 orig_v2, vec3 orig_l0, vec3 orig_l1, vec3 orig_l2, real *bary0, real *bary1, real *bary2, i32 is_clipped, const struct material_definition *mat);
+static void tile_bin_triangle(vec3 v0, vec3 v1, vec3 v2, vec3 n0, vec3 n1, vec3 n2, vec3 l0, vec3 l1, vec3 l2, vec3 c0, vec3 c1, vec3 c2, vec3 orig_v0, vec3 orig_v1, vec3 orig_v2, vec3 orig_l0, vec3 orig_l1, vec3 orig_l2, vec3 orig_n0, vec3 orig_n1, vec3 orig_n2, real *bary0, real *bary1, real *bary2, i32 is_clipped, const struct material_definition *mat);
 static void tile_render_all(void);
 static void tile_clear_bins(void);
 static void upscale_tile(void *arg);
@@ -191,6 +191,7 @@ static INLINE vec3 interpolate_color_barycentric(vec3 c0,vec3 c1,vec3 c2,real a,
 
 typedef struct transparent_tri {
     vec3 v0, v1, v2; vec3 n0, n1, n2; vec3 l0, l1, l2;
+    vec3 orig_v0, orig_v1, orig_v2; vec3 orig_n0, orig_n1, orig_n2; vec3 orig_l0, orig_l1, orig_l2;
     const struct material_definition *mat; enum32 mode; real depth; i32 min_x, max_x, min_y, max_y;
 } transparent_tri;
 
@@ -429,9 +430,9 @@ static void raster_triangle_quadratic(
     project(v0, &x0, &y0, &iw0); project(v1, &x1, &y1, &iw1); project(v2, &x2, &y2, &iw2);
 
     /* Vertex colors ALWAYS from original vertices for correct Quadratic interpolation */
-    c0 = shade_surface(orig_n0, orig_v0, orig_l0, mat);
-    c1 = shade_surface(orig_n1, orig_v1, orig_l1, mat);
-    c2 = shade_surface(orig_n2, orig_v2, orig_l2, mat);
+    vec3 q_c0 = shade_surface(orig_n0, orig_v0, orig_l0, mat);
+    vec3 q_c1 = shade_surface(orig_n1, orig_v1, orig_l1, mat);
+    vec3 q_c2 = shade_surface(orig_n2, orig_v2, orig_l2, mat);
     
     /* Midpoints at fixed barycentrics on original triangle */
     vec3 cm01 = shade_surface(
@@ -447,19 +448,21 @@ static void raster_triangle_quadratic(
         vec3_add(vec3_mul_scalar(orig_v2, 0.5f), vec3_mul_scalar(orig_v0, 0.5f)),
         vec3_add(vec3_mul_scalar(orig_l2, 0.5f), vec3_mul_scalar(orig_l0, 0.5f)), mat);
 
+    /* Vertex Y-sorting for top-down rasterization - swap bary arrays to maintain mapping to original vertices */
     if (y0 > y1) {
-        swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);swapv(&c0,&c1);swapv(&cm01,&cm20);
+        swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);
         if(is_clipped){real t0=bary0[0],t1=bary0[1],t2=bary0[2];bary0[0]=bary1[0];bary0[1]=bary1[1];bary0[2]=bary1[2];bary1[0]=t0;bary1[1]=t1;bary1[2]=t2;}
     }
     if (y1 > y2) {
-        swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&v1,&v2);swapv(&c1,&c2);{vec3 t=cm01;cm01=cm12;cm12=t;}
+        swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&v1,&v2);
         if(is_clipped){real t0=bary1[0],t1=bary1[1],t2=bary1[2];bary1[0]=bary2[0];bary1[1]=bary2[1];bary1[2]=bary2[2];bary2[0]=t0;bary2[1]=t1;bary2[2]=t2;}
     }
     if (y0 > y1) {
-        swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);swapv(&c0,&c1);swapv(&cm01,&cm20);
+        swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);
         if(is_clipped){real t0=bary0[0],t1=bary0[1],t2=bary0[2];bary0[0]=bary1[0];bary0[1]=bary1[1];bary0[2]=bary1[2];bary1[0]=t0;bary1[1]=t1;bary1[2]=t2;}
     }
 
+    /* Edge equations computed AFTER vertex sorting using clipped screen coordinates */
     real f0x=(real)(y1-y2),f0y=(real)(x2-x1),f0_offset=(real)(x1*y2-x2*y1);
     real f1x=(real)(y2-y0),f1y=(real)(x0-x2),f1_offset=(real)(x2*y0-x0*y2);
     real f2x=(real)(y0-y1),f2y=(real)(x1-x0),f2_offset=(real)(x0*y1-x1*y0);
@@ -476,26 +479,40 @@ static void raster_triangle_quadratic(
         else{real t=(real)(y-y1);sx=x1+raster_round(dx1*t);ex=x0+raster_round(dx2*(real)(y-y0));siw=iw1+diw1*t;eiw=iw0+diw2*(real)(y-y0);}
         if(sx>ex){swapi(&sx,&ex);swapr(&siw,&eiw);}iw_step=(ex>sx)?(eiw-siw)/(real)(ex-sx):0;
         if(sx<bounds->x0){siw+=(real)(bounds->x0-sx)*iw_step;sx=bounds->x0;}if(ex>bounds->x1)ex=bounds->x1;if(ex<=sx)continue;
-        if(!(mat->effects&EFFECT_ALPHA)){iw=siw;for(x=sx;x<ex;x++){
-            real la=(f0x*(real)x+f0y*(real)y+f0_offset)*iarea,lb=(f1x*(real)x+f1y*(real)y+f1_offset)*iarea,lc=(f2x*(real)x+f2y*(real)y+f2_offset)*iarea;
-            la=(la<0.0f)?0.0f:la;lb=(lb<0.0f)?0.0f:lb;lc=(lc<0.0f)?0.0f:lc;real sum=la+lb+lc;if(sum>0.0f){la/=sum;lb/=sum;lc/=sum;}
-            real a_val,b_val,c_val;
-            if(is_clipped){a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];}
-            else{a_val=la;b_val=lb;c_val=lc;}
-            vec3 fc;fc.color.r=a_val*a_val*c0.color.r+b_val*b_val*c1.color.r+c_val*c_val*c2.color.r+2.0f*a_val*b_val*cm01.color.r+2.0f*b_val*c_val*cm12.color.r+2.0f*c_val*a_val*cm20.color.r;
-            fc.color.g=a_val*a_val*c0.color.g+b_val*b_val*c1.color.g+c_val*c_val*c2.color.g+2.0f*a_val*b_val*cm01.color.g+2.0f*b_val*c_val*cm12.color.g+2.0f*c_val*a_val*cm20.color.g;
-            fc.color.b=a_val*a_val*c0.color.b+b_val*b_val*c1.color.b+c_val*c_val*c2.color.b+2.0f*a_val*b_val*cm01.color.b+2.0f*b_val*c_val*cm12.color.b+2.0f*c_val*a_val*cm20.color.b;
-            i32 ridx=y*RENDER_WIDTH+x;if(iw>zbuf_render[ridx]){zbuf_render[ridx]=iw;fb_render[ridx]=pack_color_real(fc.color.r,fc.color.g,fc.color.b);}iw+=iw_step;}}
+if(!(mat->effects&EFFECT_ALPHA)){iw=siw;for(x=sx;x<ex;x++){
+             real la=(f0x*(real)x+f0y*(real)y+f0_offset)*iarea,lb=(f1x*(real)x+f1y*(real)y+f1_offset)*iarea,lc=(f2x*(real)x+f2y*(real)y+f2_offset)*iarea;
+             la=(la<0.0f)?0.0f:la;lb=(lb<0.0f)?0.0f:lb;lc=(lc<0.0f)?0.0f:lc;real sum=la+lb+lc;if(sum>0.0f){la/=sum;lb/=sum;lc/=sum;}
+             real a_val,b_val,c_val;
+             real remapped_a, remapped_b, remapped_c;
+             if(is_clipped){
+                 remapped_a=la*bary0[0]+lb*bary1[0]+lc*bary2[0];
+                 remapped_b=la*bary0[1]+lb*bary1[1]+lc*bary2[1];
+                 remapped_c=la*bary0[2]+lb*bary1[2]+lc*bary2[2];
+             }
+             else{
+                 remapped_a=la;remapped_b=lb;remapped_c=lc;
+             }
+             a_val=remapped_a;b_val=remapped_b;c_val=remapped_c;
+             vec3 fc;fc.color.r=a_val*a_val*q_c0.color.r+b_val*b_val*q_c1.color.r+c_val*c_val*q_c2.color.r+2.0f*a_val*b_val*cm01.color.r+2.0f*b_val*c_val*cm12.color.r+2.0f*c_val*a_val*cm20.color.r;
+             fc.color.g=a_val*a_val*q_c0.color.g+b_val*b_val*q_c1.color.g+c_val*c_val*q_c2.color.g+2.0f*a_val*b_val*cm01.color.g+2.0f*b_val*c_val*cm12.color.g+2.0f*c_val*a_val*cm20.color.g;
+             fc.color.b=a_val*a_val*q_c0.color.b+b_val*b_val*q_c1.color.b+c_val*c_val*q_c2.color.b+2.0f*a_val*b_val*cm01.color.b+2.0f*b_val*c_val*cm12.color.b+2.0f*c_val*a_val*cm20.color.b;
+             i32 ridx=y*RENDER_WIDTH+x;if(iw>zbuf_render[ridx]){zbuf_render[ridx]=iw;fb_render[ridx]=pack_color_real(fc.color.r,fc.color.g,fc.color.b);}iw+=iw_step;}}
         else{iw=siw;for(x=sx;x<ex;x++){
-            real la=(f0x*(real)x+f0y*(real)y+f0_offset)*iarea,lb=(f1x*(real)x+f1y*(real)y+f1_offset)*iarea,lc=(f2x*(real)x+f2y*(real)y+f2_offset)*iarea;
-            la=(la<0.0f)?0.0f:la;lb=(lb<0.0f)?0.0f:lb;lc=(lc<0.0f)?0.0f:lc;real sum=la+lb+lc;if(sum>0.0f){la/=sum;lb/=sum;lc/=sum;}
-            real a_val,b_val,c_val;
-            if(is_clipped){a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];}
-            else{a_val=la;b_val=lb;c_val=lc;}
-            vec3 fc;fc.color.r=a_val*a_val*c0.color.r+b_val*b_val*c1.color.r+c_val*c_val*c2.color.r+2.0f*a_val*b_val*cm01.color.r+2.0f*b_val*c_val*cm12.color.r+2.0f*c_val*a_val*cm20.color.r;
-            fc.color.g=a_val*a_val*c0.color.g+b_val*b_val*c1.color.g+c_val*c_val*c2.color.g+2.0f*a_val*b_val*cm01.color.g+2.0f*b_val*c_val*cm12.color.g+2.0f*c_val*a_val*cm20.color.g;
-            fc.color.b=a_val*a_val*c0.color.b+b_val*b_val*c1.color.b+c_val*c_val*c2.color.b+2.0f*a_val*b_val*cm01.color.b+2.0f*b_val*c_val*cm12.color.b+2.0f*c_val*a_val*cm20.color.b;
-            write_scaled_transparent_pixel(x,y,iw,fc,mat->alpha,mat->effects);iw+=iw_step;}}}
+             real la=(f0x*(real)x+f0y*(real)y+f0_offset)*iarea,lb=(f1x*(real)x+f1y*(real)y+f1_offset)*iarea,lc=(f2x*(real)x+f2y*(real)y+f2_offset)*iarea;
+             la=(la<0.0f)?0.0f:la;lb=(lb<0.0f)?0.0f:lb;lc=(lc<0.0f)?0.0f:lc;real sum=la+lb+lc;if(sum>0.0f){la/=sum;lb/=sum;lc/=sum;}
+             real a_val,b_val,c_val;
+             real remapped_a, remapped_b, remapped_c;
+             if(is_clipped){
+                 remapped_a=la*bary0[0]+lb*bary1[0]+lc*bary2[0];
+                 remapped_b=la*bary0[1]+lb*bary1[1]+lc*bary2[1];
+                 remapped_c=la*bary0[2]+lb*bary1[2]+lc*bary2[2];
+             }
+             else{remapped_a=la;remapped_b=lb;remapped_c=lc;}
+             a_val=remapped_a;b_val=remapped_b;c_val=remapped_c;
+             vec3 fc;fc.color.r=a_val*a_val*q_c0.color.r+b_val*b_val*q_c1.color.r+c_val*c_val*q_c2.color.r+2.0f*a_val*b_val*cm01.color.r+2.0f*b_val*c_val*cm12.color.r+2.0f*c_val*a_val*cm20.color.r;
+             fc.color.g=a_val*a_val*q_c0.color.g+b_val*b_val*q_c1.color.g+c_val*c_val*q_c2.color.g+2.0f*a_val*b_val*cm01.color.g+2.0f*b_val*c_val*cm12.color.g+2.0f*c_val*a_val*cm20.color.g;
+             fc.color.b=a_val*a_val*q_c0.color.b+b_val*b_val*q_c1.color.b+c_val*c_val*q_c2.color.b+2.0f*a_val*b_val*cm01.color.b+2.0f*b_val*c_val*cm12.color.b+2.0f*c_val*a_val*cm20.color.b;
+             write_scaled_transparent_pixel(x,y,iw,fc,mat->alpha,mat->effects);iw+=iw_step;}}}
 }
 
 /* -----------------------------------------------------------------------*\
@@ -521,9 +538,9 @@ static void raster_triangle_cubic(
     project(v0, &x0, &y0, &iw0); project(v1, &x1, &y1, &iw1); project(v2, &x2, &y2, &iw2);
 
     /* Vertex colors ALWAYS from original vertices for correct Cubic interpolation */
-    c0 = shade_surface(orig_n0, orig_v0, orig_l0, mat);
-    c1 = shade_surface(orig_n1, orig_v1, orig_l1, mat);
-    c2 = shade_surface(orig_n2, orig_v2, orig_l2, mat);
+    vec3 cu_c0 = shade_surface(orig_n0, orig_v0, orig_l0, mat);
+    vec3 cu_c1 = shade_surface(orig_n1, orig_v1, orig_l1, mat);
+    vec3 cu_c2 = shade_surface(orig_n2, orig_v2, orig_l2, mat);
     
     /* Edge thirds at fixed barycentrics on original triangle */
     vec3 ct01_1 = shade_surface(
@@ -585,22 +602,22 @@ static void raster_triangle_cubic(
             real a_val,b_val,c_val;
             if(is_clipped){a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];}
             else{a_val=la;b_val=lb;c_val=lc;}
-            vec3 fc;real a_sq=a_val*a_val,b_sq=b_val*b_val,c_sq=c_val*c_val;
-            fc.color.r=a_sq*a_val*c0.color.r+b_sq*b_val*c1.color.r+c_sq*c_val*c2.color.r+3.0f*a_sq*b_val*ct01_1.color.r+3.0f*b_sq*c_val*ct12_1.color.r+3.0f*c_sq*a_val*ct20_1.color.r+3.0f*a_val*b_sq*ct01_2.color.r+3.0f*b_val*c_sq*ct12_2.color.r+3.0f*c_val*a_sq*ct20_2.color.r+6.0f*a_val*b_val*c_val*cc.color.r;
-            fc.color.g=a_sq*a_val*c0.color.g+b_sq*b_val*c1.color.g+c_sq*c_val*c2.color.g+3.0f*a_sq*b_val*ct01_1.color.g+3.0f*b_sq*c_val*ct12_1.color.g+3.0f*c_sq*a_val*ct20_1.color.g+3.0f*a_val*b_sq*ct01_2.color.g+3.0f*b_val*c_sq*ct12_2.color.g+3.0f*c_val*a_sq*ct20_2.color.g+6.0f*a_val*b_val*c_val*cc.color.g;
-            fc.color.b=a_sq*a_val*c0.color.b+b_sq*b_val*c1.color.b+c_sq*c_val*c2.color.b+3.0f*a_sq*b_val*ct01_1.color.b+3.0f*b_sq*c_val*ct12_1.color.b+3.0f*c_sq*a_val*ct20_1.color.b+3.0f*a_val*b_sq*ct01_2.color.b+3.0f*b_val*c_sq*ct12_2.color.b+3.0f*c_val*a_sq*ct20_2.color.b+6.0f*a_val*b_val*c_val*cc.color.b;
-            i32 ridx=y*RENDER_WIDTH+x;if(iw>zbuf_render[ridx]){zbuf_render[ridx]=iw;fb_render[ridx]=pack_color_real(fc.color.r,fc.color.g,fc.color.b);}iw+=iw_step;}}
-        else{iw=siw;for(x=sx;x<ex;x++){
-            real la=(f0x*(real)x+f0y*(real)y+f0_offset)*iarea,lb=(f1x*(real)x+f1y*(real)y+f1_offset)*iarea,lc=(f2x*(real)x+f2y*(real)y+f2_offset)*iarea;
-            la=(la<0.0f)?0.0f:la;lb=(lb<0.0f)?0.0f:lb;lc=(lc<0.0f)?0.0f:lc;real sum=la+lb+lc;if(sum>0.0f){la/=sum;lb/=sum;lc/=sum;}
-            real a_val,b_val,c_val;
-            if(is_clipped){a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];}
-            else{a_val=la;b_val=lb;c_val=lc;}
-            vec3 fc;real a_sq=a_val*a_val,b_sq=b_val*b_val,c_sq=c_val*c_val;
-            fc.color.r=a_sq*a_val*c0.color.r+b_sq*b_val*c1.color.r+c_sq*c_val*c2.color.r+3.0f*a_sq*b_val*ct01_1.color.r+3.0f*b_sq*c_val*ct12_1.color.r+3.0f*c_sq*a_val*ct20_1.color.r+3.0f*a_val*b_sq*ct01_2.color.r+3.0f*b_val*c_sq*ct12_2.color.r+3.0f*c_val*a_sq*ct20_2.color.r+6.0f*a_val*b_val*c_val*cc.color.r;
-            fc.color.g=a_sq*a_val*c0.color.g+b_sq*b_val*c1.color.g+c_sq*c_val*c2.color.g+3.0f*a_sq*b_val*ct01_1.color.g+3.0f*b_sq*c_val*ct12_1.color.g+3.0f*c_sq*a_val*ct20_1.color.g+3.0f*a_val*b_sq*ct01_2.color.g+3.0f*b_val*c_sq*ct12_2.color.g+3.0f*c_val*a_sq*ct20_2.color.g+6.0f*a_val*b_val*c_val*cc.color.g;
-            fc.color.b=a_sq*a_val*c0.color.b+b_sq*b_val*c1.color.b+c_sq*c_val*c2.color.b+3.0f*a_sq*b_val*ct01_1.color.b+3.0f*b_sq*c_val*ct12_1.color.b+3.0f*c_sq*a_val*ct20_1.color.b+3.0f*a_val*b_sq*ct01_2.color.b+3.0f*b_val*c_sq*ct12_2.color.b+3.0f*c_val*a_sq*ct20_2.color.b+6.0f*a_val*b_val*c_val*cc.color.b;
-            write_scaled_transparent_pixel(x,y,iw,fc,mat->alpha,mat->effects);iw+=iw_step;}}}
+vec3 fc;real a_sq=a_val*a_val,b_sq=b_val*b_val,c_sq=c_val*c_val;
+             fc.color.r=a_sq*a_val*cu_c0.color.r+b_sq*b_val*cu_c1.color.r+c_sq*c_val*cu_c2.color.r+3.0f*a_sq*b_val*ct01_1.color.r+3.0f*b_sq*c_val*ct12_1.color.r+3.0f*c_sq*a_val*ct20_1.color.r+3.0f*a_val*b_sq*ct01_2.color.r+3.0f*b_val*c_sq*ct12_2.color.r+3.0f*c_val*a_sq*ct20_2.color.r+6.0f*a_val*b_val*c_val*cc.color.r;
+             fc.color.g=a_sq*a_val*cu_c0.color.g+b_sq*b_val*cu_c1.color.g+c_sq*c_val*cu_c2.color.g+3.0f*a_sq*b_val*ct01_1.color.g+3.0f*b_sq*c_val*ct12_1.color.g+3.0f*c_sq*a_val*ct20_1.color.g+3.0f*a_val*b_sq*ct01_2.color.g+3.0f*b_val*c_sq*ct12_2.color.g+3.0f*c_val*a_sq*ct20_2.color.g+6.0f*a_val*b_val*c_val*cc.color.g;
+             fc.color.b=a_sq*a_val*cu_c0.color.b+b_sq*b_val*cu_c1.color.b+c_sq*c_val*cu_c2.color.b+3.0f*a_sq*b_val*ct01_1.color.b+3.0f*b_sq*c_val*ct12_1.color.b+3.0f*c_sq*a_val*ct20_1.color.b+3.0f*a_val*b_sq*ct01_2.color.b+3.0f*b_val*c_sq*ct12_2.color.b+3.0f*c_val*a_sq*ct20_2.color.b+6.0f*a_val*b_val*c_val*cc.color.b;
+             i32 ridx=y*RENDER_WIDTH+x;if(iw>zbuf_render[ridx]){zbuf_render[ridx]=iw;fb_render[ridx]=pack_color_real(fc.color.r,fc.color.g,fc.color.b);}iw+=iw_step;}}
+         else{iw=siw;for(x=sx;x<ex;x++){
+             real la=(f0x*(real)x+f0y*(real)y+f0_offset)*iarea,lb=(f1x*(real)x+f1y*(real)y+f1_offset)*iarea,lc=(f2x*(real)x+f2y*(real)y+f2_offset)*iarea;
+             la=(la<0.0f)?0.0f:la;lb=(lb<0.0f)?0.0f:lb;lc=(lc<0.0f)?0.0f:lc;real sum=la+lb+lc;if(sum>0.0f){la/=sum;lb/=sum;lc/=sum;}
+             real a_val,b_val,c_val;
+             if(is_clipped){a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];}
+             else{a_val=la;b_val=lb;c_val=lc;}
+             vec3 fc;real a_sq=a_val*a_val,b_sq=b_val*b_val,c_sq=c_val*c_val;
+             fc.color.r=a_sq*a_val*cu_c0.color.r+b_sq*b_val*cu_c1.color.r+c_sq*c_val*cu_c2.color.r+3.0f*a_sq*b_val*ct01_1.color.r+3.0f*b_sq*c_val*ct12_1.color.r+3.0f*c_sq*a_val*ct20_1.color.r+3.0f*a_val*b_sq*ct01_2.color.r+3.0f*b_val*c_sq*ct12_2.color.r+3.0f*c_val*a_sq*ct20_2.color.r+6.0f*a_val*b_val*c_val*cc.color.r;
+             fc.color.g=a_sq*a_val*cu_c0.color.g+b_sq*b_val*cu_c1.color.g+c_sq*c_val*cu_c2.color.g+3.0f*a_sq*b_val*ct01_1.color.g+3.0f*b_sq*c_val*ct12_1.color.g+3.0f*c_sq*a_val*ct20_1.color.g+3.0f*a_val*b_sq*ct01_2.color.g+3.0f*b_val*c_sq*ct12_2.color.g+3.0f*c_val*a_sq*ct20_2.color.g+6.0f*a_val*b_val*c_val*cc.color.g;
+             fc.color.b=a_sq*a_val*cu_c0.color.b+b_sq*b_val*cu_c1.color.b+c_sq*c_val*cu_c2.color.b+3.0f*a_sq*b_val*ct01_1.color.b+3.0f*b_sq*c_val*ct12_1.color.b+3.0f*c_sq*a_val*ct20_1.color.b+3.0f*a_val*b_sq*ct01_2.color.b+3.0f*b_val*c_sq*ct12_2.color.b+3.0f*c_val*a_sq*ct20_2.color.b+6.0f*a_val*b_val*c_val*cc.color.b;
+             write_scaled_transparent_pixel(x,y,iw,fc,mat->alpha,mat->effects);iw+=iw_step;}}}
 }
 
 /* -------------------------------------------------------------------------
@@ -609,7 +626,7 @@ static void raster_triangle_cubic(
 static void draw_triangle_internal(
     vec3 v0,vec3 v1,vec3 v2,vec3 n0,vec3 n1,vec3 n2,vec3 l0,vec3 l1,vec3 l2,
     vec3 c0,vec3 c1,vec3 c2,real*bary0,real*bary1,real*bary2,
-    vec3 orig_v0,vec3 orig_v1,vec3 orig_v2,vec3 orig_l0,vec3 orig_l1,vec3 orig_l2,
+    vec3 orig_v0,vec3 orig_v1,vec3 orig_v2,vec3 orig_l0,vec3 orig_l1,vec3 orig_l2,vec3 orig_n0,vec3 orig_n1,vec3 orig_n2,
     const struct material_definition*mat,const tile_bounds*bounds,i32 is_clipped)
 {
     vec3 fn,fc,lc,color;
@@ -618,8 +635,8 @@ static void draw_triangle_internal(
         case SHADE_FLAT:fn=vec3_normalize(vec3_cross(vec3_sub(orig_v1,orig_v0),vec3_sub(orig_v2,orig_v0)));fc=vec3_mul_scalar(vec3_add(vec3_add(orig_v0,orig_v1),orig_v2),1.0f/3.0f);lc=vec3_mul_scalar(vec3_add(vec3_add(orig_l0,orig_l1),orig_l2),1.0f/3.0f);color=shade_surface(fn,fc,lc,mat);raster_triangle_flat(v0,v1,v2,color,mat,bounds);return;
         case SHADE_GOURAUD:raster_triangle_gouraud(v0,v1,v2,c0,c1,c2,mat,bounds);return;
         case SHADE_PHONG:raster_triangle_phong(v0,v1,v2,n0,n1,n2,l0,l1,l2,mat,bounds);return;
-        case SHADE_QUADRATIC:raster_triangle_quadratic(v0,v1,v2,n0,n1,n2,l0,l1,l2,c0,c1,c2,bary0,bary1,bary2,orig_v0,orig_v1,orig_v2,orig_l0,orig_l1,orig_l2,n0,n1,n2,mat,bounds,is_clipped);return;
-        case SHADE_CUBIC:raster_triangle_cubic(v0,v1,v2,n0,n1,n2,l0,l1,l2,c0,c1,c2,bary0,bary1,bary2,orig_v0,orig_v1,orig_v2,orig_l0,orig_l1,orig_l2,n0,n1,n2,mat,bounds,is_clipped);return;
+        case SHADE_QUADRATIC:raster_triangle_quadratic(v0,v1,v2,n0,n1,n2,l0,l1,l2,c0,c1,c2,bary0,bary1,bary2,orig_v0,orig_v1,orig_v2,orig_l0,orig_l1,orig_l2,orig_n0,orig_n1,orig_n2,mat,bounds,is_clipped);return;
+        case SHADE_CUBIC:raster_triangle_cubic(v0,v1,v2,n0,n1,n2,l0,l1,l2,c0,c1,c2,bary0,bary1,bary2,orig_v0,orig_v1,orig_v2,orig_l0,orig_l1,orig_l2,orig_n0,orig_n1,orig_n2,mat,bounds,is_clipped);return;
         default:fn=vec3_normalize(vec3_cross(vec3_sub(orig_v1,orig_v0),vec3_sub(orig_v2,orig_v0)));fc=vec3_mul_scalar(vec3_add(vec3_add(orig_v0,orig_v1),orig_v2),1.0f/3.0f);lc=vec3_mul_scalar(vec3_add(vec3_add(orig_l0,orig_l1),orig_l2),1.0f/3.0f);color=shade_surface(fn,fc,lc,mat);raster_triangle_flat(v0,v1,v2,color,mat,bounds);return;
     }
 }
@@ -631,20 +648,28 @@ static void draw_triangle_shaded(vec3 v0,vec3 v1,vec3 v2,vec3 n0,vec3 n1,vec3 n2
 {
     if(!mat->double_sided){vec3 fn=vec3_normalize(vec3_cross(vec3_sub(v1,v0),vec3_sub(v2,v0)));vec3 fcen=vec3_mul_scalar(vec3_add(vec3_add(v0,v1),v2),1.0f/3.0f);vec3 vd=vec3_sub(cam_eye,fcen);if(vec3_dot(fn,vd)<=0.0f)return;}
     if(triangle_outside_frustum(v0,v1,v2))return;
-    if((mat->effects&EFFECT_ALPHA)&&!in_transparent_pass&&transparent_count<MAX_TRANSPARENT){
-        i32 sx0,sy0,sx1,sy1,sx2,sy2;real iw0,iw1,iw2;project(v0,&sx0,&sy0,&iw0);project(v1,&sx1,&sy1,&iw1);project(v2,&sx2,&sy2,&iw2);
-        i32 mx=sx0,Mx=sx0,my=sy0,My=sy0;if(sx1<mx)mx=sx1;if(sx1>Mx)Mx=sx1;if(sx2<mx)mx=sx2;if(sx2>Mx)Mx=sx2;if(sy1<my)my=sy1;if(sy1>My)My=sy1;if(sy2<my)my=sy2;if(sy2>My)My=sy2;
-        if(mx<0)mx=0;if(Mx>=RENDER_WIDTH)Mx=RENDER_WIDTH-1;if(my<0)my=0;if(My>=RENDER_HEIGHT)My=RENDER_HEIGHT-1;
-        transparent_queue[transparent_count].v0=v0;transparent_queue[transparent_count].v1=v1;transparent_queue[transparent_count].v2=v2;
-        transparent_queue[transparent_count].n0=n0;transparent_queue[transparent_count].n1=n1;transparent_queue[transparent_count].n2=n2;
-        transparent_queue[transparent_count].l0=l0;transparent_queue[transparent_count].l1=l1;transparent_queue[transparent_count].l2=l2;
-        transparent_queue[transparent_count].mat=mat;transparent_queue[transparent_count].mode=mat->mode;
-        transparent_queue[transparent_count].depth=(iw0<iw1)?((iw0<iw2)?iw0:iw2):((iw1<iw2)?iw1:iw2);
-        transparent_queue[transparent_count].min_x=mx;transparent_queue[transparent_count].max_x=Mx;transparent_queue[transparent_count].min_y=my;transparent_queue[transparent_count].max_y=My;
-        transparent_count++;return;}
+    
+    /* Compute original screen coordinates for quadratic/cubic barycentric remapping */
+    i32 ox0,oy0,ox1,oy1,ox2,oy2;real oiw0,oiw1,oiw2;
+    project(v0,&ox0,&oy0,&oiw0);project(v1,&ox1,&oy1,&oiw1);project(v2,&ox2,&oy2,&oiw2);
+    
+if((mat->effects&EFFECT_ALPHA)&&!in_transparent_pass&&transparent_count<MAX_TRANSPARENT){
+         i32 sx0,sy0,sx1,sy1,sx2,sy2;real iw0,iw1,iw2;project(v0,&sx0,&sy0,&iw0);project(v1,&sx1,&sy1,&iw1);project(v2,&sx2,&sy2,&iw2);
+         i32 mx=sx0,Mx=sx0,my=sy0,My=sy0;if(sx1<mx)mx=sx1;if(sx1>Mx)Mx=sx1;if(sx2<mx)mx=sx2;if(sx2>Mx)Mx=sx2;if(sy1<my)my=sy1;if(sy1>My)My=sy1;if(sy2<my)my=sy2;if(sy2>My)My=sy2;
+         if(mx<0)mx=0;if(Mx>=RENDER_WIDTH)Mx=RENDER_WIDTH-1;if(my<0)my=0;if(My>=RENDER_HEIGHT)My=RENDER_HEIGHT-1;
+         transparent_queue[transparent_count].v0=v0;transparent_queue[transparent_count].v1=v1;transparent_queue[transparent_count].v2=v2;
+         transparent_queue[transparent_count].n0=n0;transparent_queue[transparent_count].n1=n1;transparent_queue[transparent_count].n2=n2;
+         transparent_queue[transparent_count].l0=l0;transparent_queue[transparent_count].l1=l1;transparent_queue[transparent_count].l2=l2;
+         transparent_queue[transparent_count].orig_v0=v0;transparent_queue[transparent_count].orig_v1=v1;transparent_queue[transparent_count].orig_v2=v2;
+         transparent_queue[transparent_count].orig_n0=n0;transparent_queue[transparent_count].orig_n1=n1;transparent_queue[transparent_count].orig_n2=n2;
+         transparent_queue[transparent_count].orig_l0=l0;transparent_queue[transparent_count].orig_l1=l1;transparent_queue[transparent_count].orig_l2=l2;
+         transparent_queue[transparent_count].mat=mat;transparent_queue[transparent_count].mode=mat->mode;
+         transparent_queue[transparent_count].depth=(iw0<iw1)?((iw0<iw2)?iw0:iw2):((iw1<iw2)?iw1:iw2);
+         transparent_queue[transparent_count].min_x=mx;transparent_queue[transparent_count].max_x=Mx;transparent_queue[transparent_count].min_y=my;transparent_queue[transparent_count].max_y=My;
+         transparent_count++;return;}
 
     vec3 orig_c0,orig_c1,orig_c2;
-    i32 needs_vc=(mat->mode==SHADE_GOURAUD);
+    i32 needs_vc=(mat->mode==SHADE_GOURAUD||mat->mode==SHADE_QUADRATIC||mat->mode==SHADE_CUBIC);
     if(needs_vc){orig_c0=shade_surface(n0,v0,l0,mat);orig_c1=shade_surface(n1,v1,l1,mat);orig_c2=shade_surface(n2,v2,l2,mat);}
     else{orig_c0=vec3_init_from_3(0,0,0);orig_c1=vec3_init_from_3(0,0,0);orig_c2=vec3_init_from_3(0,0,0);}
 
@@ -660,18 +685,18 @@ static void draw_triangle_shaded(vec3 v0,vec3 v1,vec3 v2,vec3 n0,vec3 n1,vec3 n2
             vec3 cc0,cc1,cc2;
             if(needs_vc){cc0=interpolate_color_barycentric(orig_c0,orig_c1,orig_c2,b0[0],b0[1],b0[2]);cc1=interpolate_color_barycentric(orig_c0,orig_c1,orig_c2,b1[0],b1[1],b1[2]);cc2=interpolate_color_barycentric(orig_c0,orig_c1,orig_c2,b2[0],b2[1],b2[2]);}
             else{cc0=vec3_init_from_3(0,0,0);cc1=vec3_init_from_3(0,0,0);cc2=vec3_init_from_3(0,0,0);}
-            if(render_thread_count<=1)draw_triangle_internal(cv0,cv1,cv2,cn0,cn1,cn2,cl0,cl1,cl2,cc0,cc1,cc2,b0,b1,b2,v0,v1,v2,l0,l1,l2,mat,&screen_bounds,1);
-            else tile_bin_triangle(cv0,cv1,cv2,cn0,cn1,cn2,cl0,cl1,cl2,cc0,cc1,cc2,v0,v1,v2,l0,l1,l2,b0,b1,b2,1,mat);}
+            if(render_thread_count<=1)draw_triangle_internal(cv0,cv1,cv2,cn0,cn1,cn2,cl0,cl1,cl2,cc0,cc1,cc2,b0,b1,b2,v0,v1,v2,l0,l1,l2,n0,n1,n2,mat,&screen_bounds,1);
+            else tile_bin_triangle(cv0,cv1,cv2,cn0,cn1,cn2,cl0,cl1,cl2,cc0,cc1,cc2,v0,v1,v2,l0,l1,l2,n0,n1,n2,b0,b1,b2,1,mat);}
         return;}
-    real zb[9]={0};if(render_thread_count<=1)draw_triangle_internal(v0,v1,v2,n0,n1,n2,l0,l1,l2,orig_c0,orig_c1,orig_c2,zb,zb,zb,v0,v1,v2,l0,l1,l2,mat,&screen_bounds,0);
-    else tile_bin_triangle(v0,v1,v2,n0,n1,n2,l0,l1,l2,orig_c0,orig_c1,orig_c2,v0,v1,v2,l0,l1,l2,zb,zb,zb,0,mat);
+    real zb[9]={0};if(render_thread_count<=1)draw_triangle_internal(v0,v1,v2,n0,n1,n2,l0,l1,l2,orig_c0,orig_c1,orig_c2,zb,zb,zb,v0,v1,v2,l0,l1,l2,n0,n1,n2,mat,&screen_bounds,0);
+    else tile_bin_triangle(v0,v1,v2,n0,n1,n2,l0,l1,l2,orig_c0,orig_c1,orig_c2,v0,v1,v2,l0,l1,l2,n0,n1,n2,zb,zb,zb,0,mat);
 }
 
 static void upscale_tile(void*arg){upscale_job*j=(upscale_job*)arg;i32 y,x;for(y=j->y_start;y<j->y_end;y++){i32 ry=(y*j->src_height)/j->dst_height,rb=y*j->dst_width,sb=ry*j->src_width;for(x=j->x_start;x<j->x_end;x++){i32 rx=(x*j->src_width)/j->dst_width;j->fb_dst[rb+x]=j->fb_src[sb+rx];}}}
 
 static void render_finish(void)
 {
-    if(render_thread_count<=1){if(transparent_count>0){radix_sort_transparent();in_transparent_pass=1;real zb[9]={0};i32 i;for(i=0;i<transparent_count;i++){if(!is_bbox_occluded(transparent_queue[i].min_x,transparent_queue[i].min_y,transparent_queue[i].max_x,transparent_queue[i].max_y,transparent_queue[i].depth,&screen_bounds)){vec3 tc0,tc1,tc2;i32 nv=(transparent_queue[i].mode==SHADE_GOURAUD);if(nv){tc0=shade_surface(transparent_queue[i].n0,transparent_queue[i].v0,transparent_queue[i].l0,transparent_queue[i].mat);tc1=shade_surface(transparent_queue[i].n1,transparent_queue[i].v1,transparent_queue[i].l1,transparent_queue[i].mat);tc2=shade_surface(transparent_queue[i].n2,transparent_queue[i].v2,transparent_queue[i].l2,transparent_queue[i].mat);}else{tc0=vec3_init_from_3(0,0,0);tc1=vec3_init_from_3(0,0,0);tc2=vec3_init_from_3(0,0,0);}draw_triangle_internal(transparent_queue[i].v0,transparent_queue[i].v1,transparent_queue[i].v2,transparent_queue[i].n0,transparent_queue[i].n1,transparent_queue[i].n2,transparent_queue[i].l0,transparent_queue[i].l1,transparent_queue[i].l2,tc0,tc1,tc2,zb,zb,zb,transparent_queue[i].v0,transparent_queue[i].v1,transparent_queue[i].v2,transparent_queue[i].l0,transparent_queue[i].l1,transparent_queue[i].l2,transparent_queue[i].mat,&screen_bounds,0);}}transparent_count=0;in_transparent_pass=0;}}
+    if(render_thread_count<=1){if(transparent_count>0){radix_sort_transparent();in_transparent_pass=1;real zb[9]={0};i32 i;for(i=0;i<transparent_count;i++){if(!is_bbox_occluded(transparent_queue[i].min_x,transparent_queue[i].min_y,transparent_queue[i].max_x,transparent_queue[i].max_y,transparent_queue[i].depth,&screen_bounds)){vec3 tc0,tc1,tc2;i32 nv=(transparent_queue[i].mode==SHADE_GOURAUD||transparent_queue[i].mode==SHADE_QUADRATIC||transparent_queue[i].mode==SHADE_CUBIC);if(nv){tc0=shade_surface(transparent_queue[i].orig_n0,transparent_queue[i].orig_v0,transparent_queue[i].orig_l0,transparent_queue[i].mat);tc1=shade_surface(transparent_queue[i].orig_n1,transparent_queue[i].orig_v1,transparent_queue[i].orig_l1,transparent_queue[i].mat);tc2=shade_surface(transparent_queue[i].orig_n2,transparent_queue[i].orig_v2,transparent_queue[i].orig_l2,transparent_queue[i].mat);}else{tc0=vec3_init_from_3(0,0,0);tc1=vec3_init_from_3(0,0,0);tc2=vec3_init_from_3(0,0,0);}draw_triangle_internal(transparent_queue[i].v0,transparent_queue[i].v1,transparent_queue[i].v2,transparent_queue[i].n0,transparent_queue[i].n1,transparent_queue[i].n2,transparent_queue[i].l0,transparent_queue[i].l1,transparent_queue[i].l2,tc0,tc1,tc2,zb,zb,zb,transparent_queue[i].orig_v0,transparent_queue[i].orig_v1,transparent_queue[i].orig_v2,transparent_queue[i].orig_l0,transparent_queue[i].orig_l1,transparent_queue[i].orig_l2,transparent_queue[i].orig_n0,transparent_queue[i].orig_n1,transparent_queue[i].orig_n2,transparent_queue[i].mat,&screen_bounds,0);}}transparent_count=0;in_transparent_pass=0;}}
     else{tile_render_all();tile_clear_bins();if(transparent_count>0){radix_sort_transparent();in_transparent_pass=1;i32 tpj=(transparent_count+render_thread_count-1)/render_thread_count;if(tpj<4)tpj=4;i32 jc=(transparent_count+tpj-1)/tpj;if(transparent_render_job_count<jc){if(transparent_render_jobs)free(transparent_render_jobs);transparent_render_jobs=(transparent_render_job*)malloc(jc*sizeof(transparent_render_job));transparent_render_job_count=jc;}i32 j;for(j=0;j<jc;j++){transparent_render_jobs[j].start_idx=j*tpj;transparent_render_jobs[j].end_idx=(j+1)*tpj;if(transparent_render_jobs[j].end_idx>transparent_count)transparent_render_jobs[j].end_idx=transparent_count;thpool_add_work(render_threadpool,render_transparent_range,&transparent_render_jobs[j]);}thpool_wait(render_threadpool);transparent_count=0;in_transparent_pass=0;}}
     if(fw==RENDER_WIDTH&&fh==RENDER_HEIGHT)memcpy(fb,fb_render,RENDER_WIDTH*RENDER_HEIGHT*sizeof(u32));
     else if(render_thread_count>1){i32 utx=(fw+TILE_SIZE-1)/TILE_SIZE,uty=(fh+TILE_SIZE-1)/TILE_SIZE,nj=utx*uty;if(upscale_job_count<nj){if(upscale_jobs)free(upscale_jobs);upscale_jobs=(upscale_job*)malloc(nj*sizeof(upscale_job));upscale_job_count=nj;}i32 ji=0,ty;for(ty=0;ty<fh;ty+=TILE_SIZE){i32 ety=ty+TILE_SIZE;if(ety>fh)ety=fh;i32 tx;for(tx=0;tx<fw;tx+=TILE_SIZE){i32 etx=tx+TILE_SIZE;if(etx>fw)etx=fw;upscale_jobs[ji].y_start=ty;upscale_jobs[ji].y_end=ety;upscale_jobs[ji].x_start=tx;upscale_jobs[ji].x_end=etx;upscale_jobs[ji].fb_dst=fb;upscale_jobs[ji].fb_src=fb_render;upscale_jobs[ji].dst_width=fw;upscale_jobs[ji].dst_height=fh;upscale_jobs[ji].src_width=RENDER_WIDTH;upscale_jobs[ji].src_height=RENDER_HEIGHT;thpool_add_work(render_threadpool,upscale_tile,&upscale_jobs[ji]);ji++;}}thpool_wait(render_threadpool);}
@@ -694,11 +719,11 @@ static void render_tile(void*arg){
 
 static void tile_init(i32 w,i32 h){screen_bounds.x0=0;screen_bounds.y0=0;screen_bounds.x1=RENDER_WIDTH;screen_bounds.y1=RENDER_HEIGHT;num_tiles_x=(RENDER_WIDTH+TILE_SIZE-1)/TILE_SIZE;num_tiles_y=(RENDER_HEIGHT+TILE_SIZE-1)/TILE_SIZE;total_tiles=num_tiles_x*num_tiles_y;tile_bins=(tile_bin*)malloc(total_tiles*sizeof(tile_bin));i32 i;for(i=0;i<total_tiles;i++)tile_bins[i].tri_count=0;render_thread_count=get_optimal_thread_count();if(render_thread_count>total_tiles)render_thread_count=total_tiles;if(render_thread_count<1)render_thread_count=1;render_threadpool=thpool_init(render_thread_count);radix_indices=(i32*)malloc(MAX_TRANSPARENT*sizeof(i32));radix_temp=(i32*)malloc(MAX_TRANSPARENT*sizeof(i32));radix_sorted=(struct transparent_tri*)malloc(MAX_TRANSPARENT*sizeof(struct transparent_tri));}
 static void tile_shutdown(void){if(render_threadpool){thpool_destroy(render_threadpool);render_threadpool=NULL;}if(tile_bins){free(tile_bins);tile_bins=NULL;}if(job_pool){free(job_pool);job_pool=NULL;job_pool_size=0;}if(upscale_jobs){free(upscale_jobs);upscale_jobs=NULL;upscale_job_count=0;}if(clear_jobs){free(clear_jobs);clear_jobs=NULL;clear_job_count=0;}if(transparent_render_jobs){free(transparent_render_jobs);transparent_render_jobs=NULL;transparent_render_job_count=0;}if(radix_indices){free(radix_indices);radix_indices=NULL;}if(radix_temp){free(radix_temp);radix_temp=NULL;}if(radix_sorted){free(radix_sorted);radix_sorted=NULL;}render_thread_count=0;}
-static void tile_bin_triangle(vec3 v0,vec3 v1,vec3 v2,vec3 n0,vec3 n1,vec3 n2,vec3 l0,vec3 l1,vec3 l2,vec3 c0,vec3 c1,vec3 c2,vec3 ov0,vec3 ov1,vec3 ov2,vec3 ol0,vec3 ol1,vec3 ol2,real*ba0,real*ba1,real*ba2,i32 ic,const struct material_definition*mat){i32 sx0,sy0,sx1,sy1,sx2,sy2;real iw0,iw1,iw2;project(v0,&sx0,&sy0,&iw0);project(v1,&sx1,&sy1,&iw1);project(v2,&sx2,&sy2,&iw2);i32 mx=sx0,Mx=sx0,my=sy0,My=sy0;if(sx1<mx)mx=sx1;if(sx1>Mx)Mx=sx1;if(sx2<mx)mx=sx2;if(sx2>Mx)Mx=sx2;if(sy1<my)my=sy1;if(sy1>My)My=sy1;if(sy2<my)my=sy2;if(sy2>My)My=sy2;mx=(mx<0)?0:mx;my=(my<0)?0:my;Mx=(Mx>=RENDER_WIDTH)?RENDER_WIDTH-1:Mx;My=(My>=RENDER_HEIGHT)?RENDER_HEIGHT-1:My;i32 tmx=mx/TILE_SIZE,tmy=my/TILE_SIZE,tMx=Mx/TILE_SIZE,tMy=My/TILE_SIZE;real depth=(iw0<iw1)?((iw0<iw2)?iw0:iw2):((iw1<iw2)?iw1:iw2);i32 ty;for(ty=tmy;ty<=tMy;ty++){i32 bi=ty*num_tiles_x;i32 tx;for(tx=tmx;tx<=tMx;tx++){i32 idx=bi+tx;if(idx>=total_tiles)continue;tile_bin*bn=&tile_bins[idx];if(bn->tri_count>=MAX_TRIS_PER_TILE)continue;tile_tri*tr=&bn->tris[bn->tri_count++];tr->v0=v0;tr->v1=v1;tr->v2=v2;tr->n0=n0;tr->n1=n1;tr->n2=n2;tr->l0=l0;tr->l1=l1;tr->l2=l2;tr->c0=c0;tr->c1=c1;tr->c2=c2;tr->orig_v0=ov0;tr->orig_v1=ov1;tr->orig_v2=ov2;tr->orig_l0=ol0;tr->orig_l1=ol1;tr->orig_l2=ol2;tr->orig_n0=n0;tr->orig_n1=n1;tr->orig_n2=n2;if(ba0){tr->bary0[0]=ba0[0];tr->bary0[1]=ba0[1];tr->bary0[2]=ba0[2];}else{tr->bary0[0]=0;tr->bary0[1]=0;tr->bary0[2]=0;}if(ba1){tr->bary1[0]=ba1[0];tr->bary1[1]=ba1[1];tr->bary1[2]=ba1[2];}else{tr->bary1[0]=0;tr->bary1[1]=0;tr->bary1[2]=0;}if(ba2){tr->bary2[0]=ba2[0];tr->bary2[1]=ba2[1];tr->bary2[2]=ba2[2];}else{tr->bary2[0]=0;tr->bary2[1]=0;tr->bary2[2]=0;}tr->is_clipped=ic;tr->mat=mat;tr->mode=mat->mode;tr->depth=depth;}}}
+static void tile_bin_triangle(vec3 v0,vec3 v1,vec3 v2,vec3 n0,vec3 n1,vec3 n2,vec3 l0,vec3 l1,vec3 l2,vec3 c0,vec3 c1,vec3 c2,vec3 ov0,vec3 ov1,vec3 ov2,vec3 ol0,vec3 ol1,vec3 ol2,vec3 on0,vec3 on1,vec3 on2,real*ba0,real*ba1,real*ba2,i32 ic,const struct material_definition*mat){i32 sx0,sy0,sx1,sy1,sx2,sy2;real iw0,iw1,iw2;project(v0,&sx0,&sy0,&iw0);project(v1,&sx1,&sy1,&iw1);project(v2,&sx2,&sy2,&iw2);i32 mx=sx0,Mx=sx0,my=sy0,My=sy0;if(sx1<mx)mx=sx1;if(sx1>Mx)Mx=sx1;if(sx2<mx)mx=sx2;if(sx2>Mx)Mx=sx2;if(sy1<my)my=sy1;if(sy1>My)My=sy1;if(sy2<my)my=sy2;if(sy2>My)My=sy2;mx=(mx<0)?0:mx;my=(my<0)?0:my;Mx=(Mx>=RENDER_WIDTH)?RENDER_WIDTH-1:Mx;My=(My>=RENDER_HEIGHT)?RENDER_HEIGHT-1:My;i32 tmx=mx/TILE_SIZE,tmy=my/TILE_SIZE,tMx=Mx/TILE_SIZE,tMy=My/TILE_SIZE;real depth=(iw0<iw1)?((iw0<iw2)?iw0:iw2):((iw1<iw2)?iw1:iw2);i32 ty;for(ty=tmy;ty<=tMy;ty++){i32 bi=ty*num_tiles_x;i32 tx;for(tx=tmx;tx<=tMx;tx++){i32 idx=bi+tx;if(idx>=total_tiles)continue;tile_bin*bn=&tile_bins[idx];if(bn->tri_count>=MAX_TRIS_PER_TILE)continue;tile_tri*tr=&bn->tris[bn->tri_count++];tr->v0=v0;tr->v1=v1;tr->v2=v2;tr->n0=n0;tr->n1=n1;tr->n2=n2;tr->l0=l0;tr->l1=l1;tr->l2=l2;tr->c0=c0;tr->c1=c1;tr->c2=c2;tr->orig_v0=ov0;tr->orig_v1=ov1;tr->orig_v2=ov2;tr->orig_l0=ol0;tr->orig_l1=ol1;tr->orig_l2=ol2;tr->orig_n0=on0;tr->orig_n1=on1;tr->orig_n2=on2;if(ba0){tr->bary0[0]=ba0[0];tr->bary0[1]=ba0[1];tr->bary0[2]=ba0[2];}else{tr->bary0[0]=0;tr->bary0[1]=0;tr->bary0[2]=0;}if(ba1){tr->bary1[0]=ba1[0];tr->bary1[1]=ba1[1];tr->bary1[2]=ba1[2];}else{tr->bary1[0]=0;tr->bary1[1]=0;tr->bary1[2]=0;}if(ba2){tr->bary2[0]=ba2[0];tr->bary2[1]=ba2[1];tr->bary2[2]=ba2[2];}else{tr->bary2[0]=0;tr->bary2[1]=0;tr->bary2[2]=0;}tr->is_clipped=ic;tr->mat=mat;tr->mode=mat->mode;tr->depth=depth;}}}
 static void tile_render_all(void){i32 at=0,i;for(i=0;i<total_tiles;i++)if(tile_bins[i].tri_count>0)at++;if(at<MIN_TILES_PER_THREAD*render_thread_count){for(i=0;i<total_tiles;i++){if(tile_bins[i].tri_count>0){tile_job jb;jb.tile_idx=i;jb.tile_x=(i%num_tiles_x)*TILE_SIZE;jb.tile_y=(i/num_tiles_x)*TILE_SIZE;jb.tile_w=((i%num_tiles_x)==num_tiles_x-1)?(RENDER_WIDTH-jb.tile_x):TILE_SIZE;jb.tile_h=((i/num_tiles_x)==num_tiles_y-1)?(RENDER_HEIGHT-jb.tile_y):TILE_SIZE;render_tile(&jb);}}return;}if(job_pool_size<total_tiles){if(job_pool)free(job_pool);job_pool=(tile_job*)malloc(total_tiles*sizeof(tile_job));job_pool_size=total_tiles;}i32 jc=0;for(i=0;i<total_tiles;i++){if(tile_bins[i].tri_count>0){i32 ty=i/num_tiles_x,tx=i%num_tiles_x;tile_job*jb=&job_pool[jc++];jb->tile_idx=i;jb->tile_x=tx*TILE_SIZE;jb->tile_y=ty*TILE_SIZE;jb->tile_w=(tx==num_tiles_x-1)?(RENDER_WIDTH-jb->tile_x):TILE_SIZE;jb->tile_h=(ty==num_tiles_y-1)?(RENDER_HEIGHT-jb->tile_y):TILE_SIZE;thpool_add_work(render_threadpool,render_tile,jb);}}thpool_wait(render_threadpool);}
 static void tile_clear_bins(void){if(render_thread_count>1&&total_tiles>=MIN_TILES_PER_THREAD*render_thread_count){transparent_render_job js[32];i32 mt=render_thread_count;if(mt>32)mt=32;i32 bpj=(total_tiles+mt-1)/mt;i32 j;for(j=0;j<mt;j++){js[j].start_idx=j*bpj;js[j].end_idx=(j+1)*bpj;if(js[j].end_idx>total_tiles)js[j].end_idx=total_tiles;thpool_add_work(render_threadpool,tile_clear_bins_range,&js[j]);}thpool_wait(render_threadpool);}else{i32 i;for(i=0;i<total_tiles;i++)tile_bins[i].tri_count=0;}}
 static void tile_clear_bins_range(void*arg){transparent_render_job*j=(transparent_render_job*)arg;i32 i;for(i=j->start_idx;i<j->end_idx;i++)if(i<total_tiles)tile_bins[i].tri_count=0;}
-static void render_transparent_range(void*arg){transparent_render_job*j=(transparent_render_job*)arg;real zb[9]={0};i32 i;for(i=j->start_idx;i<j->end_idx;i++){if(i>=transparent_count)break;if(!is_bbox_occluded(transparent_queue[i].min_x,transparent_queue[i].min_y,transparent_queue[i].max_x,transparent_queue[i].max_y,transparent_queue[i].depth,&screen_bounds)){vec3 tc0,tc1,tc2;i32 nv=(transparent_queue[i].mode==SHADE_GOURAUD);if(nv){tc0=shade_surface(transparent_queue[i].n0,transparent_queue[i].v0,transparent_queue[i].l0,transparent_queue[i].mat);tc1=shade_surface(transparent_queue[i].n1,transparent_queue[i].v1,transparent_queue[i].l1,transparent_queue[i].mat);tc2=shade_surface(transparent_queue[i].n2,transparent_queue[i].v2,transparent_queue[i].l2,transparent_queue[i].mat);}else{tc0=vec3_init_from_3(0,0,0);tc1=vec3_init_from_3(0,0,0);tc2=vec3_init_from_3(0,0,0);}draw_triangle_internal(transparent_queue[i].v0,transparent_queue[i].v1,transparent_queue[i].v2,transparent_queue[i].n0,transparent_queue[i].n1,transparent_queue[i].n2,transparent_queue[i].l0,transparent_queue[i].l1,transparent_queue[i].l2,tc0,tc1,tc2,zb,zb,zb,transparent_queue[i].v0,transparent_queue[i].v1,transparent_queue[i].v2,transparent_queue[i].l0,transparent_queue[i].l1,transparent_queue[i].l2,transparent_queue[i].mat,&screen_bounds,0);}}}
+static void render_transparent_range(void*arg){transparent_render_job*j=(transparent_render_job*)arg;real zb[9]={0};i32 i;for(i=j->start_idx;i<j->end_idx;i++){if(i>=transparent_count)break;if(!is_bbox_occluded(transparent_queue[i].min_x,transparent_queue[i].min_y,transparent_queue[i].max_x,transparent_queue[i].max_y,transparent_queue[i].depth,&screen_bounds)){vec3 tc0,tc1,tc2;i32 nv=(transparent_queue[i].mode==SHADE_GOURAUD||transparent_queue[i].mode==SHADE_QUADRATIC||transparent_queue[i].mode==SHADE_CUBIC);if(nv){tc0=shade_surface(transparent_queue[i].orig_n0,transparent_queue[i].orig_v0,transparent_queue[i].orig_l0,transparent_queue[i].mat);tc1=shade_surface(transparent_queue[i].orig_n1,transparent_queue[i].orig_v1,transparent_queue[i].orig_l1,transparent_queue[i].mat);tc2=shade_surface(transparent_queue[i].orig_n2,transparent_queue[i].orig_v2,transparent_queue[i].orig_l2,transparent_queue[i].mat);}else{tc0=vec3_init_from_3(0,0,0);tc1=vec3_init_from_3(0,0,0);tc2=vec3_init_from_3(0,0,0);}draw_triangle_internal(transparent_queue[i].v0,transparent_queue[i].v1,transparent_queue[i].v2,transparent_queue[i].n0,transparent_queue[i].n1,transparent_queue[i].n2,transparent_queue[i].l0,transparent_queue[i].l1,transparent_queue[i].l2,tc0,tc1,tc2,zb,zb,zb,transparent_queue[i].orig_v0,transparent_queue[i].orig_v1,transparent_queue[i].orig_v2,transparent_queue[i].orig_l0,transparent_queue[i].orig_l1,transparent_queue[i].orig_l2,transparent_queue[i].orig_n0,transparent_queue[i].orig_n1,transparent_queue[i].orig_n2,transparent_queue[i].mat,&screen_bounds,0);}}}
 static void clear_tile_range(void*arg){clear_job*j=(clear_job*)arg;u32*fb32=(u32*)fb_render;real*zbr=(real*)zbuf_render;u32 col=j->color;i32 ti=j->tile_idx,ty=ti/num_tiles_x,tx=ti%num_tiles_x,tlx=tx*TILE_SIZE,tly=ty*TILE_SIZE,tw=(tx==num_tiles_x-1)?(RENDER_WIDTH-tlx):TILE_SIZE,th=(ty==num_tiles_y-1)?(RENDER_HEIGHT-tly):TILE_SIZE;i32 y;for(y=0;y<th;y++){i32 ro=(tly+y)*RENDER_WIDTH+tlx;i32 x;for(x=0;x+3<tw;x+=4){fb32[ro+x]=col;fb32[ro+x+1]=col;fb32[ro+x+2]=col;fb32[ro+x+3]=col;zbr[ro+x]=0.0f;zbr[ro+x+1]=0.0f;zbr[ro+x+2]=0.0f;zbr[ro+x+3]=0.0f;}while(x<tw){fb32[ro+x]=col;zbr[ro+x]=0.0f;x++;}}}
 
 #ifdef __cplusplus
