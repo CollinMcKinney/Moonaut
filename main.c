@@ -126,7 +126,8 @@ int main(void)
         scenario_render(&world);
 
         const u32 *fb = render_get_fb();
-        present_frame(fb);
+
+        thpool_add_work(render_threadpool, present_frame, (void*)fb);
 
         print_fps(now);
     }

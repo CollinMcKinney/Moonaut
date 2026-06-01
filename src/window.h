@@ -40,7 +40,7 @@ static int window_init(const char *title, int w, int h)
     
     /* Create reusable surface for presentation (avoids per-frame XImage allocation) */
     g_surface = RGFW_window_createSurface(g_window, NULL, w, h, RGFW_formatBGRA8);
-    
+
     return 0;
 }
 
@@ -60,28 +60,21 @@ static int is_running(void)
  * Note: For X11, we reuse the surface (g_surface) created at init time.
  * The surface's data pointer is updated each frame, avoiding XImage allocation.
  */
-static void present_frame(const u32 *fb)
+static void present_frame(void *fb)
 {
-    if (!g_window || !fb) return;
-    
-    extern i32 fw, fh;
-    int w = fw;
-    int h = fh;
-    
-    /* Ensure surface exists (may have been freed during resize) */
-    if (!g_surface) {
-        g_surface = RGFW_window_createSurface(g_window, NULL, w, h, RGFW_formatBGRA8);
-    }
-    
-    if (g_surface) {
-        /* Update surface data pointer to current framebuffer without reallocating */
-        /* Format is 0x00BBGGRR (BGRA with 0 alpha), which matches RGFW_formatBGRA8 layout */
-        g_surface->data = (u8*)fb;
-        /* Width/height may change on resize */
-        g_surface->w = w;
-        g_surface->h = h;
-        RGFW_window_blitSurface(g_window, g_surface);
-    }
+    if (!g_window || !fb || !g_surface || !g_surface->native.bitmap) return;
+
+    /* Update the XImage's data pointer to our framebuffer.
+     * XCreateImage allocates the XImage struct but not the data buffer.
+     * We point it directly at our fb to avoid memcpy. */
+    g_surface->native.bitmap->data = (char*)fb;
+
+    XPutImage(_RGFW->display,
+        g_window->src.window, g_window->src.gc, g_surface->native.bitmap,
+        0, 0, 0, 0, (u32)g_surface->w, (u32)g_surface->h);
+
+    /* Clear data pointer so XDestroyImage (called on resize/shutdown) won't free our fb */
+    g_surface->native.bitmap->data = NULL;
 }
 
 /* Cleanup window resources */
@@ -103,13 +96,13 @@ static void window_resize(int new_w, int new_h)
 {
     /* Recreate surface with new dimensions since XImage has fixed size */
     RGFW_surface *old_surface = g_surface;
-    
+
     render_resize(new_w, new_h);
-    
+
     if (old_surface) {
         RGFW_surface_free(old_surface);
     }
-    
+
     /* Recreate surface with new dimensions */
     g_surface = RGFW_window_createSurface(g_window, NULL, new_w, new_h, RGFW_formatBGRA8);
     if (!g_surface) {
