@@ -576,9 +576,9 @@ static void raster_triangle_cubic(
     /* Centroid at (1/3,1/3,1/3) */
     vec3 cc = shade_surface(vec3_mul_scalar(vec3_add(vec3_add(orig_n0,orig_n1),orig_n2),1.0f/3.0f),vec3_mul_scalar(vec3_add(vec3_add(orig_v0,orig_v1),orig_v2),1.0f/3.0f),vec3_mul_scalar(vec3_add(vec3_add(orig_l0,orig_l1),orig_l2),1.0f/3.0f),mat);
 
-    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);swapv(&c0,&c1);{vec3 t=ct01_1;ct01_1=ct20_2;ct20_2=t;t=ct01_2;ct01_2=ct20_1;ct20_1=t;t=cm01;cm01=cm20;cm20=t;}if(is_clipped){real t0=bary0[0],t1=bary0[1],t2=bary0[2];bary0[0]=bary1[0];bary0[1]=bary1[1];bary0[2]=bary1[2];bary1[0]=t0;bary1[1]=t1;bary1[2]=t2;}}
-    if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&v1,&v2);swapv(&c1,&c2);{vec3 t=ct12_1;ct12_1=ct01_2;ct01_2=t;t=ct12_2;ct12_2=ct01_1;ct01_1=t;t=cm12;cm12=cm01;cm01=t;}if(is_clipped){real t0=bary1[0],t1=bary1[1],t2=bary1[2];bary1[0]=bary2[0];bary1[1]=bary2[1];bary1[2]=bary2[2];bary2[0]=t0;bary2[1]=t1;bary2[2]=t2;}}
-    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);swapv(&c0,&c1);{vec3 t=ct01_1;ct01_1=ct20_2;ct20_2=t;t=ct01_2;ct01_2=ct20_1;ct20_1=t;t=cm01;cm01=cm20;cm20=t;}if(is_clipped){real t0=bary0[0],t1=bary0[1],t2=bary0[2];bary0[0]=bary1[0];bary0[1]=bary1[1];bary0[2]=bary1[2];bary1[0]=t0;bary1[1]=t1;bary1[2]=t2;}}
+    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);if(is_clipped){real t0=bary0[0],t1=bary0[1],t2=bary0[2];bary0[0]=bary1[0];bary0[1]=bary1[1];bary0[2]=bary1[2];bary1[0]=t0;bary1[1]=t1;bary1[2]=t2;}}
+    if(y1>y2){swapi(&y1,&y2);swapi(&x1,&x2);swapr(&iw1,&iw2);swapv(&v1,&v2);if(is_clipped){real t0=bary1[0],t1=bary1[1],t2=bary1[2];bary1[0]=bary2[0];bary1[1]=bary2[1];bary1[2]=bary2[2];bary2[0]=t0;bary2[1]=t1;bary2[2]=t2;}}
+    if(y0>y1){swapi(&y0,&y1);swapi(&x0,&x1);swapr(&iw0,&iw1);swapv(&v0,&v1);if(is_clipped){real t0=bary0[0],t1=bary0[1],t2=bary0[2];bary0[0]=bary1[0];bary0[1]=bary1[1];bary0[2]=bary1[2];bary1[0]=t0;bary1[1]=t1;bary1[2]=t2;}}
 
     real f0x=(real)(y1-y2),f0y=(real)(x2-x1),f0_offset=(real)(x1*y2-x2*y1);
     real f1x=(real)(y2-y0),f1y=(real)(x0-x2),f1_offset=(real)(x2*y0-x0*y2);
