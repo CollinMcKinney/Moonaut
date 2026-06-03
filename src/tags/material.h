@@ -860,10 +860,10 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_QUADRATIC,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.61f, 0.27f, 0.23f},   /* #9B443B */
-    /*.ambient_light_factor     =*/ 0.70f,
+    /*.ambient_light_factor     =*/ 1.00f,
     /*.alpha                    =*/ 1.00f,
     /*.saturation               =*/ 1.50f,                   /* richer color */
     /*.tint                     =*/ {1.00f, 1.00f, 1.00f},
