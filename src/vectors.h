@@ -111,7 +111,7 @@ static INLINE real real_clamp(real x, real min, real max) { return real_min(real
 /* ------------------------------------------------------------------ */
 
 /* Real constants. */
-#define VECTORS_PI ((real)3.141592653589793115997963468544185161590576171875)
+static const real VECTORS_PI = ((real)3.141592653589793115997963468544185161590576171875);
 static const real VECTORS_RAD2DEG = (real)(180.0 / VECTORS_PI);
 static const real VECTORS_DEG2RAD = (real)(VECTORS_PI / 180.0);
 static const real VECTORS_QUAT_EPSILON = (real)0.0001;
@@ -130,6 +130,13 @@ STATIC_ASSERT(BOOL(false) == false && false == 0, bool_false_fails);
 STATIC_ASSERT(BOOL(0x00)  == 0, bool_zero_fails);
 STATIC_ASSERT(BOOL(0xFF)  == 1, bool_nonzero_fails);
 STATIC_ASSERT(BOOL(-1)    == 1, bool_negative_fails);
+
+/* ================================================================== *
+ *  Make sure system is using 8-bit bytes.
+ * ================================================================== */
+#if CHAR_BIT != 8
+    #error "System must use 8-bit bytes."
+#endif
 
 /* ================================================================== *
  *  8‑bit unsigned  -  u8
@@ -315,7 +322,7 @@ STATIC_ASSERT(sizeof(u64) == 0x8, u64_size_wrong);
 STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
 
 /* -------------------------------------------------------------------------
-    WTF Math Optimization - Fast but less accurate hacks
+    WTF Math Optimization - potentially faster, but less accurate hacks.
     ------------------------------------------------------------------------- */
 #define REAL_WTF_MATH */ /* On modern CPU's it seems about 2% slower. */
 #ifdef REAL_WTF_MATH
