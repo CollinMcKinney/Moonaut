@@ -21,11 +21,13 @@ for i, name in ipairs(material_pool) do
 end
 
 local station_model_handle = import_model("station.glb")
+local station_cbsp_handle = build_cbsp(station_model_handle)
 
 if tag_get_block_count(scenario_handle, "entities") > 0 then
     local entity_handle = tag_get_block_field(scenario_handle, "entities", 1, "entity")
     if entity_handle and entity_handle >= 0 then
         tag_set_field(entity_handle, "model", station_model_handle)
+        tag_set_field(entity_handle, "collision_bsp", station_cbsp_handle)
     end
 end
 
@@ -45,7 +47,7 @@ function update(dt) --called every game-tick.
     -- Orbit camera around (0,0,0)
     local cam_angle = (total_time / cam_cycle_time) * 2 * math.pi
     local radius = 10
-    local height = 5
+    local height = 7
     local cam_x = radius * math.cos(cam_angle)
     local cam_z = radius * math.sin(cam_angle)
     camera_eye(cam_x, height, cam_z)
@@ -64,7 +66,7 @@ function update(dt) --called every game-tick.
     local g = (math.sin((hue + 120) * math.pi / 180) + 1)
     local b = (math.sin((hue + 240) * math.pi / 180) + 1)
     light_color(r , g , b )  -- brighter
-
+     
      -- Cycle materials on the first entity's model
      mat_timer = mat_timer + dt
     if mat_timer >= mat_interval then
@@ -72,30 +74,30 @@ function update(dt) --called every game-tick.
          mat_index = (mat_index % #material_handles) + 1
          local next_mat = material_handles[mat_index]
 
-         -- 1. Check if scenario has entities before accessing the first one
-        if tag_get_block_count(scenario_handle, "entities") > 0 then
-            local ent_handle = tag_get_block_field(scenario_handle, "entities", 0, "entity")
-            if ent_handle and ent_handle >= 0 then
-                -- 2. Get the model handle currently assigned to that entity
-                local model_handle = tag_get_field(ent_handle, "model")
-                if model_handle and model_handle >= 0 then
-                    -- 3. Check if the model has a materials block and update it
-                    if tag_get_block_count(model_handle, "materials") > 0 then
-                        tag_set_block_field(model_handle, "materials", 0, "material", next_mat)
-                    else
-                        print("No materials block found in the model.")
-                    end
-                else
-                    print("No model found in the entity.")
-                end
-                
+          -- 1. Check if scenario has entities before accessing the first one
+         if tag_get_block_count(scenario_handle, "entities") > 0 then
+             local ent_handle = tag_get_block_field(scenario_handle, "entities", 0, "entity")
+             if ent_handle and ent_handle >= 0 then
+                  -- 2. Get the model handle currently assigned to that entity
+                 local model_handle = tag_get_field(ent_handle, "model")
+                 if model_handle and model_handle >= 0 then
+                      -- 3. Check if the model has a materials block and update it
+                     if tag_get_block_count(model_handle, "materials") > 0 then
+                         tag_set_block_field(model_handle, "materials", 0, "material", next_mat)
+                     else
+                         print("No materials block found in the model.")
+                     end
+                 else
+                     print("No model found in the entity.")
+                 end
+                 
                 local rigid_body_handle = tag_get_field(ent_handle, "rigid_body")
-                tag_set_field(rigid_body_handle, "velocity", vec3(-5, 10, 0))
-                tag_set_field(rigid_body_handle, "angular_velocity", vec3(10, 0, 0))
-                tag_set_field(ent_handle, "position", vec3(10, -1, 0))
-            end
-        else
-            print("No entities found in the scenario.")
-        end
-    end
+                tag_set_field(rigid_body_handle, "velocity", vec3(-5, 7, 0))
+                tag_set_field(rigid_body_handle, "angular_velocity", vec3(1, 0, 0))
+                tag_set_field(ent_handle, "position", vec3(5, 3, 3))
+             end
+         else
+             print("No entities found in the scenario.")
+         end
+     end
 end
