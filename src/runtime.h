@@ -16,6 +16,7 @@
 #include "tags/lua_script.h"
 
 #include "toolbox/model_importer.h"
+#include "toolbox/cbsp_builder.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -614,6 +615,55 @@ static i32 lua_import_model(lua_State *L)
     return 1;
 }
 
+/* build_cbsp(model_handle) -> cbsp tag handle */
+static i32 lua_build_cbsp(lua_State *L)
+{
+    i32 model_handle = (i32)luaL_checkinteger(L, 1);
+    model_definition *model = (model_definition*)tag_get(model_handle, TAG_model);
+    if (!model) {
+        fprintf(stderr, "[lua_build_cbsp] invalid model handle %d\n", model_handle);
+        return luaL_error(L, "invalid model handle");
+    }
+
+    fprintf(stderr, "[lua_build_cbsp] model handle=%d, primitives.count=%u\n", model_handle, model->primitives.count);
+
+    collision_bsp_definition *cbsp = cbsp_build_from_model(model);
+    if (!cbsp) {
+        fprintf(stderr, "[lua_build_cbsp] cbsp_build_from_model returned NULL\n");
+        return luaL_error(L, "failed to build cbsp from model (no triangles?)");
+    }
+
+    fprintf(stderr, "[lua_build_cbsp] BSP built: triangles=%u\n", cbsp->triangles.count);
+
+    tag_group_definition *group = tag_find_group_internal(TAG_collision_bsp);
+    if (!group) {
+        fprintf(stderr, "[lua_build_cbsp] tag group not found\n");
+        cbsp_free(cbsp);
+        return luaL_error(L, "could not find cbsp tag group");
+    }
+
+    i32 cbsp_handle = tag_alloc_instance("", group);
+    if (cbsp_handle < 0) {
+        fprintf(stderr, "[lua_build_cbsp] tag_alloc_instance failed\n");
+        cbsp_free(cbsp);
+        return luaL_error(L, "could not allocate cbsp tag instance");
+    }
+
+    tag_instance *inst = &tag_sys.instances[cbsp_handle];
+    collision_bsp_definition *dst = (collision_bsp_definition*)inst->active_data;
+    dst->triangles.address = cbsp->triangles.address;
+    dst->triangles.count = cbsp->triangles.count;
+    dst->bounds = cbsp->bounds;
+    inst->loaded = 1;
+
+    cbsp->triangles.address = NULL;
+    cbsp_detach(cbsp);
+
+    fprintf(stderr, "[lua_build_cbsp] returning cbsp_handle=%d\n", cbsp_handle);
+    lua_pushinteger(L, cbsp_handle);
+    return 1;
+}
+
 /* tag_get_field(handle, field_name) -> value */
 static i32 lua_tag_get_field(lua_State *L)
 {
@@ -815,6 +865,7 @@ static void scenario_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "clear_color",          lua_clear_color);
     
     lua_register_builtin(state, "import_model",         lua_import_model);
+    lua_register_builtin(state, "build_cbsp",           lua_build_cbsp);
     
     lua_register_builtin(state, "load_scenario",        lua_load_scenario);
     lua_register_builtin(state, "tag_load",             lua_tag_load);
@@ -844,12 +895,7 @@ static void scenario_register_lua_functions(lua_state *state) {
     /* Tag groups. */
     lua_set_global_integer(state, "TAG_material",       TAG_material);
     lua_set_global_integer(state, "TAG_model",          TAG_model);
-    lua_set_global_integer(state, "TAG_entity",         TAG_entity);
-    lua_set_global_integer(state, "TAG_rigid_body",     TAG_rigid_body);
-    lua_set_global_integer(state, "TAG_scenario",       TAG_scenario);
-    lua_set_global_integer(state, "TAG_globals",        TAG_globals);
-    lua_set_global_integer(state, "TAG_camera",         TAG_camera);
-    lua_set_global_integer(state, "TAG_lua_script",     TAG_lua_script);
+lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
 }
 
 static void scenario_bind_lua_state(lua_state *state, void *userdata) {
@@ -873,7 +919,6 @@ static void scenario_init(scenario_world *w, i32 width, i32 height) {
 }
 
 static void scenario_update(scenario_world *w, real dt) {
-    (void)w;
     scripts_update(dt);
     if (!sc_pause_physics) {
         physics_step(&w->physics, dt);

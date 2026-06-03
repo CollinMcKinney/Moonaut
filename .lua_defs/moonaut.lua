@@ -150,6 +150,10 @@ function update(dt) end
 ---@return number
 function import_model(filename) end
 
+---@param handle number
+---@return number
+function build_cbsp(handle) end
+
 SHADE_WIREFRAME = 0
 SHADE_FLAT = 1
 SHADE_GOURAUD = 2
