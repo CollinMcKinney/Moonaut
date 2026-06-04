@@ -11,6 +11,7 @@
 #if defined(__APPLE__)
 #include <AvailabilityMacros.h>
 #else
+#ifndef _WIN32 /* Guard POSIX macros so Windows ignores them */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -18,19 +19,60 @@
 #define _XOPEN_SOURCE 500
 #endif
 #endif
-#include <unistd.h>
-#include <signal.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
-#include <errno.h>
 #include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>  /* For _beginthreadex */
+
+/* Map pthreads data types to Native Win32 equivalents */
+typedef HANDLE          pthread_t;
+typedef CRITICAL_SECTION pthread_mutex_t;
+typedef CONDITION_VARIABLE pthread_cond_t;
+
+/* Map POSIX Mutex functions to Win32 Critical Sections */
+#define pthread_mutex_init(mutex, attr) InitializeCriticalSection(mutex)
+#define pthread_mutex_destroy(mutex)    DeleteCriticalSection(mutex)
+#define pthread_mutex_lock(mutex)       EnterCriticalSection(mutex)
+#define pthread_mutex_unlock(mutex)     LeaveCriticalSection(mutex)
+
+/* Map POSIX Condition Variables to Win32 Condition Variables */
+#define pthread_cond_init(cond, attr)    InitializeConditionVariable(cond)
+#define pthread_cond_destroy(cond)       /* Win32 CVs do not need explicit destruction */
+#define pthread_cond_signal(cond)        WakeConditionVariable(cond)
+#define pthread_cond_broadcast(cond)     WakeAllConditionVariable(cond)
+#define pthread_cond_wait(cond, mutex)   SleepConditionVariableCS(cond, mutex, INFINITE)
+
+/* Map basic Unix utilities */
+#define sleep(x) Sleep((x) * 1000)
+
+/* Native Win32 Thread Creation & Detaching wrappers */
+static inline int pthread_create(pthread_t *thread, void *attr, void *(*start_routine)(void *), void *arg) {
+	(void)attr;
+	*thread = (HANDLE)_beginthreadex(NULL, 0, (unsigned int (__stdcall *)(void *))start_routine, arg, 0, NULL);
+	return (*thread == NULL) ? -1 : 0;
+}
+
+static inline int pthread_detach(pthread_t thread) {
+	/* In Win32, closing the handle 'detaches' it, allowing OS reclamation on thread exit */
+	return CloseHandle(thread) ? 0 : -1;
+}
+
+#else /* Native Unix/POSIX Includes */
+#include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
 #if defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <pthread_np.h>
 #endif
+#endif /* _WIN32 */
 
 #include "thpool.h"
 
@@ -256,6 +298,11 @@ void thpool_destroy(thpool_* thpool_p){
 	for (n=0; n < threads_total; n++){
 		thread_destroy(thpool_p->threads[n]);
 	}
+
+	/* Clean up internal sync mechanisms to prevent resource leaks on Windows */
+	pthread_mutex_destroy(&(thpool_p->thcount_lock));
+	pthread_cond_destroy(&(thpool_p->threads_all_idle));
+
 	free(thpool_p->threads);
 	free(thpool_p);
 }
@@ -265,18 +312,25 @@ void thpool_destroy(thpool_* thpool_p){
 void thpool_pause(thpool_* thpool_p) {
 	int n;
 	for (n=0; n < thpool_p->num_threads_alive; n++){
+#ifdef _WIN32
+		SuspendThread(thpool_p->threads[n]->pthread);
+#else
 		pthread_kill(thpool_p->threads[n]->pthread, SIGUSR1);
+#endif
 	}
 }
 
 
 /* Resume all threads in threadpool */
 void thpool_resume(thpool_* thpool_p) {
-    /* resuming a single threadpool hasn't been
-       implemented yet, meanwhile this suppresses
-       the warnings */
-    (void)thpool_p;
-
+#ifdef _WIN32
+	int n;
+	for (n=0; n < thpool_p->num_threads_alive; n++){
+		ResumeThread(thpool_p->threads[n]->pthread);
+	}
+#else
+	(void)thpool_p;
+#endif
 	threads_on_hold = 0;
 }
 
@@ -317,7 +371,7 @@ static int thread_init (thpool_* thpool_p, struct thread** thread_p, int id){
 
 /* Sets the calling thread on hold */
 static void thread_hold(int sig_id) {
-    (void)sig_id;
+	(void)sig_id;
 	threads_on_hold = 1;
 	while (threads_on_hold){
 		sleep(1);
@@ -346,7 +400,12 @@ static void* thread_do(struct thread* thread_p){
 #elif defined(__APPLE__) && defined(__MACH__)
 	pthread_setname_np(thread_name);
 #elif defined(__FreeBSD__) || defined(__OpenBSD__)
-    pthread_set_name_np(thread_p->pthread, thread_name);
+	pthread_set_name_np(thread_p->pthread, thread_name);
+#elif defined(_WIN32)
+	/* Windows 10+ supports setting thread names natively via a wide string */
+	wchar_t w_thread_name[16];
+	mbstowcs(w_thread_name, thread_name, 16);
+	SetThreadDescription(GetCurrentThread(), w_thread_name);
 #else
 	err("thread_do(): pthread_setname_np is not supported on this system");
 #endif
@@ -354,7 +413,8 @@ static void* thread_do(struct thread* thread_p){
 	/* Assure all threads have been created before starting serving */
 	thpool_* thpool_p = thread_p->thpool_p;
 
-	/* Register signal handler */
+#ifndef _WIN32
+	/* Register signal handler (Unix Only) */
 	struct sigaction act;
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = SA_ONSTACK;
@@ -362,6 +422,7 @@ static void* thread_do(struct thread* thread_p){
 	if (sigaction(SIGUSR1, &act, NULL) == -1) {
 		err("thread_do(): cannot handle SIGUSR1");
 	}
+#endif
 
 	/* Mark thread as alive (initialized) */
 	pthread_mutex_lock(&thpool_p->thcount_lock);
@@ -512,7 +573,15 @@ static struct job* jobqueue_pull(jobqueue* jobqueue_p){
 /* Free all queue resources back to the system */
 static void jobqueue_destroy(jobqueue* jobqueue_p){
 	jobqueue_clear(jobqueue_p);
+
+#ifdef _WIN32
+	/* bsem_reset() re-initializes the internal locks. On Windows, we must explicitly 
+	 * destroy it one last time before freeing the wrapper container. */
+	pthread_mutex_destroy(&(jobqueue_p->has_jobs->mutex));
+#endif
+
 	free(jobqueue_p->has_jobs);
+	pthread_mutex_destroy(&(jobqueue_p->rwmutex)); /* Explicitly destroy the queue lock */
 }
 
 
