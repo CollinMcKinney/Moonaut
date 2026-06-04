@@ -21,7 +21,7 @@
 #include "src/runtime.h"
 #include "src/defaults.h"
 
-/* ---------- window management (RGFW) ---------- */
+/* ---------- window management (C89FW) ---------- */
 #include "src/window.h"
 #include "src/input.h"
 
