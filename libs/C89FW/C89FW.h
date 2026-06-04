@@ -1,7 +1,7 @@
 /*
- * C89FW.h - v1.0
- * Copyright (C) 2026 Collin McKinney
- * All rights reserved.
+ * C89FW.h - v0.1.0-alpha
+ *
+ * Copyright © 2026 Collin McKinney. All Rights Reserved.
  *
  * Single-header cross-platform window & input library
  * Written in ANSI C89 with minimal Objective-C for macOS Cocoa backend
@@ -440,6 +440,9 @@ typedef struct {
     HWND hwnd;
     HDC hdc;
     BITMAPINFO bmi;
+    HBITMAP backbuffer;
+    HDC backbuffer_dc;
+    void* backbuffer_bits;
     LARGE_INTEGER frequency;
     LARGE_INTEGER start_time;
     LARGE_INTEGER last_time;
@@ -618,12 +621,18 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     SetWindowLongPtr(data->hwnd, GWLP_USERDATA, (LONG_PTR)window);
     data->hdc = GetDC(data->hwnd);
     
+    /* Create backbuffer DIB section */
     data->bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     data->bmi.bmiHeader.biWidth = width;
     data->bmi.bmiHeader.biHeight = -height;
     data->bmi.bmiHeader.biPlanes = 1;
     data->bmi.bmiHeader.biBitCount = 32;
     data->bmi.bmiHeader.biCompression = BI_RGB;
+    
+    data->backbuffer = CreateDIBSection(data->hdc, &data->bmi, DIB_RGB_COLORS, 
+                                         &data->backbuffer_bits, NULL, 0);
+    data->backbuffer_dc = CreateCompatibleDC(data->hdc);
+    if (data->backbuffer) SelectObject(data->backbuffer_dc, data->backbuffer);
     
     QueryPerformanceFrequency(&data->frequency);
     QueryPerformanceCounter(&data->start_time);
@@ -647,6 +656,8 @@ void C89FW_close(C89FW_window_t* window) {
         free(window->event_queue_internal);
         window->event_queue_internal = NULL;
     }
+    if (data->backbuffer) DeleteObject(data->backbuffer);
+    if (data->backbuffer_dc) DeleteDC(data->backbuffer_dc);
     if (data->hdc) ReleaseDC(data->hwnd, data->hdc);
     if (data->hwnd) DestroyWindow(data->hwnd);
     free(data);
@@ -810,10 +821,30 @@ void C89FW_present(C89FW_window_t* window) {
         use_h = window->height;
     }
     
-    data->bmi.bmiHeader.biWidth = use_w;
-    data->bmi.bmiHeader.biHeight = -use_h;
-    StretchDIBits(data->hdc, 0, 0, use_w, use_h, 0, 0, use_w, use_h,
-                  window->framebuffer, &data->bmi, DIB_RGB_COLORS, SRCCOPY);
+    /* Update backbuffer if size changed */
+    if (!data->backbuffer || data->bmi.bmiHeader.biWidth != use_w || 
+        -data->bmi.bmiHeader.biHeight != use_h) {
+        if (data->backbuffer) {
+            DeleteObject(data->backbuffer);
+            DeleteDC(data->backbuffer_dc);
+        }
+        
+        data->bmi.bmiHeader.biWidth = use_w;
+        data->bmi.bmiHeader.biHeight = -use_h;
+        
+        data->backbuffer = CreateDIBSection(data->hdc, &data->bmi, DIB_RGB_COLORS, 
+                                             &data->backbuffer_bits, NULL, 0);
+        data->backbuffer_dc = CreateCompatibleDC(data->hdc);
+        if (data->backbuffer) SelectObject(data->backbuffer_dc, data->backbuffer);
+    }
+    
+    if (data->backbuffer_bits && window->framebuffer) {
+        /* Copy framebuffer into DIB section (single memcpy instead of StretchDIBits) */
+        memcpy(data->backbuffer_bits, window->framebuffer, use_w * use_h * 4);
+        
+        /* Fast 1:1 Blit - no scaling overhead */
+        BitBlt(data->hdc, 0, 0, use_w, use_h, data->backbuffer_dc, 0, 0, SRCCOPY);
+    }
 }
 
 void C89FW_apply_resize(C89FW_window_t* window) {
@@ -845,7 +876,7 @@ void C89FW_set_size(C89FW_window_t* window, int width, int height) {
 }
 
 /* ========================================================================
- * Linux/X11 implementation - pure C89 + Xlib
+ * Linux/X11 implementation - pure C89 + Xlib with MIT-SHM support
  * ======================================================================== */
 #elif defined(C89FW_LINUX)
 
@@ -853,6 +884,9 @@ void C89FW_set_size(C89FW_window_t* window, int width, int height) {
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <sys/time.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <X11/extensions/XShm.h>
 
 typedef struct {
     unsigned char key_changes[C89FW_KEY_COUNT];
@@ -879,6 +913,8 @@ typedef struct {
     int pending_resize;
     int pending_width;
     int pending_height;
+    int use_shm;
+    XShmSegmentInfo shminfo;
 } C89FW_x11_data_t;
 
 static C89FW_key_t C89FW_x11_translate_key(KeySym keysym) {
@@ -922,6 +958,74 @@ static C89FW_key_t C89FW_x11_translate_key(KeySym keysym) {
     }
 }
 
+/* MIT-SHM helper functions */
+static int C89FW_x11_init_shm(C89FW_x11_data_t* data) {
+    int major, minor;
+    Bool pixmaps;
+    
+    /* Query SHM extension */
+    if (!XShmQueryVersion(data->display, &major, &minor, &pixmaps)) {
+        return 0;
+    }
+    
+    return 1;
+}
+
+static XImage* C89FW_x11_create_shm_image(C89FW_x11_data_t* data, int width, int height) {
+    XImage* img;
+    
+    img = XShmCreateImage(data->display, 
+                          DefaultVisual(data->display, data->screen),
+                          DefaultDepth(data->display, data->screen),
+                          ZPixmap, NULL, &data->shminfo, width, height);
+    
+    if (!img) return NULL;
+    
+    /* Allocate shared memory */
+    data->shminfo.shmid = shmget(IPC_PRIVATE, 
+                                  img->bytes_per_line * img->height, 
+                                  IPC_CREAT | 0777);
+    
+    if (data->shminfo.shmid < 0) {
+        XDestroyImage(img);
+        return NULL;
+    }
+    
+    /* Attach shared memory */
+    data->shminfo.shmaddr = img->data = (char*)shmat(data->shminfo.shmid, 0, 0);
+    
+    if (data->shminfo.shmaddr == (char*)-1) {
+        XDestroyImage(img);
+        shmctl(data->shminfo.shmid, IPC_RMID, 0);
+        return NULL;
+    }
+    
+    data->shminfo.readOnly = False;
+    
+    /* Attach to X server */
+    if (!XShmAttach(data->display, &data->shminfo)) {
+        XDestroyImage(img);
+        shmdt(data->shminfo.shmaddr);
+        shmctl(data->shminfo.shmid, IPC_RMID, 0);
+        return NULL;
+    }
+    
+    /* Ensure server has processed the attach */
+    XSync(data->display, False);
+    
+    return img;
+}
+
+static void C89FW_x11_destroy_shm_image(C89FW_x11_data_t* data) {
+    if (data->ximage) {
+        XShmDetach(data->display, &data->shminfo);
+        XDestroyImage(data->ximage);
+        data->ximage = NULL;
+        shmdt(data->shminfo.shmaddr);
+        shmctl(data->shminfo.shmid, IPC_RMID, 0);
+    }
+}
+
 double C89FW_get_time(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -954,6 +1058,9 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     if (!data->display) { free(queue); free(data); return 0; }
     
     data->screen = DefaultScreen(data->display);
+    
+    /* Check for MIT-SHM availability */
+    data->use_shm = C89FW_x11_init_shm(data);
     
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
@@ -1001,7 +1108,14 @@ void C89FW_close(C89FW_window_t* window) {
         free(window->event_queue_internal);
         window->event_queue_internal = NULL;
     }
-    if (data->ximage) { data->ximage->data = NULL; XDestroyImage(data->ximage); }
+    if (data->ximage) {
+        if (data->use_shm) {
+            C89FW_x11_destroy_shm_image(data);
+        } else {
+            data->ximage->data = NULL;
+            XDestroyImage(data->ximage);
+        }
+    }
     if (data->gc) XFreeGC(data->display, data->gc);
     if (data->window) XDestroyWindow(data->display, data->window);
     if (data->display) XCloseDisplay(data->display);
@@ -1171,52 +1285,77 @@ void C89FW_apply_resize(C89FW_window_t* window) {
         window->width = data->pending_width;
         window->height = data->pending_height;
         data->pending_resize = 0;
-        /* Don't touch ximage here - let present() handle it */
     }
 }
 
 void C89FW_present(C89FW_window_t* window) {
-     C89FW_x11_data_t* data;
-     int present_w, present_h;
-     unsigned char* fb;
-     
-     if (!window || !window->internal || !window->framebuffer) return;
-     data = (C89FW_x11_data_t*)window->internal;
-     
-     /* Capture framebuffer pointer first to avoid race with resize */
-     fb = window->framebuffer;
-     
-     /* Don't present if resize is pending */
-     if (data->pending_resize) return;
-     
-     present_w = window->width;
-     present_h = window->height;
-     
-     /* Recreate XImage if dimensions changed or doesn't exist */
-     if (!data->ximage || 
-         data->ximage->width != present_w || 
-         data->ximage->height != present_h) {
-         if (data->ximage) {
-             data->ximage->data = NULL;
-             XDestroyImage(data->ximage);
-         }
-         data->ximage = XCreateImage(data->display,
-             DefaultVisual(data->display, data->screen),
-             DefaultDepth(data->display, data->screen),
-             ZPixmap, 0,
-             (char*)fb,
-             present_w, present_h, 32, 0);
-     }
-     
-     if (!data->ximage) return;
-     
-     /* Update data pointer (framebuffer may have changed after resize) */
-     data->ximage->data = (char*)fb;
-     
-     XPutImage(data->display, data->window, data->gc, data->ximage,
-         0, 0, 0, 0, present_w, present_h);
-     XFlush(data->display);
- }
+    C89FW_x11_data_t* data;
+    int present_w, present_h;
+    unsigned char* fb;
+    
+    if (!window || !window->internal || !window->framebuffer) return;
+    data = (C89FW_x11_data_t*)window->internal;
+    
+    /* Don't present if resize is pending */
+    if (data->pending_resize) return;
+    
+    present_w = window->width;
+    present_h = window->height;
+    fb = window->framebuffer;
+    
+    if (data->use_shm) {
+        /* MIT-SHM fast path */
+        if (!data->ximage || 
+            data->ximage->width != present_w || 
+            data->ximage->height != present_h) {
+            
+            /* Destroy old SHM image if exists */
+            if (data->ximage) {
+                C89FW_x11_destroy_shm_image(data);
+            }
+            
+            /* Create new SHM image */
+            data->ximage = C89FW_x11_create_shm_image(data, present_w, present_h);
+        }
+        
+        if (data->ximage && data->ximage->data) {
+            /* Zero-copy: framebuffer is copied once to shared memory */
+            memcpy(data->ximage->data, fb, present_w * present_h * 4);
+            
+            /* X server reads directly from shared memory - no socket transfer! */
+            XShmPutImage(data->display, data->window, data->gc, data->ximage,
+                        0, 0, 0, 0, present_w, present_h, False);
+            XFlush(data->display);
+        }
+    } else {
+        /* Standard X11 fallback path */
+        if (!data->ximage || 
+            data->ximage->width != present_w || 
+            data->ximage->height != present_h) {
+            
+            if (data->ximage) {
+                data->ximage->data = NULL;
+                XDestroyImage(data->ximage);
+            }
+            
+            data->ximage = XCreateImage(data->display,
+                DefaultVisual(data->display, data->screen),
+                DefaultDepth(data->display, data->screen),
+                ZPixmap, 0,
+                (char*)fb,
+                present_w, present_h, 32, 0);
+        }
+        
+        if (!data->ximage) return;
+        
+        /* Update data pointer (framebuffer may have changed after resize) */
+        data->ximage->data = (char*)fb;
+        
+        XPutImage(data->display, data->window, data->gc, data->ximage,
+            0, 0, 0, 0, present_w, present_h);
+        XFlush(data->display);
+    }
+}
 
 void C89FW_set_title(C89FW_window_t* window, const char* title) {
     C89FW_x11_data_t* data;
@@ -1242,6 +1381,7 @@ void C89FW_set_size(C89FW_window_t* window, int width, int height) {
 #include <Cocoa/Cocoa.h>
 #include <mach/mach_time.h>
 #include <sys/time.h>
+#include <QuartzCore/QuartzCore.h>
 
 typedef struct {
     unsigned char key_changes[C89FW_KEY_COUNT];
@@ -1259,6 +1399,7 @@ typedef struct {
     NSWindow* ns_window;
     NSView* ns_view;
     NSAutoreleasePool* pool;
+    CALayer* contentLayer;
     uint64_t start_time;
     uint64_t last_time;
     mach_timebase_info_data_t timebase;
@@ -1355,6 +1496,7 @@ typedef struct {
     self = [super initWithFrame:frame];
     if (self) {
         window = w;
+        [self setWantsLayer:YES];
         trackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
             options:(NSTrackingMouseMoved | NSTrackingActiveAlways)
             owner:self userInfo:nil];
@@ -1526,6 +1668,12 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     [data->ns_window setDelegate:delegate];
     
     view = [[C89FW_WindowView alloc] initWithFrame:frame window:window];
+    
+    /* Setup CALayer for efficient rendering */
+    data->contentLayer = [CALayer layer];
+    [view setLayer:data->contentLayer];
+    [view setWantsLayer:YES];
+    
     [data->ns_window setContentView:view];
     [data->ns_window makeFirstResponder:view];
     [data->ns_window makeKeyAndOrderFront:nil];
@@ -1645,10 +1793,9 @@ int C89FW_update(C89FW_window_t* window) {
 
 void C89FW_present(C89FW_window_t* window) {
     C89FW_mac_data_t* data;
-    CGContextRef context;
-    CGImageRef image;
-    CGDataProviderRef provider;
     CGColorSpaceRef colorSpace;
+    CGDataProviderRef provider;
+    CGImageRef image;
     int use_w, use_h;
     
     if (!window || !window->internal || !window->framebuffer) return;
@@ -1662,9 +1809,9 @@ void C89FW_present(C89FW_window_t* window) {
         use_h = window->height;
     }
     
-    context = (CGContextRef)[[data->ns_window contentView] graphicsContext];
-    if (!context) return;
+    if (!data->contentLayer) return;
     
+    /* Create image directly from framebuffer without intermediate copies */
     colorSpace = CGColorSpaceCreateDeviceRGB();
     provider = CGDataProviderCreateWithData(NULL, window->framebuffer,
         use_w * use_h * 4, NULL);
@@ -1675,7 +1822,11 @@ void C89FW_present(C89FW_window_t* window) {
         provider, NULL, NO, kCGRenderingIntentDefault);
     
     if (image) {
-        CGContextDrawImage(context, CGRectMake(0, 0, (CGFloat)use_w, (CGFloat)use_h), image);
+        /* Use CATransaction to disable implicit animations */
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        data->contentLayer.contents = (id)image;
+        [CATransaction commit];
         CGImageRelease(image);
     }
     

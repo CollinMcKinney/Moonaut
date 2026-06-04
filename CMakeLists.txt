@@ -31,7 +31,7 @@ elseif(CMAKE_C_COMPILER_ID MATCHES "GNU")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(PLATFORM_LIBS m X11 Xrandr dl pthread)
+    set(PLATFORM_LIBS m X11 Xext Xrandr dl pthread)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(PLATFORM_LIBS gdi32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
