@@ -66,7 +66,7 @@ static i32 tag_register_default(const char *name, tag group_tag, const void *dat
                         ref->handle = tag_load("default_model_sphere", TAG_model);
                 } else if (strcmp(field_name, "rigid_body") == 0) {
                     if (name && strstr(name, "box"))
-                        ref->handle = tag_load("default_rigid_body_box", TAG_rigid_body);
+                        ref->handle = TAG_NULL(i32);
                     else
                         ref->handle = tag_load("default_rigid_body_sphere", TAG_rigid_body);
                 }
