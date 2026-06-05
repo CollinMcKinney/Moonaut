@@ -22,23 +22,23 @@ At its core, the engine runs a fixed-timestep physics simulation integrated with
 ## Building
 
 ### CMake, Ninja, & Clang
-Project has been moved to CMake. The Clang/Ninja presets are what I've been using for development. Though
-I've included some placeholder presets for GCC, VisualStudio, and XCode, but they are largely untested.
+Project has been moved to CMake. The Clang/Ninja presets are what I've been using for development. I've included some placeholder presets for GCC, VisualStudio, and XCode, but they are largely untested.
+
+All recent testing/development has been done under Linux, Windows is likely broken. MacOS has never been tested.
 
 List the presets:
 ```bash
 cmake --list-presets
 ```
-Select a preset for your system, here we will use the `clang-debug` preset:
+Select a preset for your system, here we will use the `clang-release` preset:
 ```bash
-cmake --preset clang-debug
+cmake --preset clang-release
 ```
 Build the preset:
 ```bash
-cmake --build --preset clang-debug
+cmake --build --preset clang-release
 ```
 And then to run the executable:
 ```bash
-./build/clang-debug/Moonaut
+./build/clang-release/Moonaut
 ```
-
