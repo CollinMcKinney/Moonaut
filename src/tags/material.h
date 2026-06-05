@@ -92,7 +92,7 @@ TAG_FLAGS_END(material_effects)
   * ========================================================================= */
 typedef struct material_definition {
     /* Render technique */
-    enum32       mode;                  /* SHADE_WIREFRAME, SHADE_FLAT, SHADE_GOURAUD, SHADE_PHONG, SHADE_QUADRATIC */
+    enum32       mode;                  /* SHADE_WIREFRAME, SHADE_FLAT, SHADE_GOURAUD, SHADE_QUADRATIC, SHADE_CUBIC, SHADE_PHONG */
     enum32       effects;               /* Bitflags of material_effects (precomputed for fast branch reduction) */
 
     /* Base appearance */
@@ -860,7 +860,7 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
-    /*.mode                     =*/ SHADE_QUADRATIC,
+    /*.mode                     =*/ SHADE_FLAT,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_ROUGHNESS,
     /*.color                    =*/ {0.61f, 0.27f, 0.23f},   /* #9B443B */
     /*.ambient_light_factor     =*/ 1.00f,
