@@ -324,7 +324,7 @@ STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
 /* -------------------------------------------------------------------------
     WTF Math Optimization - potentially faster, but less accurate hacks.
     ------------------------------------------------------------------------- */
-#define REAL_WTF_MATH */ /* On modern CPU's it seems about 2% slower. */
+/*#define REAL_WTF_MATH */ /* On modern CPU's this is usually slower. */
 #ifdef REAL_WTF_MATH
     /* Fast inverse square root approximation similar to Quake III's "wtf" version;
         with Jan Kadlec's improvements:
