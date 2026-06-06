@@ -2273,11 +2273,11 @@ static INLINE mat4 mat4_perspective(real fov_y, real aspect, real near_plane, re
 {
     mat4 r;
     i32 i, j;
+    real tan_half_fov;
     for (i = 0; i < 4; i++)
         for (j = 0; j < 4; j++)
             r.transpose[i][j] = 0;
     
-    real tan_half_fov;
     tan_half_fov = real_tan(fov_y * 0.5f);
     r.transpose[0][0] = 1.0f / (aspect * tan_half_fov);
     r.transpose[1][1] = 1.0f / tan_half_fov;

@@ -16,7 +16,7 @@ extern "C" {
 
 static i32 tag_register_default(const char *name, tag group_tag, const void *data)
 {
-    fprintf(stderr, "[tag] registering '%s.%c%c%c%c'\n", name, TAG_FOURCC(group_tag));
+    fprintf(stderr, "[tag] registering '%s.%c%c%c%c'\n", name, TAG_MAGIC_UNPACK(group_tag));
 
     tag_group_definition *group;
     i32 handle;

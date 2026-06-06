@@ -77,7 +77,7 @@ typedef struct collision_bsp_definition {
     real_bounding_box bounds;   /* overall bounding box for quick rejection */
 } collision_bsp_definition;
 
-TAG_GROUP_BEGIN(collision_bsp, 'cbsp', sizeof(struct collision_bsp_definition))
+TAG_GROUP_BEGIN(collision_bsp, TAG_MAGIC_PACK(cbsp), sizeof(struct collision_bsp_definition))
     FIELD_BLOCK("planes", bsp_plane_block),
     FIELD_BLOCK("nodes", bsp_node_block),
     FIELD_BLOCK("leaves", bsp_leaf_block),

@@ -35,7 +35,7 @@ static const struct globals_definition DEFAULT_GLOBALS = {
     /* pause_physics */  0
 };
 
-TAG_GROUP_BEGIN(globals, 'glbl', sizeof(struct globals_definition))
+TAG_GROUP_BEGIN(globals, TAG_MAGIC_PACK(glbl), sizeof(struct globals_definition))
     FIELD_VEC3("gravity"),
     FIELD_REAL("physics_rate"),
     FIELD_VEC3("clear_color"),

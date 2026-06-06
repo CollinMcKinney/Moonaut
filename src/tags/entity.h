@@ -46,7 +46,7 @@ typedef struct entity_definition {
     /* future: script reference, sound, etc. */
 } entity_definition;
 
-TAG_GROUP_BEGIN(entity, 'enty', sizeof(struct entity_definition))
+TAG_GROUP_BEGIN(entity, TAG_MAGIC_PACK(enty), sizeof(struct entity_definition))
     FIELD_ENUM("type", entity_type),
     FIELD_REFERENCE("model", entity_model_ref),
     FIELD_REFERENCE("rigid_body", entity_rigid_body_ref),
@@ -64,8 +64,8 @@ static const struct entity_definition DEFAULT_ENTITY_SPHERE = {
     /* model */      { (i32)-1 },      /* patched by defaults registration */
     /* rigid_body */ { (i32)-1 },      /* patched by defaults registration */
     /* collision */  { (i32)-1 },
-    /* position */   { 0.0f, 6.0f, 0.0f },
-    /* orientation */{ 0.0f, 0.0f, 0.0f, 1.0f }
+    /* position */   {{ 0.0f, 6.0f, 0.0f }},
+    /* orientation */{{ 0.0f, 0.0f, 0.0f, 1.0f }}
 };
 
 static const struct entity_definition DEFAULT_ENTITY_BOX = {
@@ -73,8 +73,8 @@ static const struct entity_definition DEFAULT_ENTITY_BOX = {
     /* model */      { (i32)-1 },      /* patched by defaults registration */
     /* rigid_body */ { (i32)-1 },      /* patched by defaults registration */
     /* collision */  { (i32)-1 },
-    /* position */   { 0.0f, 0.0f, 0.0f },
-    /* orientation */{ 0.0f, 0.0f, 0.0f, 1.0f }
+    /* position */   {{ 0.0f, 0.0f, 0.0f }},
+    /* orientation */{{ 0.0f, 0.0f, 0.0f, 1.0f }}
 };
 
 #ifdef __cplusplus

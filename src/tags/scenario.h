@@ -29,7 +29,7 @@ TAG_BLOCK_BEGIN(scenario_entity_block, 65535, sizeof(tag_reference))
     FIELD_TERMINATOR
 TAG_BLOCK_END(scenario_entity_block, 65535, sizeof(tag_reference))
 
-TAG_GROUP_BEGIN(scenario, 'scnr', sizeof(struct scenario_definition))
+TAG_GROUP_BEGIN(scenario, TAG_MAGIC_PACK(scnr), sizeof(struct scenario_definition))
     FIELD_REFERENCE("globals", scenario_globals_ref),
     FIELD_REFERENCE("camera", scenario_camera_ref),
     FIELD_REFERENCE("map_collision_bsp", map_collision_bsp_ref),

@@ -73,10 +73,12 @@ int main(void)
     const int window_size = 4;
     const int width  = 256 * window_size;
     const int height = 144 * window_size;
+    const u32 *fb = NULL;
     const double max_frame_time = 0.25;
     double last_time;
     double accumulator;
-
+    scenario_world world;
+    
     if (window_init("Moonaut Engine", width, height) != 0) {
         fprintf(stderr, "Failed to initialise window\n");
         return 1;
@@ -90,7 +92,6 @@ int main(void)
 
     tag_register_default_all();
 
-    scenario_world world;
     scenario_init(&world, width, height);
     last_time = app_time_seconds();
     accumulator = 0.0;
@@ -125,7 +126,7 @@ int main(void)
         render_set_time((real)now);
         scenario_render(&world);
 
-        const u32 *fb = render_get_fb();
+        fb = render_get_fb();
 
         thpool_add_work(render_threadpool, present_frame, (void*)fb);
 

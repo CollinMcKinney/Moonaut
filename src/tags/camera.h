@@ -23,7 +23,7 @@ static const struct camera_definition DEFAULT_CAMERA = {
     /* fov */    60.0f
 };
 
-TAG_GROUP_BEGIN(camera, 'cmra', sizeof(struct camera_definition))
+TAG_GROUP_BEGIN(camera, TAG_MAGIC_PACK(cmra), sizeof(struct camera_definition))
     FIELD_VEC3("eye"),
     FIELD_VEC3("center"),
     FIELD_VEC3("up"),

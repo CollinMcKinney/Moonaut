@@ -63,7 +63,7 @@ typedef struct rigid_body_definition {
     /* - BSP data (placeholder – will become a tag_reference to 'cbsp' later) - */
 } rigid_body_definition;
 
-TAG_GROUP_BEGIN(rigid_body, 'rbdy', sizeof(struct rigid_body_definition))
+TAG_GROUP_BEGIN(rigid_body, TAG_MAGIC_PACK(rbdy), sizeof(struct rigid_body_definition))
     FIELD_ENUM("shape", rigid_body_shape),
     FIELD_REAL("mass"),
     FIELD_REAL("sphere_radius"),

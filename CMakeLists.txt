@@ -18,16 +18,16 @@ add_compile_definitions(
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     add_compile_options(
-        -std=c89 -g -O3
+        -std=c89 -pedantic -Wall -Wextra -Wno-unused-function -g -O3
         -fno-math-errno -ffp-contract=fast -fno-trapping-math
         -fcx-limited-range -fno-strict-aliasing -fomit-frame-pointer -flto
-        -march=x86-64-v2 -mtune=generic -Wno-multichar)
+        -march=x86-64-v2 -mtune=generic)
 elseif(CMAKE_C_COMPILER_ID MATCHES "GNU")
     add_compile_options(
-        -std=c89 -g -O3
+        -std=c89 -pedantic -Wall -Wextra -Wno-unused-function -g -O3
         -fno-math-errno -ffp-contract=fast -fno-trapping-math
         -fcx-limited-range -fno-strict-aliasing -fomit-frame-pointer -flto
-        -march=x86-64-v2 -mtune=generic -Wno-multichar)
+        -march=x86-64-v2 -mtune=generic)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

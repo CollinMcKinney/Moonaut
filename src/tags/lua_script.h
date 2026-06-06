@@ -23,7 +23,7 @@ typedef struct lua_script_definition {
     string_id        name;      /* logical name (optional, for debugging) */
 } lua_script_definition;
 
-TAG_GROUP_BEGIN(lua_script, 'lscr', sizeof(struct lua_script_definition))
+TAG_GROUP_BEGIN(lua_script, TAG_MAGIC_PACK(lscr), sizeof(struct lua_script_definition))
     FIELD_BLOCK("source", lua_byte_block),
     FIELD_STRING_ID("name"),
     FIELD_TERMINATOR

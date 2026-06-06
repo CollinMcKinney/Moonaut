@@ -31,26 +31,18 @@ extern "C" {
 #define TAG_NULL(type) ((type)-1) /* TODO make sure we're using this where necessary*/
 #endif
 
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    #define BIG_ENDIAN_SYSTEM
-    /* Converts a 32 bit unsigned integer to four characters on a Big Endian system. */
-    #define TAG_FOURCC(group_tag) \
-        ((char)((u32)(group_tag) & 0xFF)),         \
-        ((char)(((u32)(group_tag) >> 8)  & 0xFF)), \
-        ((char)(((u32)(group_tag) >> 16) & 0xFF)), \
-        ((char)(((u32)(group_tag) >> 24) & 0xFF))
+/* Converts a 32 bit unsigned integer to four characters on a Little Endian system. */
+#define TAG_MAGIC_UNPACK(group_tag) \
+    ((char)(((u32)(group_tag) >> 24) & 0xFF)), \
+    ((char)(((u32)(group_tag) >> 16) & 0xFF)), \
+    ((char)(((u32)(group_tag) >> 8)  & 0xFF)), \
+    ((char)((u32)(group_tag) & 0xFF))
 
-#elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    #define LITTLE_ENDIAN_SYSTEM
-    /* Converts a 32 bit unsigned integer to four characters on a Little Endian system. */
-    #define TAG_FOURCC(group_tag) \
-        ((char)(((u32)(group_tag) >> 24) & 0xFF)), \
-        ((char)(((u32)(group_tag) >> 16) & 0xFF)), \
-        ((char)(((u32)(group_tag) >> 8)  & 0xFF)), \
-        ((char)((u32)(group_tag) & 0xFF))
-#else
-    #error "Cannot determine endianness"
-#endif
+#define TAG_MAGIC_PACK(magic) \
+    (((unsigned long)(unsigned char)(#magic)[0] << 24) | \
+    ((unsigned long)(unsigned char)(#magic)[1] << 16) | \
+    ((unsigned long)(unsigned char)(#magic)[2] <<  8) | \
+    (unsigned long)(unsigned char)(#magic)[3])
 
 /* Memory allocators */
 #ifndef TAG_MALLOC
@@ -232,8 +224,8 @@ typedef struct tag_enum_definition {
  * Group macros – Four‑CC typed only once, terminator must be
  * the last entry in the field list. Embedded semicolons included.
  * ------------------------------------------------------------------------ */
-#define TAG_GROUP_BEGIN(name_, fourcc_, total_size_)                       \
-    enum { TAG_##name_ = (fourcc_) };                                      \
+#define TAG_GROUP_BEGIN(name_, magic_, total_size_)                       \
+    enum { TAG_##name_ = (magic_) };                                      \
     static const tag_field_definition name_##_fields[] = {
 
 #define TAG_GROUP_END(name_, total_size_)                                  \
@@ -470,34 +462,36 @@ static u32 tag_field_alignment(const tag_field_definition *def) {
  * Return the byte size of a single field described by `def`
  * ------------------------------------------------------------------------ */
 static u32 tag_field_size(const tag_field_definition *def) {
+    u32 fsize;
     switch (def->type) {
-        case TAG_FIELD_TERMINATOR:          return 0;
-        case TAG_FIELD_BOOL:                return sizeof(bool);
-        case TAG_FIELD_I8:                  return sizeof(i8);
-        case TAG_FIELD_U8:                  return sizeof(u8);
-        case TAG_FIELD_I16:                 return sizeof(i16);
-        case TAG_FIELD_U16:                 return sizeof(u16);
-        case TAG_FIELD_I32:                 return sizeof(i32);
-        case TAG_FIELD_U32:                 return sizeof(u32);
-        case TAG_FIELD_I64:                 return sizeof(i64);
-        case TAG_FIELD_U64:                 return sizeof(u64);
-        case TAG_FIELD_REAL:                return sizeof(real);
-        case TAG_FIELD_ENUM:                return sizeof(i32);
-        case TAG_FIELD_FLAGS:               return sizeof(i32);
-        case TAG_FIELD_VEC2:                return sizeof(vec2);
-        case TAG_FIELD_VEC3:                return sizeof(vec3);
-        case TAG_FIELD_VEC4:                return sizeof(vec4);
-        case TAG_FIELD_REAL_BOUNDS:         return sizeof(real_bounds);
-        case TAG_FIELD_REAL_BOUNDING_BOX:   return sizeof(real_bounding_box);
-        case TAG_FIELD_MAT2:                return sizeof(mat2);
-        case TAG_FIELD_MAT3:                return sizeof(mat3);
-        case TAG_FIELD_MAT4:                return sizeof(mat4);
-        case TAG_FIELD_STRING_ID:           return sizeof(string_id);
-        case TAG_FIELD_BLOCK:               return sizeof(tag_block);
-        case TAG_FIELD_REFERENCE:           return sizeof(tag_reference);
-        case TAG_FIELD_PAD:                 return def->pad_data;
-        default:                            return 0xFFFFFFFF;
+        case TAG_FIELD_TERMINATOR:           fsize = 0; break;
+        case TAG_FIELD_BOOL:                 fsize = sizeof(bool); break;
+        case TAG_FIELD_I8:                   fsize = sizeof(i8); break;
+        case TAG_FIELD_U8:                   fsize = sizeof(u8); break;
+        case TAG_FIELD_I16:                  fsize = sizeof(i16); break;
+        case TAG_FIELD_U16:                  fsize = sizeof(u16); break;
+        case TAG_FIELD_I32:                  fsize = sizeof(i32); break;
+        case TAG_FIELD_U32:                  fsize = sizeof(u32); break;
+        case TAG_FIELD_I64:                  fsize = sizeof(i64); break;
+        case TAG_FIELD_U64:                  fsize = sizeof(u64); break;
+        case TAG_FIELD_REAL:                 fsize = sizeof(real); break;
+        case TAG_FIELD_ENUM:                 fsize = sizeof(i32); break;
+        case TAG_FIELD_FLAGS:                fsize = sizeof(i32); break;
+        case TAG_FIELD_VEC2:                 fsize = sizeof(vec2); break;
+        case TAG_FIELD_VEC3:                 fsize = sizeof(vec3); break;
+        case TAG_FIELD_VEC4:                 fsize = sizeof(vec4); break;
+        case TAG_FIELD_REAL_BOUNDS:          fsize = sizeof(real_bounds); break;
+        case TAG_FIELD_REAL_BOUNDING_BOX:    fsize = sizeof(real_bounding_box); break;
+        case TAG_FIELD_MAT2:                 fsize = sizeof(mat2); break;
+        case TAG_FIELD_MAT3:                 fsize = sizeof(mat3); break;
+        case TAG_FIELD_MAT4:                 fsize = sizeof(mat4); break;
+        case TAG_FIELD_STRING_ID:            fsize = sizeof(string_id); break;
+        case TAG_FIELD_BLOCK:                fsize = sizeof(tag_block); break;
+        case TAG_FIELD_REFERENCE:            fsize = sizeof(tag_reference); break;
+        case TAG_FIELD_PAD:                  fsize = def->pad_data; break;
+        default:                             fsize = 0xFFFFFFFF; break;
     }
+    return fsize;
 }
 
 /* ------------------------------------------------------------------------
@@ -839,7 +833,7 @@ static i32 tag_load(const char *name, tag group_tag) {
     FILE *fp;
     i32 idx;
     if (!tag_sys.initialized || !name) return -1;
-    fprintf(stderr, "[tag] tag_load '%s.%c%c%c%c'\n", name, TAG_FOURCC(group_tag));
+    fprintf(stderr, "[tag] tag_load '%s.%c%c%c%c'\n", name, TAG_MAGIC_UNPACK(group_tag));
 
     idx = tag_find_instance(name);
     if (idx >= 0) {

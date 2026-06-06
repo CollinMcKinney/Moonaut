@@ -158,7 +158,7 @@ typedef struct material_definition {
 /* =========================================================================
  * Tag group definition ('mtrl')
  * ========================================================================= */
-TAG_GROUP_BEGIN(material, 'mtrl', sizeof(struct material_definition))
+TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definition))
     FIELD_ENUM("mode", shading_mode),
     FIELD_FLAGS("effects", material_effects),
     FIELD_VEC3("color"),

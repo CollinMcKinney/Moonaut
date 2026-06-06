@@ -117,7 +117,7 @@ typedef enum {
     C89FW_EVENT_RESIZE,
     C89FW_EVENT_CLOSE,
     C89FW_EVENT_FOCUS_GAINED,
-    C89FW_EVENT_FOCUS_LOST,
+    C89FW_EVENT_FOCUS_LOST
 } C89FW_event_type_t;
 
 typedef struct { C89FW_key_t code; } C89FW_key_event_data_t;
