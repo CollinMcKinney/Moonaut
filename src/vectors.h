@@ -4,7 +4,6 @@
 #include <math.h>
 #include <limits.h>
 #include <float.h>
-#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -327,6 +326,8 @@ STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
     ------------------------------------------------------------------------- */
 /*#define REAL_WTF_MATH */ /* On modern CPU's this is usually slower. */
 #ifdef REAL_WTF_MATH
+    #include <string.h>
+
     /* Fast inverse square root approximation similar to Quake III's "wtf" version;
         with Jan Kadlec's improvements:
         https://web.archive.org/web/20250706154109/http://rrrola.wz.cz/inv_sqrt.html
