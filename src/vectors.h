@@ -344,110 +344,61 @@ STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
     #define real_sqrt(x)   real_wtf_sqrt(x)
 #endif
 
-#define _0 (u32)(0)
-#define _1 (u32)(1)
-#define _2 (u32)(2)
-#define _3 (u32)(3)
+/* Component indices for swizzling, and masks for component selection. */
 
-#define MASK_0      (u32)(1 << _0)
-#define MASK_1      (u32)(1 << _1)
-#define MASK_2      (u32)(1 << _2)
-#define MASK_3      (u32)(1 << _3)
-#define MASK_01     (u32)( MASK_0 | MASK_1 )
-#define MASK_02     (u32)( MASK_0 | MASK_2 )
-#define MASK_03     (u32)( MASK_0 | MASK_3 )
-#define MASK_12     (u32)( MASK_1 | MASK_2 )
-#define MASK_13     (u32)( MASK_1 | MASK_3 )
-#define MASK_23     (u32)( MASK_2 | MASK_3 )
-#define MASK_012    (u32)( MASK_0 | MASK_1 | MASK_2 )
-#define MASK_013    (u32)( MASK_0 | MASK_1 | MASK_3 )
-#define MASK_023    (u32)( MASK_0 | MASK_2 | MASK_3 )
-#define MASK_123    (u32)( MASK_1 | MASK_2 | MASK_3 )
-#define MASK_0123   (u32)( MASK_0 | MASK_1 | MASK_2 | MASK_3 )
+typedef enum {
+    VEC_0, VEC_X, VEC_I, VEC_R, VEC_S = 0,
+    VEC_1, VEC_Y, VEC_J, VEC_G, VEC_T = 1,
+    VEC_2, VEC_Z, VEC_K, VEC_B, VEC_P = 2,
+    VEC_3,    VEC_W,     VEC_A, VEC_Q = 3
+} vec_comp;
 
-#define X _0
-#define Y _1
-#define Z _2
-#define W _3
+typedef enum {
+    VEC_MASK_0, VEC_MASK_X, VEC_MASK_I, VEC_MASK_R, VEC_MASK_S
+    = (u32)(1 << VEC_0),
 
-#define MASK_X      MASK_0   
-#define MASK_Y      MASK_1   
-#define MASK_Z      MASK_2   
-#define MASK_W      MASK_3   
-#define MASK_XY     MASK_01  
-#define MASK_XZ     MASK_02  
-#define MASK_XW     MASK_03  
-#define MASK_YZ     MASK_12  
-#define MASK_YW     MASK_13  
-#define MASK_ZW     MASK_23  
-#define MASK_XYZ    MASK_012 
-#define MASK_XYW    MASK_013 
-#define MASK_XZW    MASK_023 
-#define MASK_YZW    MASK_123 
-#define MASK_XYZW   MASK_0123
+    VEC_MASK_1, VEC_MASK_Y, VEC_MASK_J, VEC_MASK_G, VEC_MASK_T
+    = (u32)(1 << VEC_1),
 
-#define I _0
-#define J _1
-#define K _2
-/* #define W W */
+    VEC_MASK_2, VEC_MASK_Z, VEC_MASK_K, VEC_MASK_B, VEC_MASK_P
+    = (u32)(1 << VEC_2),
 
-#define MASK_I      MASK_0   
-#define MASK_J      MASK_1   
-#define MASK_K      MASK_2   
-/* #define MASK_W   MASK_3 */
-#define MASK_IJ     MASK_01  
-#define MASK_IK     MASK_02  
-#define MASK_IW     MASK_03  
-#define MASK_JK     MASK_12  
-#define MASK_JW     MASK_13  
-#define MASK_KW     MASK_23  
-#define MASK_IJK    MASK_012 
-#define MASK_IJW    MASK_013 
-#define MASK_IKW    MASK_023 
-#define MASK_JKW    MASK_123 
-#define MASK_IJKW   MASK_0123
-
-#define R _0
-#define G _1
-#define B _2
-#define A _3
-
-#define MASK_R      MASK_0   
-#define MASK_G      MASK_1   
-#define MASK_B      MASK_2   
-#define MASK_A      MASK_3   
-#define MASK_RG     MASK_01  
-#define MASK_RB     MASK_02  
-#define MASK_RA     MASK_03  
-#define MASK_GB     MASK_12  
-#define MASK_GA     MASK_13  
-#define MASK_BA     MASK_23  
-#define MASK_RGB    MASK_012 
-#define MASK_RGA    MASK_013 
-#define MASK_RBA    MASK_023 
-#define MASK_GBA    MASK_123 
-#define MASK_RGBA   MASK_0123
-
-#define S _0
-#define T _1
-#define P _2
-#define Q _3
-
-#define MASK_S      MASK_0   
-#define MASK_T      MASK_1   
-#define MASK_P      MASK_2   
-#define MASK_Q      MASK_3   
-#define MASK_ST     MASK_01  
-#define MASK_SP     MASK_02  
-#define MASK_SQ     MASK_03  
-#define MASK_TP     MASK_12  
-#define MASK_TQ     MASK_13  
-#define MASK_PQ     MASK_23  
-#define MASK_STP    MASK_012 
-#define MASK_STQ    MASK_013 
-#define MASK_SPQ    MASK_023 
-#define MASK_TPQ    MASK_123 
-#define MASK_STPQ   MASK_0123
+    VEC_MASK_3, VEC_MASK_W, VEC_MASK_A, VEC_MASK_Q
+    = (u32)(1 << VEC_3),
+    
+    VEC_MASK_01, VEC_MASK_XY, VEC_MASK_IJ, VEC_MASK_RG, VEC_MASK_ST
+    = (u32)(VEC_MASK_0 | VEC_MASK_1),
+    
+    VEC_MASK_02, VEC_MASK_XZ, VEC_MASK_IK, VEC_MASK_RB, VEC_MASK_SP
+    = (u32)(VEC_MASK_0 | VEC_MASK_2),
+    
+    VEC_MASK_03, VEC_MASK_XW, VEC_MASK_IW, VEC_MASK_RA, VEC_MASK_SQ
+    = (u32)(VEC_MASK_0 | VEC_MASK_3),
+    
+    VEC_MASK_12, VEC_MASK_YZ, VEC_MASK_JK, VEC_MASK_GB, VEC_MASK_TP
+    = (u32)(VEC_MASK_1 | VEC_MASK_2),
+    
+    VEC_MASK_13, VEC_MASK_YW, VEC_MASK_JW, VEC_MASK_GA, VEC_MASK_TQ
+    = (u32)(VEC_MASK_1 | VEC_MASK_3),
+    
+    VEC_MASK_23, VEC_MASK_ZW, VEC_MASK_KW, VEC_MASK_BA, VEC_MASK_PQ
+    = (u32)(VEC_MASK_2 | VEC_MASK_3),
+    
+    VEC_MASK_012, VEC_MASK_XYZ, VEC_MASK_IJK, VEC_MASK_RGB, VEC_MASK_STP
+    = (u32)(VEC_MASK_0 | VEC_MASK_1 | VEC_MASK_2),
+    
+    VEC_MASK_013, VEC_MASK_XYW, VEC_MASK_IJW, VEC_MASK_RGA, VEC_MASK_STQ
+    = (u32)(VEC_MASK_0 | VEC_MASK_1 | VEC_MASK_3),
+    
+    VEC_MASK_023, VEC_MASK_XZW, VEC_MASK_IKW, VEC_MASK_RBA, VEC_MASK_SPQ
+    = (u32)(VEC_MASK_0 | VEC_MASK_2 | VEC_MASK_3),
+    
+    VEC_MASK_123, VEC_MASK_YZW, VEC_MASK_JKW, VEC_MASK_GBA, VEC_MASK_TPQ
+    = (u32)(VEC_MASK_1 | VEC_MASK_2 | VEC_MASK_3),
+    
+    VEC_MASK_0123, VEC_MASK_XYZW, VEC_MASK_IJKW, VEC_MASK_RGBA, VEC_MASK_STPQ
+    = (u32)(VEC_MASK_0 | VEC_MASK_1 | VEC_MASK_2 | VEC_MASK_3)
+} vec_mask;
 
 /* 2-component floating point vector. */
 typedef union vec2
@@ -516,7 +467,7 @@ typedef union mat4
 STATIC_ASSERT(sizeof(mat4) == 0x40, mat4_size_wrong);
 
 /* Swizzle (swap) the order of components */
-static INLINE vec2 vec2_swizzle(vec2 src0, u32 a, u32 b)
+static INLINE vec2 vec2_swizzle(vec2 src0, vec_comp a, vec_comp b)
 {
     vec2 swizzled;
     swizzled.components[0] = src0.components[a & 0x1];
@@ -525,11 +476,11 @@ static INLINE vec2 vec2_swizzle(vec2 src0, u32 a, u32 b)
 }
 
 /* Selects components from src0 if the corresponding bit in the mask is set, otherwise selects from src1. */
-static INLINE vec2 vec2_mask(vec2 src0, vec2 src1, u32 mask)
+static INLINE vec2 vec2_mask(vec2 src0, vec2 src1, vec_mask mask)
 {
     vec2 masked;
-    masked.components[0] = mask & MASK_0 ? src0.components[0] : src1.components[0];
-    masked.components[1] = mask & MASK_1 ? src0.components[1] : src1.components[1];
+    masked.components[0] = mask & VEC_MASK_0 ? src0.components[0] : src1.components[0];
+    masked.components[1] = mask & VEC_MASK_1 ? src0.components[1] : src1.components[1];
     return masked;
 }
 
@@ -1017,7 +968,7 @@ static INLINE vec2 vec2_clamp_scalar(vec2 src0, real minimum, real maximum)
 
 
 /* Swizzle (swap) the order of components. */
-static INLINE vec3 vec3_swizzle(vec3 src0, u32 a, u32 b, u32 c)
+static INLINE vec3 vec3_swizzle(vec3 src0, vec_comp a, vec_comp b, vec_comp c)
 {
     vec3 swizzled;
     swizzled.components[0] = src0.components[a >= 3 ? 0 : a];
@@ -1027,12 +978,12 @@ static INLINE vec3 vec3_swizzle(vec3 src0, u32 a, u32 b, u32 c)
 }
 
 /* Selects components from src0 if the corresponding bit in the mask is set, otherwise selects from src1. */
-static INLINE vec3 vec3_mask(vec3 src0, vec3 src1, u32 mask)
+static INLINE vec3 vec3_mask(vec3 src0, vec3 src1, vec_mask mask)
 {
     vec3 masked;
-    masked.components[0] = mask & MASK_0 ? src0.components[0] : src1.components[0];
-    masked.components[1] = mask & MASK_1 ? src0.components[1] : src1.components[1];
-    masked.components[2] = mask & MASK_2 ? src0.components[2] : src1.components[2];
+    masked.components[0] = mask & VEC_MASK_0 ? src0.components[0] : src1.components[0];
+    masked.components[1] = mask & VEC_MASK_1 ? src0.components[1] : src1.components[1];
+    masked.components[2] = mask & VEC_MASK_2 ? src0.components[2] : src1.components[2];
     return masked;
 }
 
@@ -1568,7 +1519,7 @@ static INLINE vec3 vec3_clamp_scalar(vec3 src0, real minimum, real maximum)
 
 
 /* Swizzle (swap) the order of components. */
-static INLINE vec4 vec4_swizzle(vec4 src0, u32 a, u32 b, u32 c, u32 d)
+static INLINE vec4 vec4_swizzle(vec4 src0, vec_comp a, vec_comp b, vec_comp c, vec_comp d)
 {
     vec4 swizzled;
     swizzled.components[0] = src0.components[a & 0x3];
@@ -1579,13 +1530,13 @@ static INLINE vec4 vec4_swizzle(vec4 src0, u32 a, u32 b, u32 c, u32 d)
 }
 
 /* Selects components from src0 if the corresponding bit in the mask is set, otherwise selects from src1. */
-static INLINE vec4 vec4_mask(vec4 src0, vec4 src1, u32 mask)
+static INLINE vec4 vec4_mask(vec4 src0, vec4 src1, vec_mask mask)
 {
     vec4 masked;
-    masked.components[0] = mask & MASK_0 ? src0.components[0] : src1.components[0];
-    masked.components[1] = mask & MASK_1 ? src0.components[1] : src1.components[1];
-    masked.components[2] = mask & MASK_2 ? src0.components[2] : src1.components[2];
-    masked.components[3] = mask & MASK_3 ? src0.components[3] : src1.components[3];
+    masked.components[0] = mask & VEC_MASK_0 ? src0.components[0] : src1.components[0];
+    masked.components[1] = mask & VEC_MASK_1 ? src0.components[1] : src1.components[1];
+    masked.components[2] = mask & VEC_MASK_2 ? src0.components[2] : src1.components[2];
+    masked.components[3] = mask & VEC_MASK_3 ? src0.components[3] : src1.components[3];
     return masked;
 }
 
