@@ -4,6 +4,7 @@
 #include <math.h>
 #include <limits.h>
 #include <float.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -331,9 +332,25 @@ STATIC_ASSERT(sizeof(i64) == 0x8, i64_size_wrong);
         https://web.archive.org/web/20250706154109/http://rrrola.wz.cz/inv_sqrt.html
     */
     static INLINE real real_wtf_rsqrt(real x) { 
-        union { real f; u32 u; } y = {x};
-        y.u = 0x5F1FFFF9ul - (y.u >> 1);
-        return 0.703952253f * y.f * (2.38924456f - x * y.f * y.f);
+        u32 temp;
+        real y_f;
+        real y_sq;
+        real res;
+        
+        /* real xhalf; */ /* uncomment if using additional iterations. */
+
+        STATIC_ASSERT(sizeof(real) == sizeof(u32), wtf_type_pun_size_wrong);
+
+        memcpy(&temp, &x, sizeof(temp));
+        temp = 0x5F1FFFF9ul - (temp >> 1);
+        memcpy(&y_f, &temp, sizeof(y_f));
+        y_sq = y_f * y_f;
+        res = y_f * (1.68191409f - (0.703952253f * x * y_sq));
+        /* xhalf = x * 0.5; */
+        /* res = res * (1.5f - (xhalf * res * res)); */ /* 2nd iteration. */
+        /* res = res * (1.5f - (xhalf * res * res)); */ /* 3rd iteration. */
+
+        return res;
     }
 
     static INLINE real real_wtf_sqrt(real x) {
