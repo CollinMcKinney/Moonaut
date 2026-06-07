@@ -875,7 +875,7 @@ static INLINE vec3 shade_surface(
 
     if (effects & EFFECT_ROUGHNESS) {
         u32 x = 2166136261u;
-        vec3 q = vec3_floor(vec3_mul_scalar(world_pos, 256.0f));
+        vec3 q = vec3_floor(vec3_mul_scalar(local_pos, 256.0f));
         x ^= (u32)q.components[0];
         x *= 16777619u;
         x ^= (u32)q.components[1];
