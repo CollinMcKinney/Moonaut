@@ -137,7 +137,7 @@ typedef struct {
         C89FW_mouse_scroll_event_data_t mouse_scroll;
         C89FW_gamepad_button_event_data_t gamepad_button;
         C89FW_resize_event_data_t resize;
-    };
+    } data;
 } C89FW_event_t;
 
 typedef struct C89FW_window_t {
@@ -331,20 +331,20 @@ static void C89FW_generate_events(C89FW_window_t* window, double time) {
     if (!window || !window->event_queue_internal) return;
     queue = (C89FW_event_queue_t*)window->event_queue_internal;
     
-    for (i = 0; i < C89FW_KEY_COUNT; i++) {
+    for (i = 0; i < C89FW_KEY_COUNT; ++i) {
         if (window->keys[i] && !window->keys_previous[i]) {
             C89FW_event_t event;
             memset(&event, 0, sizeof(event));
             event.type = C89FW_EVENT_KEY_DOWN;
             event.timestamp = time;
-            event.key.code = (C89FW_key_t)i;
+            event.data.key.code = (C89FW_key_t)i;
             C89FW_event_queue_push(queue, &event);
         } else if (!window->keys[i] && window->keys_previous[i]) {
             C89FW_event_t event;
             memset(&event, 0, sizeof(event));
             event.type = C89FW_EVENT_KEY_UP;
             event.timestamp = time;
-            event.key.code = (C89FW_key_t)i;
+            event.data.key.code = (C89FW_key_t)i;
             C89FW_event_queue_push(queue, &event);
         }
     }
@@ -355,18 +355,18 @@ static void C89FW_generate_events(C89FW_window_t* window, double time) {
             memset(&event, 0, sizeof(event));
             event.type = C89FW_EVENT_MOUSE_DOWN;
             event.timestamp = time;
-            event.mouse_button.button = (C89FW_mouse_button_t)i;
-            event.mouse_button.x = window->mouse_x;
-            event.mouse_button.y = window->mouse_y;
+            event.data.mouse_button.button = (C89FW_mouse_button_t)i;
+            event.data.mouse_button.x = window->mouse_x;
+            event.data.mouse_button.y = window->mouse_y;
             C89FW_event_queue_push(queue, &event);
         } else if (!window->mouse_buttons[i] && window->mouse_buttons_previous[i]) {
             C89FW_event_t event;
             memset(&event, 0, sizeof(event));
             event.type = C89FW_EVENT_MOUSE_UP;
             event.timestamp = time;
-            event.mouse_button.button = (C89FW_mouse_button_t)i;
-            event.mouse_button.x = window->mouse_x;
-            event.mouse_button.y = window->mouse_y;
+            event.data.mouse_button.button = (C89FW_mouse_button_t)i;
+            event.data.mouse_button.x = window->mouse_x;
+            event.data.mouse_button.y = window->mouse_y;
             C89FW_event_queue_push(queue, &event);
         }
     }
@@ -376,10 +376,10 @@ static void C89FW_generate_events(C89FW_window_t* window, double time) {
         memset(&event, 0, sizeof(event));
         event.type = C89FW_EVENT_MOUSE_MOVE;
         event.timestamp = time;
-        event.mouse_move.x = window->mouse_x;
-        event.mouse_move.y = window->mouse_y;
-        event.mouse_move.delta_x = window->mouse_delta_x;
-        event.mouse_move.delta_y = window->mouse_delta_y;
+        event.data.mouse_move.x = window->mouse_x;
+        event.data.mouse_move.y = window->mouse_y;
+        event.data.mouse_move.delta_x = window->mouse_delta_x;
+        event.data.mouse_move.delta_y = window->mouse_delta_y;
         C89FW_event_queue_push(queue, &event);
     }
     
@@ -388,8 +388,8 @@ static void C89FW_generate_events(C89FW_window_t* window, double time) {
         memset(&event, 0, sizeof(event));
         event.type = C89FW_EVENT_MOUSE_SCROLL;
         event.timestamp = time;
-        event.mouse_scroll.delta_x = window->mouse_scroll_x;
-        event.mouse_scroll.delta_y = window->mouse_scroll_y;
+        event.data.mouse_scroll.delta_x = window->mouse_scroll_x;
+        event.data.mouse_scroll.delta_y = window->mouse_scroll_y;
         C89FW_event_queue_push(queue, &event);
     }
     
@@ -1167,6 +1167,8 @@ int C89FW_update(C89FW_window_t* window) {
                 break;
             }
             case KeyRelease: {
+                KeySym keysym = XLookupKeysym(&xevent.xkey, 0);
+                C89FW_key_t key = C89FW_x11_translate_key(keysym);
                 if (XEventsQueued(data->display, QueuedAfterReading)) {
                     XEvent next;
                     XPeekEvent(data->display, &next);
@@ -1176,8 +1178,6 @@ int C89FW_update(C89FW_window_t* window) {
                         break;
                     }
                 }
-                KeySym keysym = XLookupKeysym(&xevent.xkey, 0);
-                C89FW_key_t key = C89FW_x11_translate_key(keysym);
                 if (key != C89FW_KEY_UNKNOWN) raw->key_changes[key] = 2;
                 break;
             }
@@ -1256,8 +1256,8 @@ int C89FW_update(C89FW_window_t* window) {
         memset(&event, 0, sizeof(event));
         event.type = C89FW_EVENT_RESIZE;
         event.timestamp = window->time;
-        event.resize.width = raw->new_width;
-        event.resize.height = raw->new_height;
+        event.data.resize.width = raw->new_width;
+        event.data.resize.height = raw->new_height;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &event);
     }
     
