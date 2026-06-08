@@ -914,7 +914,7 @@ static void scenario_init(scenario_world *w, i32 width, i32 height) {
 
     g_thread_count = get_optimal_thread_count();
     if (g_thread_count < 1) g_thread_count = 1;
-    g_threadpool = thpool_init(g_thread_count);
+    g_jobgraph = jobgraph_system_create(g_thread_count);
 
     physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
@@ -934,9 +934,9 @@ static void scenario_update(scenario_world *w, real dt) {
 static void scenario_shutdown(scenario_world *w) {
     (void)w;
     scripts_shutdown();
-    if (g_threadpool) {
-        thpool_destroy(g_threadpool);
-        g_threadpool = ((void*)0);
+    if (g_jobgraph) {
+        jobgraph_system_destroy(g_jobgraph);
+        g_jobgraph = ((void*)0);
     }
 }
 

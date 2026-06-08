@@ -128,7 +128,8 @@ int main(void)
 
         fb = render_get_fb();
 
-        thpool_add_work(render_threadpool, present_frame, (void*)fb);
+        present_frame((void*)fb);
+
 
         print_fps(now);
     }

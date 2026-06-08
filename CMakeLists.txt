@@ -72,7 +72,7 @@ add_executable(Moonaut
     libs/lua-5.5.0/src/lutf8lib.c
     libs/lua-5.5.0/src/lvm.c
     libs/lua-5.5.0/src/lzio.c
-    libs/C-Thread-Pool/thpool.c
+    libs/jobgraph/jobgraph.c
 )
 
 target_compile_definitions(Moonaut PRIVATE LUA_USE_C89)
