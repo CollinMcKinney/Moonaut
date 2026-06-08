@@ -11,8 +11,6 @@
 #define RASTERIZER_H
 
 #include "common.h"
-#include "cpu_threads.h"
-#include "../libs/C-Thread-Pool/thpool.h"
 #include "tags/material.h"
 #include <string.h>
 
@@ -119,8 +117,6 @@ static tile_bin *tile_bins = NULL;
 static i32 num_tiles_x = 0;
 static i32 num_tiles_y = 0;
 static i32 total_tiles = 0;
-static threadpool render_threadpool = NULL;
-static i32 render_thread_count = 0;
 
 static tile_job *job_pool = NULL;
 static i32 job_pool_size = 0;
@@ -533,7 +529,7 @@ static void render_clear(u8 r, u8 g, u8 b)
     i32 i, j;
     if (!fb_render || !zbuf_render) return;
 
-    if (render_thread_count <= 1) {
+    if (g_thread_count <= 1) {
         u32 *fb32 = (u32*)fb_render;
         real *zb = (real*)zbuf_render;
         i32 n = internal_pitch * RENDER_HEIGHT;
@@ -551,7 +547,7 @@ static void render_clear(u8 r, u8 g, u8 b)
         return;
     }
 
-    if (total_tiles >= MIN_TILES_PER_THREAD * render_thread_count) {
+    if (total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
         if (clear_job_count < total_tiles) {
             if (clear_jobs) free(clear_jobs);
             clear_jobs = (clear_job*)malloc(total_tiles * sizeof(clear_job));
@@ -561,9 +557,9 @@ static void render_clear(u8 r, u8 g, u8 b)
         for (j = 0; j < total_tiles; j++) {
             clear_jobs[j].tile_idx = j;
             clear_jobs[j].color = col;
-            thpool_add_work(render_threadpool, clear_tile_range, &clear_jobs[j]);
+            thpool_add_work(g_threadpool, clear_tile_range, &clear_jobs[j]);
         }
-        thpool_wait(render_threadpool);
+        thpool_wait(g_threadpool);
     }
     else {
         u32 *fb32 = (u32*)fb_render;
@@ -2310,7 +2306,7 @@ static void draw_triangle_shaded(
                                 b0, b1, b2, 1, mat);
                         }
                         else {
-                            if (render_thread_count <= 1) {
+                            if (g_thread_count <= 1) {
                                 draw_triangle_internal(cv0, cv1, cv2,
                                     cn0, cn1, cn2, cl0, cl1, cl2,
                                     cc0, cc1, cc2, b0, b1, b2,
@@ -2342,7 +2338,7 @@ static void draw_triangle_shaded(
             /* Draw opaque */
             {
                 real zb[9] = {0};
-                if (render_thread_count <= 1) {
+                if (g_thread_count <= 1) {
                     draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2,
                         orig_c0, orig_c1, orig_c2, zb, zb, zb,
                         v0, v1, v2, l0, l1, l2, n0, n1, n2,
@@ -2538,19 +2534,10 @@ static void tile_init(i32 w, i32 h)
         tile_bins[i].tri_count = 0;
         tile_bins[i].transparent_count = 0;
     }
-
-    render_thread_count = get_optimal_thread_count();
-    if (render_thread_count > total_tiles) render_thread_count = total_tiles;
-    if (render_thread_count < 1) render_thread_count = 1;
-    render_threadpool = thpool_init(render_thread_count);
 }
 
 static void tile_shutdown(void)
 {
-    if (render_threadpool) {
-        thpool_destroy(render_threadpool);
-        render_threadpool = NULL;
-    }
     if (tile_bins) {
         free(tile_bins);
         tile_bins = NULL;
@@ -2570,7 +2557,6 @@ static void tile_shutdown(void)
         clear_jobs = NULL;
         clear_job_count = 0;
     }
-    render_thread_count = 0;
 }
 
 static void tile_bin_triangle(
@@ -2742,7 +2728,7 @@ static void tile_render_all(void)
         if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) at++;
     }
 
-    if (at < MIN_TILES_PER_THREAD * render_thread_count) {
+    if (at < MIN_TILES_PER_THREAD * g_thread_count) {
         for (i = 0; i < total_tiles; i++) {
             if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) {
                 tile_job jb;
@@ -2779,19 +2765,19 @@ static void tile_render_all(void)
                              (RENDER_WIDTH - jb->tile_x) : TILE_SIZE;
                 jb->tile_h = (ty == num_tiles_y - 1) ?
                              (RENDER_HEIGHT - jb->tile_y) : TILE_SIZE;
-                thpool_add_work(render_threadpool, render_tile, jb);
+                thpool_add_work(g_threadpool, render_tile, jb);
             }
         }
-        thpool_wait(render_threadpool);
+        thpool_wait(g_threadpool);
     }
 }
 
 static void tile_clear_bins(void)
 {
-    if (render_thread_count > 1 &&
-        total_tiles >= MIN_TILES_PER_THREAD * render_thread_count) {
+    if (g_thread_count > 1 &&
+        total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
         clear_range_job js[32];
-        i32 mt = render_thread_count;
+        i32 mt = g_thread_count;
         i32 j, bpj;
         if (mt > 32) mt = 32;
         bpj = (total_tiles + mt - 1) / mt;
@@ -2800,9 +2786,9 @@ static void tile_clear_bins(void)
             js[j].start_idx = j * bpj;
             js[j].end_idx = (j + 1) * bpj;
             if (js[j].end_idx > total_tiles) js[j].end_idx = total_tiles;
-            thpool_add_work(render_threadpool, tile_clear_bins_range, &js[j]);
+            thpool_add_work(g_threadpool, tile_clear_bins_range, &js[j]);
         }
-        thpool_wait(render_threadpool);
+        thpool_wait(g_threadpool);
     }
     else {
         i32 i;
@@ -2864,7 +2850,7 @@ static void clear_tile_range(void *arg)
 
 static void render_finish(void)
 {
-    if (render_thread_count <= 1) {
+    if (g_thread_count <= 1) {
         /* Single-threaded: render each tile that has any triangles */
         i32 i;
         for (i = 0; i < total_tiles; i++) {
@@ -2890,7 +2876,7 @@ static void render_finish(void)
     if (fw == RENDER_WIDTH && fh == RENDER_HEIGHT) {
         memcpy(fb, fb_render, RENDER_WIDTH * RENDER_HEIGHT * sizeof(u32));
     }
-    else if (render_thread_count > 1) {
+    else if (g_thread_count > 1) {
         i32 utx = (fw + TILE_SIZE - 1) / TILE_SIZE;
         i32 uty = (fh + TILE_SIZE - 1) / TILE_SIZE;
         i32 nj = utx * uty;
@@ -2922,12 +2908,12 @@ static void render_finish(void)
                     upscale_jobs[ji].dst_height = fh;
                     upscale_jobs[ji].src_width = RENDER_WIDTH;
                     upscale_jobs[ji].src_height = RENDER_HEIGHT;
-                    thpool_add_work(render_threadpool, upscale_tile,
+                    thpool_add_work(g_threadpool, upscale_tile,
                         &upscale_jobs[ji]);
                     ji++;
                 }
             }
-            thpool_wait(render_threadpool);
+            thpool_wait(g_threadpool);
         }
     }
     else {

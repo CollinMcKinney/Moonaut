@@ -5,6 +5,7 @@
 #include "physics.h"
 #include "rasterizer.h"
 #include "scripts.h"
+#include "cpu_threads.h"
 
 #include "tags/model.h"
 #include "tags/entity.h"
@@ -910,6 +911,11 @@ static void scenario_init(scenario_world *w, i32 width, i32 height) {
     w->width = width;
     w->height = height;
     w->entity_count = 0;
+
+    g_thread_count = get_optimal_thread_count();
+    if (g_thread_count < 1) g_thread_count = 1;
+    g_threadpool = thpool_init(g_thread_count);
+
     physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
     scripts_init();
@@ -928,6 +934,10 @@ static void scenario_update(scenario_world *w, real dt) {
 static void scenario_shutdown(scenario_world *w) {
     (void)w;
     scripts_shutdown();
+    if (g_threadpool) {
+        thpool_destroy(g_threadpool);
+        g_threadpool = ((void*)0);
+    }
 }
 
 static real scenario_get_fixed_dt(void) { return sc_fixed_dt; }

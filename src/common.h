@@ -4,10 +4,14 @@
 #define COMMON_H
 
 #include "vectors.h"
+#include "../libs/C-Thread-Pool/thpool.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+static threadpool g_threadpool = ((void*)0);
+static i32 g_thread_count = 0;
 
 typedef i32 enum32;
 STATIC_ASSERT(sizeof(enum32)  == 0x4, enum32_size_wrong);
