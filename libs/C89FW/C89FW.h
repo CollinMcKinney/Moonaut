@@ -722,8 +722,8 @@ int C89FW_update(C89FW_window_t* window) {
         memset(&event, 0, sizeof(event));
         event.type = C89FW_EVENT_RESIZE;
         event.timestamp = window->time;
-        event.resize.width = raw->new_width;
-        event.resize.height = raw->new_height;
+        event.data.resize.width = raw->new_width;
+        event.data.resize.height = raw->new_height;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &event);
     }
     
@@ -749,7 +749,7 @@ int C89FW_update(C89FW_window_t* window) {
                     memset(&event, 0, sizeof(event));
                     event.type = C89FW_EVENT_GAMEPAD_CONNECT;
                     event.timestamp = window->time;
-                    event.gamepad_button.gamepad_index = i;
+                    event.data.gamepad_button.gamepad_index = i;
                     C89FW_event_queue_push(queue, &event);
                 }
                 window->gamepads[i].present = 1;
@@ -778,8 +778,8 @@ int C89FW_update(C89FW_window_t* window) {
                             memset(&event, 0, sizeof(event));
                             event.type = new_state ? C89FW_EVENT_GAMEPAD_DOWN : C89FW_EVENT_GAMEPAD_UP;
                             event.timestamp = window->time;
-                            event.gamepad_button.gamepad_index = i;
-                            event.gamepad_button.button = map[j].btn;
+                            event.data.gamepad_button.gamepad_index = i;
+                            event.data.gamepad_button.button = map[j].btn;
                             C89FW_event_queue_push(queue, &event);
                         }
                         window->gamepads[i].buttons[map[j].btn] = new_state;
@@ -796,7 +796,7 @@ int C89FW_update(C89FW_window_t* window) {
                 memset(&event, 0, sizeof(event));
                 event.type = C89FW_EVENT_GAMEPAD_DISCONNECT;
                 event.timestamp = window->time;
-                event.gamepad_button.gamepad_index = i;
+                event.data.gamepad_button.gamepad_index = i;
                 C89FW_event_queue_push(queue, &event);
                 window->gamepads[i].present = 0;
             }
@@ -1770,8 +1770,8 @@ int C89FW_update(C89FW_window_t* window) {
         memset(&wevent, 0, sizeof(wevent));
         wevent.type = C89FW_EVENT_RESIZE;
         wevent.timestamp = window->time;
-        wevent.resize.width = raw->new_width;
-        wevent.resize.height = raw->new_height;
+        wevent.data.resize.width = raw->new_width;
+        wevent.data.resize.height = raw->new_height;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &wevent);
     }
     

@@ -148,6 +148,7 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
         }
         w->entity_count++;
     }
+    w->physics.entity_count = w->entity_count;
     return scn_handle;
 }
 
@@ -307,6 +308,7 @@ static i32 lua_builtin_vec4(lua_State *L) {
 static i32 lua_clear(lua_State *L) {
     (void)L;
     g_scene_world->physics.body_count = 0;
+    g_scene_world->physics.entity_count = 0;
     g_scene_world->entity_count = 0;
     return 0;
 }

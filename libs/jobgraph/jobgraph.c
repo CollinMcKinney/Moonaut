@@ -26,13 +26,13 @@
 /* ==================== SYNCHRONIZATION ==================== */
 
 #ifdef JG_WINDOWS
-    typedef HANDLE jg_mutex_t;
+    typedef CRITICAL_SECTION jg_mutex_t;
     typedef CONDITION_VARIABLE jg_cond_t;
     
-    #define JG_MUTEX_INIT(m) do { *(m) = CreateMutex(NULL, FALSE, NULL); } while(0)
-    #define JG_MUTEX_LOCK(m) WaitForSingleObject(*(m), INFINITE)
-    #define JG_MUTEX_UNLOCK(m) ReleaseMutex(*(m))
-    #define JG_MUTEX_DESTROY(m) CloseHandle(*(m))
+    #define JG_MUTEX_INIT(m) InitializeCriticalSection(m)
+    #define JG_MUTEX_LOCK(m) EnterCriticalSection(m)
+    #define JG_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
+    #define JG_MUTEX_DESTROY(m) DeleteCriticalSection(m)
     
     #define JG_COND_INIT(c) InitializeConditionVariable(c)
     #define JG_COND_WAIT(c, m) SleepConditionVariableCS(c, m, INFINITE)

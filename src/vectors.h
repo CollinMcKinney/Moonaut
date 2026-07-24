@@ -117,19 +117,19 @@ static const real VECTORS_DEG2RAD = (real)(VECTORS_PI / 180.0);
 static const real VECTORS_QUAT_EPSILON = (real)0.0001;
 
 /* ================================================================== *
- *  Boolean - bool (use the BOOL(x) macro to set or check booleans)
+ *  Boolean - bool (use the VECTORS_BOOL(x) macro to set or check booleans)
  * ================================================================== */
 #if !defined(__cplusplus) && !defined(__bool_true_false_are_defined)
     typedef int bool;
     #define true ((bool)1)
     #define false ((bool)0)
 #endif
-#define BOOL(x) ((x) ? true : false)
-STATIC_ASSERT(BOOL(true)  == true && true == 1, bool_true_fails);
-STATIC_ASSERT(BOOL(false) == false && false == 0, bool_false_fails);
-STATIC_ASSERT(BOOL(0x00)  == 0, bool_zero_fails);
-STATIC_ASSERT(BOOL(0xFF)  == 1, bool_nonzero_fails);
-STATIC_ASSERT(BOOL(-1)    == 1, bool_negative_fails);
+#define VECTORS_BOOL(x) ((x) ? true : false)
+STATIC_ASSERT(VECTORS_BOOL(true)  == true && true == 1, bool_true_fails);
+STATIC_ASSERT(VECTORS_BOOL(false) == false && false == 0, bool_false_fails);
+STATIC_ASSERT(VECTORS_BOOL(0x00)  == 0, bool_zero_fails);
+STATIC_ASSERT(VECTORS_BOOL(0xFF)  == 1, bool_nonzero_fails);
+STATIC_ASSERT(VECTORS_BOOL(-1)    == 1, bool_negative_fails);
 
 /* ================================================================== *
  *  Make sure system is using 8-bit bytes.

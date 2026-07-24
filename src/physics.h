@@ -61,7 +61,8 @@ typedef struct {
     ------------------------------------------------------------------------ */
 typedef struct {
     entity_definition **entities;         /* pointer to array of entity pointers */
-    i32                max_entities;      /* size of that array */
+    i32                max_entities;      /* capacity of that array */
+    i32                entity_count;      /* number of entities actually loaded */
     physics_body       bodies[PHYSICS_MAX_BODIES];
     i32                body_count;
     i32                entity_to_body[PHYSICS_MAX_BODIES];  /* -1 if not dynamic */
@@ -132,12 +133,16 @@ static void physics_init(physics_world *w, entity_definition **entities,
                          i32 max_entities, vec3 gravity) {
     w->entities     = entities;
     w->max_entities = max_entities;
+    w->entity_count = 0;
     w->body_count   = 0;
     w->gravity      = gravity;
     w->static_bsp   = NULL;
     {
         i32 i;
-        for (i = 0; i < max_entities; ++i) w->entity_to_body[i] = -1;
+        for (i = 0; i < max_entities; ++i) {
+            w->entity_to_body[i] = -1;
+            w->entities[i] = NULL;   /* ensure empty slots are safe */
+        }
     }
 }
 
@@ -481,7 +486,7 @@ static void physics_step(physics_world *w, real dt) {
         physics_body *dynam_body = &w->bodies[i];
         if (dynam_body->inverse_mass > 0.0f) {
             i32 j;
-            for (j = 0; j < w->max_entities; j++) {
+            for (j = 0; j < w->entity_count; j++) {
                 if (j == dynam_body->entity_index) continue;
                 collision_bsp_definition *bsp = get_entity_collision_bsp(w, j);
                 if (!bsp) continue;
