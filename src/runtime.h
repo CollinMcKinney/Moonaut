@@ -915,17 +915,16 @@ static i32 scenario_bootstrap_thread_count(void)
 {
     i32 physical = get_physical_core_count();
     i32 logical  = get_logical_thread_count();
-    i32 count;
+    
+    if (physical < 1) physical = 1;
+
+    i32 count = physical;
+
+    if (count < 1) count = 1;
+    if (count > logical) count = logical;
 
     fprintf(stderr, "[CPU] %d physical cores, %d logical threads\n",
             (int)physical, (int)logical);
-
-    if (physical < 1) physical = 1;
-    if (logical < 1) logical = 1;
-
-    count = physical;
-    if (count > logical) count = logical;
-
     fprintf(stderr, "[CPU] Selected thread count: %d\n", (int)count);
     return count;
 }
