@@ -26,19 +26,35 @@ Project has been moved to CMake. The Clang/Ninja presets are what I've been usin
 
 All recent testing/development has been done under Linux, Windows is likely broken. MacOS has never been tested.
 
+Make sure to install CMake & Ninja. LLVM/Clang is recommended as that's the main compiler used for development on both Linux & Windows. But you can use MSVC or GCC instead.
+
+If opting for Clang with VS Code, there's an extension called clangd that will give good IDE/LSP support.
+
+On Windows: If using the Clang preset make sure it's properly set up in your System Path.
+
 List the presets:
+
+
+If you opted NOT to use LLVM/Clang, you can list other CMake presets and pick what matches the toolchain you chose.
 ```bash
 cmake --list-presets
 ```
+
 Select a preset for your system, here we will use the `clang-release` preset:
 ```bash
 cmake --preset clang-release
 ```
+
 Build the preset:
 ```bash
 cmake --build --preset clang-release
 ```
-And then to run the executable:
+
+And then to run the executable on Linux:
 ```bash
 ./build/clang-release/Moonaut
+```
+or on Windows:
+```bash
+./build/clang-release/Moonaut.exe
 ```
