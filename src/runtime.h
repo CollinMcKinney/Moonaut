@@ -21,6 +21,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -909,19 +911,189 @@ static void scenario_bind_lua_state(lua_state *state, void *userdata) {
 /* ------------------------------------------------------------------------
    Init / Update / Shutdown
    ------------------------------------------------------------------------ */
+
+/* JobGraph-based calibration settings */
+#define BENCHMARK_JOB_COUNT   256
+#define BENCHMARK_WORK_PER_JOB 2000
+#define BENCHMARK_RUNS        3
+
+typedef struct {
+    u64 accumulator;
+    u32 iterations;
+} runtime_benchmark_job_context_t;
+
+static job_t* runtime_benchmark_job(void *arg)
+{
+    runtime_benchmark_job_context_t *ctx = (runtime_benchmark_job_context_t*)arg;
+    u32 i;
+    u64 value = ctx->accumulator;
+
+    for (i = 0; i < ctx->iterations; ++i) {
+        value = (value * 1664525u + 1013904223u) ^ (value >> 7);
+        value = (value << 13) | (value >> 19);
+    }
+
+    ctx->accumulator = value;
+    return NULL;
+}
+
+static double runtime_now_seconds(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+    if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&counter)) {
+        return (double)clock() / (double)CLOCKS_PER_SEC;
+    }
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return (double)clock() / (double)CLOCKS_PER_SEC;
+    }
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+#endif
+}
+
+static void runtime_sleep_ms(u32 milliseconds)
+{
+#ifdef _WIN32
+    Sleep((DWORD)milliseconds);
+#else
+    struct timespec ts;
+    ts.tv_sec = milliseconds / 1000u;
+    ts.tv_nsec = (milliseconds % 1000u) * 1000000L;
+    nanosleep(&ts, NULL);
+#endif
+}
+
+static double runtime_measure_synthetic_cost(i32 thread_count)
+{
+    runtime_benchmark_job_context_t *job_contexts = NULL;
+    job_t **submitted_jobs = NULL;
+    jobgraph_system_t *bench_graph = NULL;
+    double total_time = 0.0;
+    u64 checksum = 0;
+    i32 run;
+    i32 i;
+
+    if (thread_count <= 0) return -1.0;
+
+    job_contexts = (runtime_benchmark_job_context_t*)calloc((size_t)BENCHMARK_JOB_COUNT, sizeof(*job_contexts));
+    submitted_jobs = (job_t**)calloc((size_t)BENCHMARK_JOB_COUNT, sizeof(*submitted_jobs));
+    if (!job_contexts || !submitted_jobs) {
+        free(job_contexts);
+        free(submitted_jobs);
+        return -1.0;
+    }
+
+    for (run = 0; run < BENCHMARK_RUNS; ++run) {
+        double start = runtime_now_seconds();
+
+        fprintf(stderr, "[CPU]   benchmark start for %d workers\n", (int)thread_count);
+        bench_graph = jobgraph_system_create(thread_count);
+        if (!bench_graph) {
+            fprintf(stderr, "[CPU]   benchmark failed to create jobgraph for %d workers\n", (int)thread_count);
+            free(job_contexts);
+            free(submitted_jobs);
+            return -1.0;
+        }
+
+        for (i = 0; i < BENCHMARK_JOB_COUNT; ++i) {
+            job_contexts[i].accumulator = 0x9e3779b97f4a7c15ULL + (u64)i;
+            job_contexts[i].iterations = BENCHMARK_WORK_PER_JOB;
+            submitted_jobs[i] = job_create_standalone(bench_graph, runtime_benchmark_job, &job_contexts[i]);
+            if (submitted_jobs[i]) {
+                job_submit(submitted_jobs[i]);
+            }
+        }
+
+        fprintf(stderr, "[CPU]   submitted %d jobs, waiting for completion...\n", BENCHMARK_JOB_COUNT);
+        {
+            double deadline = runtime_now_seconds() + 2.0;
+            jobgraph_wait_all(bench_graph);
+            while (runtime_now_seconds() < deadline &&
+                   jobgraph_total_completed(bench_graph) < (unsigned long)BENCHMARK_JOB_COUNT) {
+                runtime_sleep_ms(1);
+            }
+        }
+
+        {
+            double end = runtime_now_seconds();
+            total_time += (end - start) * 1000.0;
+        }
+
+        if (bench_graph) {
+            jobgraph_system_destroy(bench_graph);
+            bench_graph = NULL;
+        }
+    }
+
+    for (i = 0; i < BENCHMARK_JOB_COUNT; ++i) {
+        checksum ^= job_contexts[i].accumulator;
+    }
+    (void)checksum;
+
+    free(job_contexts);
+    free(submitted_jobs);
+
+    return total_time / (double)BENCHMARK_RUNS;
+}
+
+static i32 scenario_bootstrap_thread_count(void)
+{
+    i32 physical = get_physical_core_count();
+    i32 logical  = get_logical_thread_count();
+    i32 best_count = (physical > 0) ? physical : 1;
+    double best_time = 1e30;
+    i32 i;
+
+    fprintf(stderr, "[CPU] %d physical cores, %d logical threads\n",
+            (int)physical, (int)logical);
+
+    if (logical < 1) logical = 1;
+
+    fprintf(stderr, "[CPU] Benchmarking thread counts before rendering...\n");
+    {
+        i32 max_candidates = logical;
+        if (physical > 0) {
+            max_candidates = physical + 2;
+            if (max_candidates < 1) max_candidates = 1;
+            if (max_candidates > logical) max_candidates = logical;
+        }
+
+        for (i = 1; i <= max_candidates; ++i) {
+            double sample_time = runtime_measure_synthetic_cost(i);
+            if (sample_time < 0.0) {
+                continue;
+            }
+
+            fprintf(stderr, "[CPU]   %2d workers -> %.2f ms\n",
+                    (int)i, sample_time);
+            if (sample_time < best_time) {
+                best_time = sample_time;
+                best_count = i;
+            }
+        }
+    }
+
+    fprintf(stderr, "[CPU] Selected thread count: %d\n", (int)best_count);
+    return best_count;
+}
+
 static void scenario_init(scenario_world *w, i32 width, i32 height) {
     w->width = width;
     w->height = height;
     w->entity_count = 0;
 
-    g_thread_count = get_optimal_thread_count();
+    g_scene_world = w;
+    g_thread_count = scenario_bootstrap_thread_count();
     if (g_thread_count < 1) g_thread_count = 1;
     g_jobgraph = jobgraph_system_create(g_thread_count);
 
     physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
     scripts_init();
-    g_scene_world = w;
     if (scripts_add_lua("script.lua", scenario_bind_lua_state, w) < 0)
         fprintf(stderr, "Failed to load Lua script: script.lua\n");
 }
@@ -931,6 +1103,22 @@ static void scenario_update(scenario_world *w, real dt) {
     if (!sc_pause_physics) {
         physics_step(&w->physics, dt);
     }
+}
+
+static void scenario_reconfigure_thread_count(i32 new_thread_count)
+{
+    if (new_thread_count < 1) new_thread_count = 1;
+    if (g_thread_count == new_thread_count && g_jobgraph != ((void*)0)) {
+        return;
+    }
+
+    if (g_jobgraph) {
+        jobgraph_system_destroy(g_jobgraph);
+        g_jobgraph = ((void*)0);
+    }
+
+    g_thread_count = new_thread_count;
+    g_jobgraph = jobgraph_system_create(g_thread_count);
 }
 
 static void scenario_shutdown(scenario_world *w) {

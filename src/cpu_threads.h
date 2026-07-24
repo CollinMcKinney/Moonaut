@@ -26,7 +26,9 @@ extern "C" {
 /* Platform-specific headers */
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
+#include <process.h>   /* _beginthreadex */
 #include <stdlib.h>
+#include <stdio.h>     /* fprintf */
 #elif defined(__APPLE__) && defined(__MACH__)
 #include <sys/sysctl.h>
 #include <stdlib.h>
@@ -196,24 +198,6 @@ static i32 get_physical_core_count(void)
 #endif
 }
 
-/* Recommended thread count for rasterization.
- * For CPU-bound rendering, use physical cores.
- * For memory-bound rendering, may benefit from hyperthreading. */
-static i32 get_optimal_thread_count(void)
-{
-    i32 physical = get_physical_core_count();
-    i32 logical = get_logical_thread_count();
-    
-    /* If we have hyperthreading, use physical cores (avoid cache contention) */
-    if (logical >= physical * 2 && physical >= 2) {
-        /* For some reason *2-1 better than logical - 1 on my laptop. */
-        
-        return logical - 1;
-    }
-    
-    /* No hyperthreading or single core: use all logical threads */
-    return logical;
-}
 
 #ifdef __cplusplus
 }

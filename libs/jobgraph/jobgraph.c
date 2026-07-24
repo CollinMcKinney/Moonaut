@@ -200,14 +200,24 @@ static void ready_queue_push(ready_queue_t* q, struct job_t* job) {
     JG_MUTEX_UNLOCK(&q->mutex);
 }
 
-static struct job_t* ready_queue_pop(ready_queue_t* q) {
+static struct job_t* ready_queue_pop(ready_queue_t* q, jobgraph_system_t* js) {
     ready_node_t* node;
     struct job_t* job;
     
     JG_MUTEX_LOCK(&q->mutex);
     
     while (q->head == NULL) {
+        if (js != NULL && !js->running) {
+            JG_MUTEX_UNLOCK(&q->mutex);
+            return NULL;
+        }
         JG_COND_WAIT(&q->not_empty, &q->mutex);
+        /* Re-check shutdown after wake; the system may have been destroyed
+           while we were waiting, and a broadcast woke us but no job arrived. */
+        if (js != NULL && !js->running) {
+            JG_MUTEX_UNLOCK(&q->mutex);
+            return NULL;
+        }
     }
     
     node = q->head;
@@ -306,7 +316,6 @@ static void signal_job_complete(struct job_t* job) {
     for (i = 0; i < job->dependent_count; i++) {
         struct job_t* dep = job->dependents[i];
         
-        JG_MUTEX_LOCK(&js->stats_mutex);
         dep->deps.satisfied++;
         
         if (dep->deps.satisfied >= dep->deps.needed && 
@@ -316,7 +325,6 @@ static void signal_job_complete(struct job_t* job) {
             dep->state = JOB_STATE_READY;
             ready_queue_push(&js->ready_queue, dep);
         }
-        JG_MUTEX_UNLOCK(&js->stats_mutex);
     }
 }
 
@@ -335,10 +343,10 @@ static void* worker_thread_func(void* arg) {
     worker->jobs_executed = 0;
     
     while (js->running) {
-        current_job = ready_queue_pop(&js->ready_queue);
+        current_job = ready_queue_pop(&js->ready_queue, js);
         
         if (current_job == NULL || !js->running) {
-            continue;
+            break;
         }
         
         JG_MUTEX_LOCK(&js->stats_mutex);
