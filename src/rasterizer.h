@@ -172,9 +172,10 @@ static void tile_bin_transparent_triangle(
     const struct material_definition *mat);
 static void tile_render_all(void);
 static void tile_clear_bins(void);
-static void upscale_tile(void *arg);
-static void clear_tile_range(void *arg);
-static void tile_clear_bins_range(void *arg);
+static job_t* upscale_tile(void *arg);
+static job_t* clear_tile_range(void *arg);
+static job_t* tile_clear_bins_range(void *arg);
+static job_t* render_tile(void *arg);
 
 /* ---------------------------------------------------------------------------*/
 /*  Inline Helpers                                                            */
@@ -557,9 +558,10 @@ static void render_clear(u8 r, u8 g, u8 b)
         for (j = 0; j < total_tiles; j++) {
             clear_jobs[j].tile_idx = j;
             clear_jobs[j].color = col;
-            thpool_add_work(g_threadpool, clear_tile_range, &clear_jobs[j]);
+            job_t *job = job_create_standalone(g_jobgraph, clear_tile_range, &clear_jobs[j]);
+            job_submit(job);
         }
-        thpool_wait(g_threadpool);
+        jobgraph_wait_all(g_jobgraph);
     }
     else {
         u32 *fb32 = (u32*)fb_render;
@@ -2359,7 +2361,7 @@ static void draw_triangle_shaded(
 /*  Upscale and Finish                                                        */
 /* ---------------------------------------------------------------------------*/
 
-static void upscale_tile(void *arg)
+static job_t* upscale_tile(void *arg)
 {
     upscale_job *j = (upscale_job*)arg;
     i32 y, x;
@@ -2374,13 +2376,14 @@ static void upscale_tile(void *arg)
             j->fb_dst[rb + x] = j->fb_src[sb + rx];
         }
     }
+    return NULL;
 }
 
 /* ---------------------------------------------------------------------------*/
 /*  Tile Management                                                           */
 /* ---------------------------------------------------------------------------*/
 
-static void render_tile(void *arg)
+static job_t* render_tile(void *arg)
 {
     tile_job *j = (tile_job*)arg;
     tile_bin *b = &tile_bins[j->tile_idx];
@@ -2512,6 +2515,7 @@ static void render_tile(void *arg)
             }
         }
     }
+    return NULL;
 }
 
 static void tile_init(i32 w, i32 h)
@@ -2765,10 +2769,11 @@ static void tile_render_all(void)
                              (RENDER_WIDTH - jb->tile_x) : TILE_SIZE;
                 jb->tile_h = (ty == num_tiles_y - 1) ?
                              (RENDER_HEIGHT - jb->tile_y) : TILE_SIZE;
-                thpool_add_work(g_threadpool, render_tile, jb);
+                job_t *job = job_create_standalone(g_jobgraph, render_tile, jb);
+                job_submit(job);
             }
         }
-        thpool_wait(g_threadpool);
+        jobgraph_wait_all(g_jobgraph);
     }
 }
 
@@ -2786,9 +2791,10 @@ static void tile_clear_bins(void)
             js[j].start_idx = j * bpj;
             js[j].end_idx = (j + 1) * bpj;
             if (js[j].end_idx > total_tiles) js[j].end_idx = total_tiles;
-            thpool_add_work(g_threadpool, tile_clear_bins_range, &js[j]);
+            job_t *job = job_create_standalone(g_jobgraph, tile_clear_bins_range, &js[j]);
+            job_submit(job);
         }
-        thpool_wait(g_threadpool);
+        jobgraph_wait_all(g_jobgraph);
     }
     else {
         i32 i;
@@ -2799,7 +2805,7 @@ static void tile_clear_bins(void)
     }
 }
 
-static void tile_clear_bins_range(void *arg)
+static job_t* tile_clear_bins_range(void *arg)
 {
     clear_range_job *j = (clear_range_job*)arg;
     i32 i;
@@ -2809,9 +2815,10 @@ static void tile_clear_bins_range(void *arg)
             tile_bins[i].transparent_count = 0;
         }
     }
+    return NULL;
 }
 
-static void clear_tile_range(void *arg)
+static job_t* clear_tile_range(void *arg)
 {
     clear_job *j = (clear_job*)arg;
     u32 *fb32 = (u32*)fb_render;
@@ -2824,6 +2831,7 @@ static void clear_tile_range(void *arg)
     tx = ti % num_tiles_x;
     tlx = tx * TILE_SIZE;
     tly = ty * TILE_SIZE;
+
     tw = (tx == num_tiles_x - 1) ? (RENDER_WIDTH - tlx) : TILE_SIZE;
     th = (ty == num_tiles_y - 1) ? (RENDER_HEIGHT - tly) : TILE_SIZE;
 
@@ -2846,6 +2854,7 @@ static void clear_tile_range(void *arg)
             x++;
         }
     }
+    return NULL;
 }
 
 static void render_finish(void)
@@ -2908,12 +2917,13 @@ static void render_finish(void)
                     upscale_jobs[ji].dst_height = fh;
                     upscale_jobs[ji].src_width = RENDER_WIDTH;
                     upscale_jobs[ji].src_height = RENDER_HEIGHT;
-                    thpool_add_work(g_threadpool, upscale_tile,
+                    job_t *job = job_create_standalone(g_jobgraph, upscale_tile,
                         &upscale_jobs[ji]);
+                    job_submit(job);
                     ji++;
                 }
             }
-            thpool_wait(g_threadpool);
+            jobgraph_wait_all(g_jobgraph);
         }
     }
     else {

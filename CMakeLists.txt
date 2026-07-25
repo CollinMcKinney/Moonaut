@@ -18,7 +18,7 @@ add_compile_definitions(
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     add_compile_options(
-        -std=c89 -pedantic -Wall -Wextra -Wno-unused-function -g -O3
+        -std=c89 -pedantic -w -g -O3
         -fno-math-errno -ffp-contract=fast -fno-trapping-math
         -fcx-limited-range -fno-strict-aliasing -fomit-frame-pointer -flto
         -march=x86-64-v2 -mtune=generic)
@@ -72,7 +72,7 @@ add_executable(Moonaut
     libs/lua-5.5.0/src/lutf8lib.c
     libs/lua-5.5.0/src/lvm.c
     libs/lua-5.5.0/src/lzio.c
-    libs/C-Thread-Pool/thpool.c
+    libs/jobgraph/jobgraph.c
 )
 
 target_compile_definitions(Moonaut PRIVATE LUA_USE_C89)

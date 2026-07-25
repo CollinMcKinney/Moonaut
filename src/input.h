@@ -1,15 +1,15 @@
 #ifndef INPUT_H
 #define INPUT_H
 
+#include "common.h"
 #include "window.h"
-#include "runtime.h"
 #include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-static void input_process_events(C89FW_window_t *win, scenario_world *w)
+static void input_process_events(C89FW_window_t *win)
 {
     C89FW_event_t event;
     while (C89FW_poll_event(win, &event)) {
@@ -41,10 +41,9 @@ static void input_process_events(C89FW_window_t *win, scenario_world *w)
                 printf("[INPUT] window resized: (%d, %d)\n",
                        event.data.resize.width, event.data.resize.height);
                 /* Wait for pending present before resize to avoid use-after-free */
-                thpool_wait(g_threadpool);
+                jobgraph_wait_all(g_jobgraph);
                 /* window_resize handles renderer resize + C89FW_apply_resize */
                 window_resize(event.data.resize.width, event.data.resize.height);
-                if (w) scenario_resize(w, event.data.resize.width, event.data.resize.height);
                 break;
             case C89FW_EVENT_CLOSE:
                 printf("[INPUT] window close requested\n");
@@ -80,3 +79,4 @@ static void input_process_events(C89FW_window_t *win, scenario_world *w)
 #endif
 
 #endif /* INPUT_H */
+

@@ -26,6 +26,9 @@ extern "C" {
 /* Platform-specific headers */
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
+#include <process.h>   /* _beginthreadex */
+#include <stdlib.h>
+#include <stdio.h>     /* fprintf */
 #elif defined(__APPLE__) && defined(__MACH__)
 #include <sys/sysctl.h>
 #include <stdlib.h>
@@ -47,7 +50,8 @@ static i32 get_logical_thread_count(void)
     DWORD_PTR process_affinity, system_affinity;
     if (GetProcessAffinityMask(GetCurrentProcess(), &process_affinity, &system_affinity)) {
         i32 affinity_count = 0;
-        for (DWORD_PTR mask = process_affinity; mask; mask >>= 1) {
+        DWORD_PTR mask;
+        for (mask = process_affinity; mask; mask >>= 1) {
             affinity_count += (mask & 1);
         }
         if (affinity_count > 0) count = affinity_count;
@@ -89,8 +93,6 @@ static i32 get_physical_core_count(void)
 {
 #if defined(_WIN32) || defined(_WIN64)
     /* Windows: use GetLogicalProcessorInformation (Vista and later) */
-    #include <windows.h>
-    #include <malloc.h>
     PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer = NULL;
     DWORD buffer_size = 0;
     
@@ -105,7 +107,8 @@ static i32 get_physical_core_count(void)
     
     i32 physical_cores = 0;
     DWORD num_entries = buffer_size / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
-    for (DWORD i = 0; i < num_entries; i++) {
+    DWORD i;
+    for (i = 0; i < num_entries; i++) {
         if (buffer[i].Relationship == RelationProcessorCore) {
             physical_cores++;
         }
@@ -116,8 +119,6 @@ static i32 get_physical_core_count(void)
 
 #elif defined(__APPLE__) && defined(__MACH__)
     /* macOS: use sysctl */
-    #include <sys/sysctl.h>
-    #include <stdlib.h>
     int count = 0;
     size_t size = sizeof(count);
     
@@ -132,8 +133,6 @@ static i32 get_physical_core_count(void)
 
 #elif defined(__linux__) || defined(__unix__)
     /* Linux: read /proc/cpuinfo for core count */
-    #include <stdio.h>
-    
     /* Try to read cpu cores directly */
     FILE *fp = fopen("/proc/cpuinfo", "r");
     int cores = 0;
@@ -199,23 +198,6 @@ static i32 get_physical_core_count(void)
 #endif
 }
 
-/* Recommended thread count for rasterization.
- * For CPU-bound rendering, use physical cores.
- * For memory-bound rendering, may benefit from hyperthreading. */
-static i32 get_optimal_thread_count(void)
-{
-    i32 physical = get_physical_core_count();
-    i32 logical = get_logical_thread_count();
-    
-    /* If we have hyperthreading, use physical cores (avoid cache contention) */
-    if (logical >= physical * 2 && physical >= 2) {
-        /* For some reason *2-1 better than logical - 1 on my laptop. */
-        return logical - 1;
-    }
-    
-    /* No hyperthreading or single core: use all logical threads */
-    return logical;
-}
 
 #ifdef __cplusplus
 }

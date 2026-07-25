@@ -4,13 +4,13 @@
 #define COMMON_H
 
 #include "vectors.h"
-#include "../libs/C-Thread-Pool/thpool.h"
+#include "../libs/jobgraph/jobgraph.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-static threadpool g_threadpool = ((void*)0);
+static jobgraph_system_t *g_jobgraph = ((void*)0);
 static i32 g_thread_count = 0;
 
 typedef i32 enum32;

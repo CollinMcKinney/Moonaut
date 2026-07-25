@@ -1,11 +1,15 @@
 #ifndef RUNTIME_H
 #define RUNTIME_H
 
+#include "window.h"
+#include "input.h"
 #include "common.h"
 #include "physics.h"
 #include "rasterizer.h"
 #include "scripts.h"
+#include "clock.h"
 #include "cpu_threads.h"
+#include "defaults.h"
 
 #include "tags/model.h"
 #include "tags/entity.h"
@@ -21,12 +25,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define SCENARIO_MAX_ENTITIES PHYSICS_MAX_BODIES
+#define SCENARIO_WINDOW_SCALE 4
+#define SCENARIO_DEFAULT_WIDTH  (256 * SCENARIO_WINDOW_SCALE)
+#define SCENARIO_DEFAULT_HEIGHT (144 * SCENARIO_WINDOW_SCALE)
 
 /* ------------------------------------------------------------------------
    Scenario world
@@ -40,12 +48,10 @@ typedef struct scenario_world {
 
     /* Backing store for entities created at runtime that aren't Tags */
     entity_definition entity_pool[SCENARIO_MAX_ENTITIES];
-
-    i32 width;
-    i32 height;
 } scenario_world;
 
 static scenario_world *g_scene_world = NULL;
+static scenario_world g_world_storage;
 
 /* Default render settings (overridden by globals / tags) */
 static vec3 sc_cam_eye    = {0, 0, 0};
@@ -60,10 +66,10 @@ static real sc_fixed_dt = 1.0f / 60.0f;
    Lua helper – return the internal physics_body for a given entity index,
    or NULL if it isn't dynamic.
    ------------------------------------------------------------------------ */
-static physics_body *scenario_get_physics_body(scenario_world *w, i32 entity_index) {
-    i32 idx = w->physics.entity_to_body[entity_index];
-    if (idx < 0 || idx >= w->physics.body_count) return NULL;
-    return &w->physics.bodies[idx];
+static physics_body *scenario_get_physics_body(i32 entity_index) {
+    i32 idx = g_scene_world->physics.entity_to_body[entity_index];
+    if (idx < 0 || idx >= g_scene_world->physics.body_count) return NULL;
+    return &g_scene_world->physics.bodies[idx];
 }
 
 /* Helper to find field offset to avoid pointer drift if possible, 
@@ -83,7 +89,7 @@ static void* get_field_ptr(void* struct_base, const tag_field_definition* fields
 /* ------------------------------------------------------------------------
    Load a scenario tag and populate the world
    ------------------------------------------------------------------------ */
-static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
+static i32 scenario_load_tag(const char *scenario_name) {
     i32 scn_handle = tag_load(scenario_name, TAG_scenario);
     if (scn_handle < 0) return -1;
 
@@ -97,7 +103,7 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
     if (scn->globals.handle >= 0) {
         globals_definition *g = (globals_definition*)tag_get(scn->globals.handle, TAG_globals);
         if (g) {
-            physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES, g->gravity);
+            physics_init(&g_scene_world->physics, g_scene_world->entities, SCENARIO_MAX_ENTITIES, g->gravity);
             sc_pause_physics = g->pause_physics;
             sc_fixed_dt = 1.0f / g->physics_rate;
             sc_clear_r = color_to_u8(g->clear_color.position.x);
@@ -120,7 +126,7 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
     }
 
     /* - Process entities (now references) - */
-    w->entity_count = 0;
+    g_scene_world->entity_count = 0;
 
     tag_reference *entity_refs = (tag_reference*)scn->entities.address;
 
@@ -133,21 +139,22 @@ static i32 scenario_load_tag(scenario_world *w, const char *scenario_name) {
     }
 
     u32 i;
-    for (i = 0; i < scn->entities.count && w->entity_count < SCENARIO_MAX_ENTITIES; ++i) {
+    for (i = 0; i < scn->entities.count && g_scene_world->entity_count < SCENARIO_MAX_ENTITIES; ++i) {
         i32 ent_handle = entity_refs[i].handle;
         if (ent_handle < 0) continue;
 
         entity_definition *src = (entity_definition*)tag_get(ent_handle, TAG_entity);
         if (!src) continue;
 
-        i32 ent_idx = w->entity_count;
-        w->entities[ent_idx] = src; /* Point directly to tag data */
+        i32 ent_idx = g_scene_world->entity_count;
+        g_scene_world->entities[ent_idx] = src; /* Point directly to tag data */
 
         if (src->rigid_body.handle >= 0) {
-            physics_add_entity(&w->physics, ent_idx);
+            physics_add_entity(&g_scene_world->physics, ent_idx);
         }
-        w->entity_count++;
+        g_scene_world->entity_count++;
     }
+    g_scene_world->physics.entity_count = g_scene_world->entity_count;
     return scn_handle;
 }
 
@@ -199,17 +206,10 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 }
 
-/* Resize callback for window resize events */
-static void scenario_resize(scenario_world *w, i32 new_width, i32 new_height)
-{
-    w->width = new_width;
-    w->height = new_height;
-}
-
 /* ------------------------------------------------------------------------
     Main render call
     ------------------------------------------------------------------------ */
-static void scenario_render(scenario_world *w) {
+static void scenario_render(void) {
     real aspect = (real)RENDER_WIDTH / (real)RENDER_HEIGHT;
     i32 i;
 
@@ -218,8 +218,8 @@ static void scenario_render(scenario_world *w) {
     render_set_light(light_dir, light_col, ambient_col);
     render_clear(sc_clear_r, sc_clear_g, sc_clear_b);
 
-    for (i = 0; i < w->entity_count; ++i) {
-        entity_definition *ent = w->entities[i];
+    for (i = 0; i < g_scene_world->entity_count; ++i) {
+        entity_definition *ent = g_scene_world->entities[i];
         if (ent->model.handle < 0) continue;
 
         model_definition *mod = (model_definition*)tag_get(ent->model.handle, TAG_model);
@@ -307,6 +307,7 @@ static i32 lua_builtin_vec4(lua_State *L) {
 static i32 lua_clear(lua_State *L) {
     (void)L;
     g_scene_world->physics.body_count = 0;
+    g_scene_world->physics.entity_count = 0;
     g_scene_world->entity_count = 0;
     return 0;
 }
@@ -449,7 +450,7 @@ static i32 lua_clear_color(lua_State *L) {
 /* TODO: consider making this work using tag_load instead of having it's own function. */
 static i32 lua_load_scenario(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
-    i32 handle = scenario_load_tag(g_scene_world, name);
+    i32 handle = scenario_load_tag(name);
     if (handle < 0) return luaL_error(L, "failed to load scenario '%s'", name);
     lua_pushinteger(L, handle);
     return 1;
@@ -854,7 +855,7 @@ static i32 lua_tag_set_block_field(lua_State *L)
 /* ------------------------------------------------------------------------
    Lua registration
    ------------------------------------------------------------------------ */
-static void scenario_register_lua_functions(lua_state *state) {
+static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "clear",                lua_clear);
     lua_register_builtin(state, "camera_eye",           lua_camera_eye);
     lua_register_builtin(state, "camera_lookat",        lua_camera_lookat);
@@ -896,54 +897,182 @@ static void scenario_register_lua_functions(lua_state *state) {
     /* Tag groups. */
     lua_set_global_integer(state, "TAG_material",       TAG_material);
     lua_set_global_integer(state, "TAG_model",          TAG_model);
-lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
+    lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
 }
 
-static void scenario_bind_lua_state(lua_state *state, void *userdata) {
+static void runtime_bind_lua_state(lua_state *state, void *userdata) {
     (void)userdata;
-    scenario_register_lua_functions(state);
+    runtime_register_lua_functions(state);
 }
 
 /* ------------------------------------------------------------------------
    Init / Update / Shutdown
    ------------------------------------------------------------------------ */
-static void scenario_init(scenario_world *w, i32 width, i32 height) {
-    w->width = width;
-    w->height = height;
-    w->entity_count = 0;
 
-    g_thread_count = get_optimal_thread_count();
+static i32 runtime_bootstrap_thread_count(void)
+{
+    i32 physical = get_physical_core_count();
+    i32 logical  = get_logical_thread_count();
+    
+    if (physical < 1) physical = 1;
+
+    i32 count = physical;
+
+    if (count < 1) count = 1;
+    if (count > logical) count = logical;
+
+    fprintf(stderr, "[CPU] %d physical cores, %d logical threads\n",
+            (int)physical, (int)logical);
+    fprintf(stderr, "[CPU] Selected thread count: %d\n", (int)count);
+    return count;
+}
+
+/* Forward declaration needed because runtime_init calls runtime_start */
+static void runtime_start(void);
+
+static void runtime_init(void) {
+    const int window_size = SCENARIO_WINDOW_SCALE;
+    const int width  = 256 * window_size;
+    const int height = 144 * window_size;
+
+    g_scene_world = &g_world_storage;
+    g_scene_world->entity_count = 0;
+
+    if (window_init("Moonaut Engine", width, height) != 0) {
+        fprintf(stderr, "Failed to initialise window\n");
+        return;
+    }
+
+    if (render_init(width, height) != 0) {
+        fprintf(stderr, "Failed to initialise renderer\n");
+        window_shutdown();
+        return;
+    }
+
+    tag_register_default_all();
+    clock_init();
+
+    g_thread_count = runtime_bootstrap_thread_count();
     if (g_thread_count < 1) g_thread_count = 1;
-    g_threadpool = thpool_init(g_thread_count);
+    g_jobgraph = jobgraph_system_create(g_thread_count);
 
-    physics_init(&w->physics, w->entities, SCENARIO_MAX_ENTITIES,
+    physics_init(&g_scene_world->physics, g_scene_world->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
     scripts_init();
-    g_scene_world = w;
-    if (scripts_add_lua("script.lua", scenario_bind_lua_state, w) < 0)
+    if (scripts_add_lua("script.lua", runtime_bind_lua_state, g_scene_world) < 0)
         fprintf(stderr, "Failed to load Lua script: script.lua\n");
+
+    runtime_start();
 }
 
-static void scenario_update(scenario_world *w, real dt) {
+static void runtime_update(real dt) {
     scripts_update(dt);
     if (!sc_pause_physics) {
-        physics_step(&w->physics, dt);
+        physics_step(&g_scene_world->physics, dt);
     }
 }
 
-static void scenario_shutdown(scenario_world *w) {
-    (void)w;
+static void runtime_reconfigure_thread_count(i32 new_thread_count)
+{
+    if (new_thread_count < 1) new_thread_count = 1;
+    if (g_thread_count == new_thread_count && g_jobgraph != ((void*)0)) {
+        return;
+    }
+
+    if (g_jobgraph) {
+        jobgraph_system_destroy(g_jobgraph);
+        g_jobgraph = ((void*)0);
+    }
+
+    g_thread_count = new_thread_count;
+    g_jobgraph = jobgraph_system_create(g_thread_count);
+}
+
+static void runtime_shutdown(void) {
     scripts_shutdown();
-    if (g_threadpool) {
-        thpool_destroy(g_threadpool);
-        g_threadpool = ((void*)0);
+    if (g_jobgraph) {
+        jobgraph_system_destroy(g_jobgraph);
+        g_jobgraph = ((void*)0);
+    }
+    render_shutdown();
+    window_shutdown();
+}
+
+static real runtime_get_fixed_dt(void) { return sc_fixed_dt; }
+
+/* ------------------------------------------------------------------------
+   FPS counter (debug)
+   ------------------------------------------------------------------------ */
+static void print_fps(double now)
+{
+    static double last = 0.0;
+    static int frames = 0;
+
+    if (last == 0.0) last = now;
+
+    frames++;
+    {
+        double elapsed = now - last;
+        if (elapsed >= 1.0) {
+            printf("FPS: %d\n", (int)(frames / elapsed));
+            frames = 0;
+            last = now;
+        }
     }
 }
 
-static real scenario_get_fixed_dt(void) { return sc_fixed_dt; }
+/* ------------------------------------------------------------------------
+   runtime_start()  –  main game loop (fixed‑timestep accumulator)
+   ------------------------------------------------------------------------ */
+static void runtime_start(void)
+{
+    scenario_world *w = g_scene_world;
+    const double max_frame_time = 0.25;
+    double last_time = clock_monotonic();
+    double accumulator = 0.0;
+
+    while (is_running()) {
+        real fixed_dt;
+        double now;
+        double frame_time;
+        i32 step_count;
+
+        input_process_events(window_get());
+
+        now = clock_monotonic();
+        frame_time = now - last_time;
+        last_time = now;
+        if (frame_time < 0.0) frame_time = 0.0;
+        if (frame_time > max_frame_time) frame_time = max_frame_time;
+
+        fixed_dt = runtime_get_fixed_dt();
+        accumulator += frame_time;
+        step_count = 0;
+        while (accumulator >= fixed_dt) {
+            runtime_update(fixed_dt);
+            accumulator -= fixed_dt;
+            step_count++;
+            if (step_count >= 15) {
+                accumulator = 0.0;
+                break;
+            }
+        }
+
+        render_set_time((real)now);
+        scenario_render();
+
+        {
+            const u32 *fb = render_get_fb();
+            present_frame((void*)fb);
+        }
+
+        print_fps(now);
+    }
+}
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* RUNTIME_H */
+
