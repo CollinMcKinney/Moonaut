@@ -9,43 +9,16 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <time.h>
-
-#ifdef __linux__
-#include <sys/time.h>
-#endif
 
 /* ---------- engine + Lua ---------- */
 #define LUA_IMPLEMENTATION
+#include "src/clock.h"
 #include "src/runtime.h"
 #include "src/defaults.h"
 
 /* ---------- window management (C89FW) ---------- */
 #include "src/window.h"
 #include "src/input.h"
-
-/* ======================================================================
-   FPS counter
-   ====================================================================== */
-static double app_time_seconds(void)
-{
-#ifdef _WIN32
-    static LARGE_INTEGER freq;
-    LARGE_INTEGER now;
-    if (freq.QuadPart == 0) {
-        QueryPerformanceFrequency(&freq);
-    }
-    QueryPerformanceCounter(&now);
-    return (double)now.QuadPart / (double)freq.QuadPart;
-#elif defined(__linux__)
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
-#else
-    return (double)clock() / (double)CLOCKS_PER_SEC;
-#endif
-}
 
 static void print_fps(double now)
 {
@@ -92,8 +65,9 @@ int main(void)
 
     tag_register_default_all();
 
+    clock_init();
     scenario_init(&world, width, height);
-    last_time = app_time_seconds();
+    last_time = clock_monotonic();
     accumulator = 0.0;
 
     while (is_running()) {
@@ -104,7 +78,7 @@ int main(void)
 
         input_process_events(window_get(), &world);
 
-        now = app_time_seconds();
+        now = clock_monotonic();
         frame_time = now - last_time;
         last_time = now;
         if (frame_time < 0.0) frame_time = 0.0;
