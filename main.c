@@ -9,7 +9,7 @@
 
 int main(void)
 {
-    scenario_init();
-    scenario_shutdown();
+    runtime_init();
+    runtime_shutdown();
     return 0;
 }

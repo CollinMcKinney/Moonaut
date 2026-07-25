@@ -855,7 +855,7 @@ static i32 lua_tag_set_block_field(lua_State *L)
 /* ------------------------------------------------------------------------
    Lua registration
    ------------------------------------------------------------------------ */
-static void scenario_register_lua_functions(lua_state *state) {
+static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "clear",                lua_clear);
     lua_register_builtin(state, "camera_eye",           lua_camera_eye);
     lua_register_builtin(state, "camera_lookat",        lua_camera_lookat);
@@ -900,16 +900,16 @@ static void scenario_register_lua_functions(lua_state *state) {
     lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
 }
 
-static void scenario_bind_lua_state(lua_state *state, void *userdata) {
+static void runtime_bind_lua_state(lua_state *state, void *userdata) {
     (void)userdata;
-    scenario_register_lua_functions(state);
+    runtime_register_lua_functions(state);
 }
 
 /* ------------------------------------------------------------------------
    Init / Update / Shutdown
    ------------------------------------------------------------------------ */
 
-static i32 scenario_bootstrap_thread_count(void)
+static i32 runtime_bootstrap_thread_count(void)
 {
     i32 physical = get_physical_core_count();
     i32 logical  = get_logical_thread_count();
@@ -927,10 +927,10 @@ static i32 scenario_bootstrap_thread_count(void)
     return count;
 }
 
-/* Forward declaration needed because scenario_init calls scenario_run */
-static void scenario_run(void);
+/* Forward declaration needed because runtime_init calls runtime_start */
+static void runtime_start(void);
 
-static void scenario_init(void) {
+static void runtime_init(void) {
     const int window_size = SCENARIO_WINDOW_SCALE;
     const int width  = 256 * window_size;
     const int height = 144 * window_size;
@@ -952,27 +952,27 @@ static void scenario_init(void) {
     tag_register_default_all();
     clock_init();
 
-    g_thread_count = scenario_bootstrap_thread_count();
+    g_thread_count = runtime_bootstrap_thread_count();
     if (g_thread_count < 1) g_thread_count = 1;
     g_jobgraph = jobgraph_system_create(g_thread_count);
 
     physics_init(&g_scene_world->physics, g_scene_world->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
     scripts_init();
-    if (scripts_add_lua("script.lua", scenario_bind_lua_state, g_scene_world) < 0)
+    if (scripts_add_lua("script.lua", runtime_bind_lua_state, g_scene_world) < 0)
         fprintf(stderr, "Failed to load Lua script: script.lua\n");
 
-    scenario_run();
+    runtime_start();
 }
 
-static void scenario_update(real dt) {
+static void runtime_update(real dt) {
     scripts_update(dt);
     if (!sc_pause_physics) {
         physics_step(&g_scene_world->physics, dt);
     }
 }
 
-static void scenario_reconfigure_thread_count(i32 new_thread_count)
+static void runtime_reconfigure_thread_count(i32 new_thread_count)
 {
     if (new_thread_count < 1) new_thread_count = 1;
     if (g_thread_count == new_thread_count && g_jobgraph != ((void*)0)) {
@@ -988,7 +988,7 @@ static void scenario_reconfigure_thread_count(i32 new_thread_count)
     g_jobgraph = jobgraph_system_create(g_thread_count);
 }
 
-static void scenario_shutdown(void) {
+static void runtime_shutdown(void) {
     scripts_shutdown();
     if (g_jobgraph) {
         jobgraph_system_destroy(g_jobgraph);
@@ -998,7 +998,7 @@ static void scenario_shutdown(void) {
     window_shutdown();
 }
 
-static real scenario_get_fixed_dt(void) { return sc_fixed_dt; }
+static real runtime_get_fixed_dt(void) { return sc_fixed_dt; }
 
 /* ------------------------------------------------------------------------
    FPS counter (debug)
@@ -1022,9 +1022,9 @@ static void print_fps(double now)
 }
 
 /* ------------------------------------------------------------------------
-   scenario_run()  –  main game loop (fixed‑timestep accumulator)
+   runtime_start()  –  main game loop (fixed‑timestep accumulator)
    ------------------------------------------------------------------------ */
-static void scenario_run(void)
+static void runtime_start(void)
 {
     scenario_world *w = g_scene_world;
     const double max_frame_time = 0.25;
@@ -1045,11 +1045,11 @@ static void scenario_run(void)
         if (frame_time < 0.0) frame_time = 0.0;
         if (frame_time > max_frame_time) frame_time = max_frame_time;
 
-        fixed_dt = scenario_get_fixed_dt();
+        fixed_dt = runtime_get_fixed_dt();
         accumulator += frame_time;
         step_count = 0;
         while (accumulator >= fixed_dt) {
-            scenario_update(fixed_dt);
+            runtime_update(fixed_dt);
             accumulator -= fixed_dt;
             step_count++;
             if (step_count >= 15) {
