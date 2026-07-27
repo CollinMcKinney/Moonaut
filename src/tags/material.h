@@ -266,7 +266,7 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_WATER = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
                                      EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                    =*/ {0.10f, 0.35f, 0.65f},
@@ -278,9 +278,9 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     /*.diffuse_wrap             =*/ 1,
     /*.oren_nayar_sigma         =*/ 0.30f,
     /*.minnaert_k               =*/ 0.00f,
-    /*.bump_amplitude           =*/ 0.40f,
+    /*.bump_amplitude           =*/ 0.4f,
     /*.bump_frequency           =*/ 32.0f,
-    /*.bump_speed               =*/ 2.00f,
+    /*.bump_speed               =*/ 4.00f,
     /*.gooch_cool               =*/ {0,0,0},
     /*.gooch_warm               =*/ {0,0,0},
     /*.back_glow_color          =*/ {0.0f, 0.20f, 0.0f},
@@ -662,7 +662,7 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
-    /*.mode                     =*/ SHADE_FLAT,
+    /*.mode                     =*/ SHADE_GOURAUD,
     /*.effects                  =*/ EFFECT_AMBIENT_LIGHT | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | 
                                     EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | 
                                     EFFECT_STROBE | EFFECT_GLITCH | EFFECT_FRINGE,
@@ -678,10 +678,10 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.bump_amplitude           =*/ 0.40f,
     /*.bump_frequency           =*/ 32.0f,
     /*.bump_speed               =*/ 2.00f,
-    /*.gooch_cool               =*/ {0.13f, 0.00f, 0.00f},
-    /*.gooch_warm               =*/ {1.00f, 1.00f, 0.00f},
-    /*.back_glow_color          =*/ {0.50f, 0.50f, 0.00f},
-    /*.rim_color                =*/ {0.80f, 0.30f, 0.00f},
+    /*.gooch_cool               =*/ {0.00f, 0.00f, 0.00f},
+    /*.gooch_warm               =*/ {1.00f, 0.00f, 0.00f},
+    /*.back_glow_color          =*/ {0.50f, 0.25f, 0.00f},
+    /*.rim_color                =*/ {0.80f, 0.15f, 0.00f},
     /*.rim_exponent             =*/ 1.50f,
     /*.fresnel_color            =*/ {0.00f, 0.00f, 0.00f},
     /*.fresnel_exponent         =*/ 0.00f,
@@ -689,15 +689,15 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     /*.specular_color           =*/ {0.00f, 0.00f, 0.00f},
     /*.specular_threshold       =*/ 0.00f,
     /*.emissive_color           =*/ {0.50f, 0.33f, 0.00f},
-    /*.emissive_pulse_frequency =*/ 1.00f,
+    /*.emissive_pulse_frequency =*/ 1.0471975512f,
     /*.emissive_pulse_phase     =*/ 1.57f,
     /*.emissive_pulse_amplitude =*/ 0.25f,
     /*.strobe_color             =*/ {0.10f, 0.04f, 0.00f},
-    /*.strobe_frequency         =*/ 0.50f,
+    /*.strobe_frequency         =*/ 0.47140452079f,
     /*.strobe_phase             =*/ 2.10f,
     /*.skip_fog                 =*/ false,
     /*.iridescence_strength     =*/ 0.00f,
-    /*.glitch_intensity         =*/ 0.50f,
+    /*.glitch_intensity         =*/ 0.00f,
     /*.fringe_intensity         =*/ 0.50f,
     /*.posterize_levels         =*/ 0
 };
