@@ -22,20 +22,20 @@ At its core, the engine runs a fixed-timestep physics simulation integrated with
 ## Building
 
 ### CMake, Ninja, & Clang
-Project has been moved to CMake. The Clang/Ninja presets are what I've been using for development. I've included some placeholder presets for GCC, VisualStudio, and XCode, but they are largely untested.
+The Clang Cmake presets are what I've been using for development. I've included some placeholder CMake presets for GCC, VisualStudio, and XCode, but they are largely untested.
 
-All recent testing/development has been done under Linux, Windows is likely broken. MacOS has never been tested.
+All testing/development has been done under Linux & Windows. MacOS has never been tested.
 
 Make sure to install CMake & Ninja. LLVM/Clang is recommended as that's the main compiler used for development on both Linux & Windows. But you can use MSVC or GCC instead.
 
-If opting for Clang with VS Code, there's an extension called clangd that will give good IDE/LSP support.
+If opting for Clang with VS Code, there's a clangd extension that will give nice IDE/LSP support.
 
-On Windows: If using the Clang preset make sure it's properly set up in your System Path.
+On Windows: If using the Clang preset make sure the clang compiler is properly set up in your System Path.
 
 List the presets:
 
 
-If you opted NOT to use LLVM/Clang, you can list other CMake presets and pick what matches the toolchain you chose.
+If you opted NOT to use LLVM/Clang, you can list other CMake presets and pick what matches the toolchain you chose (or add your own if its not covered).
 ```bash
 cmake --list-presets
 ```
