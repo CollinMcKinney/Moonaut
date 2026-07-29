@@ -14,6 +14,9 @@
 #include "tags/material.h"
 #include <string.h>
 
+/* --- new jobgraph include --- */
+#include "libs/jobgraph/jobgraph.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -524,10 +527,12 @@ static i32 render_init(i32 w, i32 h)
     return 0;
 }
 
+/* -------- render_clear (converted to chain/link) -------- */
 static void render_clear(u8 r, u8 g, u8 b)
 {
     u32 col = pack_color(r, g, b);
     i32 i, j;
+
     if (!fb_render || !zbuf_render) return;
 
     if (g_thread_count <= 1) {
@@ -555,13 +560,22 @@ static void render_clear(u8 r, u8 g, u8 b)
             clear_job_count = total_tiles;
         }
 
-        for (j = 0; j < total_tiles; j++) {
-            clear_jobs[j].tile_idx = j;
-            clear_jobs[j].color = col;
-            job_t *job = job_create_standalone(g_jobgraph, clear_tile_range, &clear_jobs[j]);
-            job_submit(job);
+        /* Build a chain with one link containing all clear jobs */
+        {
+            jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
+            joblink_t  *link  = jobchain_add_link(chain);
+
+            for (j = 0; j < total_tiles; j++) {
+                clear_jobs[j].tile_idx = j;
+                clear_jobs[j].color = col;
+                job_t *job = job_create(g_jobgraph, clear_tile_range, &clear_jobs[j]);
+                joblink_add_job(link, job);
+            }
+
+            jobgraph_submit(g_jobgraph);
+            jobgraph_wait(g_jobgraph);
+            jobgraph_reset(g_jobgraph);
         }
-        jobgraph_wait_all(g_jobgraph);
     }
     else {
         u32 *fb32 = (u32*)fb_render;
@@ -2724,6 +2738,7 @@ static void tile_bin_transparent_triangle(
     }
 }
 
+/* -------- tile_render_all (converted) -------- */
 static void tile_render_all(void)
 {
     i32 at = 0;
@@ -2757,6 +2772,9 @@ static void tile_render_all(void)
 
     {
         i32 jc = 0;
+        jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
+        joblink_t  *link  = jobchain_add_link(chain);
+
         for (i = 0; i < total_tiles; i++) {
             if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) {
                 i32 ty = i / num_tiles_x;
@@ -2769,14 +2787,18 @@ static void tile_render_all(void)
                              (RENDER_WIDTH - jb->tile_x) : TILE_SIZE;
                 jb->tile_h = (ty == num_tiles_y - 1) ?
                              (RENDER_HEIGHT - jb->tile_y) : TILE_SIZE;
-                job_t *job = job_create_standalone(g_jobgraph, render_tile, jb);
-                job_submit(job);
+                job_t *job = job_create(g_jobgraph, render_tile, jb);
+                joblink_add_job(link, job);
             }
         }
-        jobgraph_wait_all(g_jobgraph);
+
+        jobgraph_submit(g_jobgraph);
+        jobgraph_wait(g_jobgraph);
+        jobgraph_reset(g_jobgraph);
     }
 }
 
+/* -------- tile_clear_bins (converted) -------- */
 static void tile_clear_bins(void)
 {
     if (g_thread_count > 1 &&
@@ -2787,14 +2809,22 @@ static void tile_clear_bins(void)
         if (mt > 32) mt = 32;
         bpj = (total_tiles + mt - 1) / mt;
 
-        for (j = 0; j < mt; j++) {
-            js[j].start_idx = j * bpj;
-            js[j].end_idx = (j + 1) * bpj;
-            if (js[j].end_idx > total_tiles) js[j].end_idx = total_tiles;
-            job_t *job = job_create_standalone(g_jobgraph, tile_clear_bins_range, &js[j]);
-            job_submit(job);
+        {
+            jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
+            joblink_t  *link  = jobchain_add_link(chain);
+
+            for (j = 0; j < mt; j++) {
+                js[j].start_idx = j * bpj;
+                js[j].end_idx = (j + 1) * bpj;
+                if (js[j].end_idx > total_tiles) js[j].end_idx = total_tiles;
+                job_t *job = job_create(g_jobgraph, tile_clear_bins_range, &js[j]);
+                joblink_add_job(link, job);
+            }
+
+            jobgraph_submit(g_jobgraph);
+            jobgraph_wait(g_jobgraph);
+            jobgraph_reset(g_jobgraph);
         }
-        jobgraph_wait_all(g_jobgraph);
     }
     else {
         i32 i;
@@ -2857,10 +2887,10 @@ static job_t* clear_tile_range(void *arg)
     return NULL;
 }
 
+/* -------- render_finish (multi-threaded upscale converted) -------- */
 static void render_finish(void)
 {
     if (g_thread_count <= 1) {
-        /* Single-threaded: render each tile that has any triangles */
         i32 i;
         for (i = 0; i < total_tiles; i++) {
             if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) {
@@ -2899,6 +2929,9 @@ static void render_finish(void)
         {
             i32 ji = 0;
             i32 ty, tx;
+            jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
+            joblink_t  *link  = jobchain_add_link(chain);
+
             for (ty = 0; ty < fh; ty += TILE_SIZE) {
                 i32 ety = ty + TILE_SIZE;
                 if (ety > fh) ety = fh;
@@ -2917,13 +2950,16 @@ static void render_finish(void)
                     upscale_jobs[ji].dst_height = fh;
                     upscale_jobs[ji].src_width = RENDER_WIDTH;
                     upscale_jobs[ji].src_height = RENDER_HEIGHT;
-                    job_t *job = job_create_standalone(g_jobgraph, upscale_tile,
-                        &upscale_jobs[ji]);
-                    job_submit(job);
+
+                    job_t *job = job_create(g_jobgraph, upscale_tile, &upscale_jobs[ji]);
+                    joblink_add_job(link, job);
                     ji++;
                 }
             }
-            jobgraph_wait_all(g_jobgraph);
+
+            jobgraph_submit(g_jobgraph);
+            jobgraph_wait(g_jobgraph);
+            jobgraph_reset(g_jobgraph);
         }
     }
     else {

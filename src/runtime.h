@@ -954,7 +954,7 @@ static void runtime_init(void) {
 
     g_thread_count = runtime_bootstrap_thread_count();
     if (g_thread_count < 1) g_thread_count = 1;
-    g_jobgraph = jobgraph_system_create(g_thread_count);
+    g_jobgraph = jobgraph_create(g_thread_count);
 
     physics_init(&g_scene_world->physics, g_scene_world->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
@@ -980,18 +980,18 @@ static void runtime_reconfigure_thread_count(i32 new_thread_count)
     }
 
     if (g_jobgraph) {
-        jobgraph_system_destroy(g_jobgraph);
+        jobgraph_destroy(g_jobgraph);
         g_jobgraph = ((void*)0);
     }
 
     g_thread_count = new_thread_count;
-    g_jobgraph = jobgraph_system_create(g_thread_count);
+    g_jobgraph = jobgraph_create(g_thread_count);
 }
 
 static void runtime_shutdown(void) {
     scripts_shutdown();
     if (g_jobgraph) {
-        jobgraph_system_destroy(g_jobgraph);
+        jobgraph_destroy(g_jobgraph);
         g_jobgraph = ((void*)0);
     }
     render_shutdown();

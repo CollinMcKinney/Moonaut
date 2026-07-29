@@ -14,7 +14,6 @@
     #include <pthread.h>
     #include <unistd.h>
     #include <errno.h>
-    #include <sched.h>
 #endif
 
 #ifdef JG_WINDOWS
@@ -45,6 +44,20 @@
     #define JG_COND_SIGNAL(c)   pthread_cond_signal(c)
     #define JG_COND_BROADCAST(c) pthread_cond_broadcast(c)
     #define JG_COND_DESTROY(c)  pthread_cond_destroy(c)
+#endif
+
+/* ==================== ATOMIC OPERATIONS ==================== */
+
+#if defined(__GNUC__) || defined(__clang__)
+  #define ATOMIC_ADD(ptr,val)   __sync_fetch_and_add((ptr), (val))
+  #define ATOMIC_SUB(ptr,val)   __sync_fetch_and_sub((ptr), (val))
+  #define ATOMIC_LOAD(ptr)      __sync_fetch_and_add((ptr), 0)
+#elif defined(_MSC_VER)
+  #define ATOMIC_ADD(ptr,val)   InterlockedExchangeAdd((LONG volatile*)(ptr), (val))
+  #define ATOMIC_SUB(ptr,val)   InterlockedExchangeAdd((LONG volatile*)(ptr), -(LONG)(val))
+  #define ATOMIC_LOAD(ptr)      InterlockedExchangeAdd((LONG volatile*)(ptr), 0)
+#else
+  #error "No atomics support – implement platform-specific atomics"
 #endif
 
 /* ==================== CONSTANTS ==================== */
@@ -84,9 +97,10 @@ struct job_t {
     unsigned int      dependent_count;
     unsigned int      dependent_capacity;
 
-    int               is_standalone;
+    int               is_standalone;   /* will be removed in later cleanup */
     int               is_barrier;
     struct joblink_t* my_link;
+    struct job_t*     next_ready;      /* intrusive ready queue link */
 };
 
 struct joblink_t {
@@ -99,29 +113,24 @@ struct joblink_t {
 struct jobchain_t {
     joblink_t**       links;
     unsigned int      link_count;
-    jobgraph_system_t* system;
+    jobgraph_t*       system;
     int               submitted;
     int               completed;
 };
 
-/* ==================== READY QUEUE ==================== */
-
-typedef struct ready_node_t {
-    struct job_t*          job;
-    struct ready_node_t*   next;
-} ready_node_t;
+/* ==================== READY QUEUE (intrusive) ==================== */
 
 typedef struct {
-    ready_node_t* head;
-    ready_node_t* tail;
-    jg_mutex_t    mutex;
-    jg_cond_t     not_empty;
-    unsigned int  count;
+    struct job_t*   head;
+    struct job_t*   tail;
+    jg_mutex_t      mutex;
+    jg_cond_t       not_empty;
+    unsigned int    count;
 } ready_queue_t;
 
 typedef struct {
     int                id;
-    jobgraph_system_t* system;
+    jobgraph_t*        system;
 #ifdef JG_WINDOWS
     HANDLE             thread;
 #else
@@ -131,7 +140,7 @@ typedef struct {
     unsigned long      jobs_executed;
 } worker_t;
 
-struct jobgraph_system_t {
+struct jobgraph_t {
     worker_t*          workers;
     unsigned int       worker_count;
     volatile int       running;
@@ -140,19 +149,25 @@ struct jobgraph_system_t {
     jg_mutex_t         stats_mutex;
     jg_cond_t          all_complete;
 
-    volatile unsigned int    total_jobs_created;
-    volatile unsigned long   total_jobs_completed;
-    volatile unsigned int    pending_jobs;
-    volatile unsigned int    running_jobs;
+    /* Atomic counters */
+    unsigned int       jobs_remaining;        /* user jobs in flight */
+    unsigned long      total_jobs_completed;
+    unsigned int       total_jobs_created;
 
+    /* Memory pool */
     struct job_t*      job_pool;
     unsigned int       job_pool_size;
-    unsigned int       job_pool_used;
-    jg_mutex_t         pool_mutex;
+    unsigned int       job_pool_used;          /* atomic index */
+    jg_mutex_t         pool_mutex;             /* only for fallback malloc */
 
+    /* ID generators */
     unsigned int       next_job_id;
-    unsigned int       next_chain_id;
     jg_mutex_t         id_mutex;
+
+    /* Chain list (added by user, owned by graph) */
+    jobchain_t**       chains;
+    unsigned int       chain_count;
+    unsigned int       chain_capacity;
 };
 
 /* ==================== QUEUE IMPLEMENTATION ==================== */
@@ -166,72 +181,65 @@ static void ready_queue_init(ready_queue_t* q) {
 }
 
 static void ready_queue_destroy(ready_queue_t* q) {
-    ready_node_t *node = q->head, *next;
-    while (node) {
-        next = node->next;
-        free(node);
-        node = next;
-    }
     JG_MUTEX_DESTROY(&q->mutex);
     JG_COND_DESTROY(&q->not_empty);
 }
 
 static void ready_queue_push(ready_queue_t* q, struct job_t* job) {
-    ready_node_t* node = (ready_node_t*)malloc(sizeof(ready_node_t));
-    if (!node) return;
-    node->job = job;
-    node->next = NULL;
-
+    job->next_ready = NULL;
     JG_MUTEX_LOCK(&q->mutex);
     if (q->tail) {
-        q->tail->next = node;
-        q->tail = node;
+        q->tail->next_ready = job;
     } else {
-        q->head = q->tail = node;
+        q->head = job;
     }
+    q->tail = job;
     q->count++;
     JG_COND_SIGNAL(&q->not_empty);
     JG_MUTEX_UNLOCK(&q->mutex);
 }
 
-static struct job_t* ready_queue_pop(ready_queue_t* q, jobgraph_system_t* js) {
+static struct job_t* ready_queue_pop(ready_queue_t* q, jobgraph_t* js) {
+    struct job_t* job = NULL;
     JG_MUTEX_LOCK(&q->mutex);
     while (q->head == NULL) {
-        if (js && !js->running) {
+        if (js && !ATOMIC_LOAD(&js->running)) {
             JG_MUTEX_UNLOCK(&q->mutex);
             return NULL;
         }
         JG_COND_WAIT(&q->not_empty, &q->mutex);
-        if (js && !js->running) {
+        if (js && !ATOMIC_LOAD(&js->running)) {
             JG_MUTEX_UNLOCK(&q->mutex);
             return NULL;
         }
     }
-    ready_node_t* node = q->head;
-    q->head = node->next;
+    job = q->head;
+    q->head = job->next_ready;
     if (!q->head) q->tail = NULL;
     q->count--;
-    struct job_t* job = node->job;
-    free(node);
     JG_MUTEX_UNLOCK(&q->mutex);
     return job;
 }
 
 /* ==================== JOB MEMORY POOL ==================== */
 
-static struct job_t* pool_alloc_job(jobgraph_system_t* js) {
+static struct job_t* pool_alloc_job(jobgraph_t* js) {
+    unsigned int idx;
     struct job_t* job = NULL;
-    JG_MUTEX_LOCK(&js->pool_mutex);
-    if (js->job_pool_used < js->job_pool_size) {
-        job = &js->job_pool[js->job_pool_used++];
+    idx = ATOMIC_ADD(&js->job_pool_used, 1);
+    if (idx < js->job_pool_size) {
+        job = &js->job_pool[idx];
         memset(job, 0, sizeof(struct job_t));
+    } else {
+        /* Fallback: malloc */
+        JG_MUTEX_LOCK(&js->pool_mutex);
+        job = (struct job_t*)calloc(1, sizeof(struct job_t));
+        JG_MUTEX_UNLOCK(&js->pool_mutex);
     }
-    JG_MUTEX_UNLOCK(&js->pool_mutex);
-    if (!job) job = (struct job_t*)calloc(1, sizeof(struct job_t));
     return job;
 }
 
-static void pool_free_job(jobgraph_system_t* js, struct job_t* job) {
+static void pool_free_job(jobgraph_t* js, struct job_t* job) {
     if (job->dependents) {
         free(job->dependents);
         job->dependents = NULL;
@@ -249,6 +257,7 @@ static void pool_free_job(jobgraph_system_t* js, struct job_t* job) {
     job->is_standalone = 0;
     job->is_barrier = 0;
     job->my_link = NULL;
+    job->next_ready = NULL;
 }
 
 /* ==================== DEPENDENCY HELPERS ==================== */
@@ -257,39 +266,51 @@ static void add_dependent(struct job_t* job, struct job_t* dependent) {
     if (job->dependent_count + 1 >= job->dependent_capacity) {
         unsigned int new_cap = job->dependent_capacity * 2;
         if (new_cap < JG_INITIAL_DEP_CAPACITY) new_cap = JG_INITIAL_DEP_CAPACITY;
-        struct job_t** tmp = (struct job_t**)realloc(job->dependents, new_cap * sizeof(struct job_t*));
-        if (!tmp) return;
-        job->dependents = tmp;
-        job->dependent_capacity = new_cap;
+        {
+            struct job_t** tmp = (struct job_t**)realloc(job->dependents,
+                                          new_cap * sizeof(struct job_t*));
+            if (!tmp) return;
+            job->dependents = tmp;
+            job->dependent_capacity = new_cap;
+        }
     }
     job->dependents[job->dependent_count++] = dependent;
     dependent->deps.needed++;
 }
 
+static void signal_job_complete(struct job_t* job);
+
 static void signal_job_complete(struct job_t* job) {
-    jobgraph_system_t* js = NULL;
+    jobgraph_t* js = NULL;
+    unsigned int i;
+
     if (job->parent_chain) {
         if (job->is_standalone)
-            js = (jobgraph_system_t*)job->parent_chain;
+            js = (jobgraph_t*)job->parent_chain;
         else
             js = job->parent_chain->system;
     }
     if (!js) return;
 
-    for (unsigned int i = 0; i < job->dependent_count; i++) {
+    for (i = 0; i < job->dependent_count; i++) {
         struct job_t* dep = job->dependents[i];
         dep->deps.satisfied++;
         if (dep->deps.satisfied >= dep->deps.needed &&
             dep->state == JOB_STATE_WAITING &&
             !dep->deps.signalled) {
             dep->deps.signalled = 1;
-            dep->state = JOB_STATE_READY;
-            ready_queue_push(&js->ready_queue, dep);
+            if (dep->is_barrier) {
+                dep->state = JOB_STATE_COMPLETE;
+                signal_job_complete(dep);   /* inline barrier */
+            } else {
+                dep->state = JOB_STATE_READY;
+                ready_queue_push(&js->ready_queue, dep);
+            }
         }
     }
 }
 
-static void job_try_make_ready(jobgraph_system_t* js, struct job_t* job) {
+static void job_try_make_ready(jobgraph_t* js, struct job_t* job) {
     if (job->deps.signalled) return;
     if (job->deps.satisfied >= job->deps.needed) {
         job->deps.signalled = 1;
@@ -306,66 +327,65 @@ static unsigned int __stdcall worker_thread_func(void* arg) {
 static void* worker_thread_func(void* arg) {
 #endif
     worker_t* worker = (worker_t*)arg;
-    jobgraph_system_t* js = worker->system;
+    jobgraph_t* js = worker->system;
     worker->jobs_executed = 0;
 
-    while (js->running) {
+    while (ATOMIC_LOAD(&js->running)) {
         struct job_t* job = ready_queue_pop(&js->ready_queue, js);
-        if (!job || !js->running) break;
+        if (!job || !ATOMIC_LOAD(&js->running)) break;
 
-        JG_MUTEX_LOCK(&js->stats_mutex);
-        job->state = JOB_STATE_RUNNING;
-        js->running_jobs++;
-        if (js->pending_jobs > 0) js->pending_jobs--;
-        JG_MUTEX_UNLOCK(&js->stats_mutex);
-
-        struct job_t* next_job = NULL;
-        if (!job->is_barrier) {
-            next_job = job->func(job->context);
-        }
-
-        JG_MUTEX_LOCK(&js->stats_mutex);
-        job->state = JOB_STATE_COMPLETE;
-        js->running_jobs--;
-        js->total_jobs_completed++;
-        worker->jobs_executed++;
-
-        signal_job_complete(job);
-
-        if (job->is_barrier && job->parent_chain) {
-            jobchain_t* chain = job->parent_chain;
-            if (job->my_link == chain->links[chain->link_count - 1]) {
-                chain->completed = 1;
+        {
+            struct job_t* next_job = NULL;
+            if (!job->is_barrier) {
+                next_job = job->func(job->context);
             }
-        }
 
-        if (next_job) {
-            next_job->parent_chain = (jobchain_t*)js;
-            next_job->is_standalone = 1;
-            job_try_make_ready(js, next_job);
-        }
+            {
+                JG_MUTEX_LOCK(&js->stats_mutex);
+                job->state = JOB_STATE_COMPLETE;
+                if (job->is_barrier && job->parent_chain) {
+                    jobchain_t* chain = job->parent_chain;
+                    if (job->my_link == chain->links[chain->link_count - 1]) {
+                        chain->completed = 1;
+                    }
+                }
+                JG_MUTEX_UNLOCK(&js->stats_mutex);
+            }
 
-        if (js->pending_jobs == 0 && js->running_jobs == 0) {
-            JG_COND_SIGNAL(&js->all_complete);
-        }
-        JG_MUTEX_UNLOCK(&js->stats_mutex);
+            signal_job_complete(job);
 
-#ifdef JG_WINDOWS
-        SwitchToThread();
-#else
-        sched_yield();
-#endif
+            if (!job->is_barrier) {
+                if (ATOMIC_SUB(&js->jobs_remaining, 1) == 1) {
+                    JG_MUTEX_LOCK(&js->stats_mutex);
+                    JG_COND_BROADCAST(&js->all_complete);
+                    JG_MUTEX_UNLOCK(&js->stats_mutex);
+                }
+            }
+
+            if (next_job) {
+                next_job->parent_chain = (jobchain_t*)js;
+                next_job->is_standalone = 1;
+                ATOMIC_ADD(&js->jobs_remaining, 1);
+                job_try_make_ready(js, next_job);
+            }
+
+            ATOMIC_ADD(&js->total_jobs_completed, 1);
+            worker->jobs_executed++;
+        }
     }
     return 0;
 }
 
 /* ==================== SYSTEM API ==================== */
 
-jobgraph_system_t* jobgraph_system_create(int worker_threads) {
+jobgraph_t* jobgraph_create(int worker_threads) {
+    unsigned int i;
+    jobgraph_t* js;
+
     if (worker_threads <= 0) worker_threads = 2;
     if (worker_threads > JG_MAX_WORKERS) worker_threads = JG_MAX_WORKERS;
 
-    jobgraph_system_t* js = (jobgraph_system_t*)calloc(1, sizeof(jobgraph_system_t));
+    js = (jobgraph_t*)calloc(1, sizeof(jobgraph_t));
     if (!js) return NULL;
 
     js->worker_count = worker_threads;
@@ -391,21 +411,23 @@ jobgraph_system_t* jobgraph_system_create(int worker_threads) {
         return NULL;
     }
 
-    for (unsigned int i = 0; i < worker_threads; i++) {
+    for (i = 0; i < worker_threads; i++) {
         js->workers[i].id = i;
         js->workers[i].system = js;
         js->workers[i].running = 1;
 #ifdef JG_WINDOWS
-        js->workers[i].thread = (HANDLE)_beginthreadex(NULL, 0, worker_thread_func, &js->workers[i], 0, NULL);
+        js->workers[i].thread = (HANDLE)_beginthreadex(NULL, 0,
+                             worker_thread_func, &js->workers[i], 0, NULL);
         if (!js->workers[i].thread) {
             js->worker_count = i;
-            jobgraph_system_destroy(js);
+            jobgraph_destroy(js);
             return NULL;
         }
 #else
-        if (pthread_create(&js->workers[i].thread, NULL, worker_thread_func, &js->workers[i]) != 0) {
+        if (pthread_create(&js->workers[i].thread, NULL,
+                         worker_thread_func, &js->workers[i]) != 0) {
             js->worker_count = i;
-            jobgraph_system_destroy(js);
+            jobgraph_destroy(js);
             return NULL;
         }
 #endif
@@ -413,7 +435,9 @@ jobgraph_system_t* jobgraph_system_create(int worker_threads) {
     return js;
 }
 
-void jobgraph_system_destroy(jobgraph_system_t* js) {
+void jobgraph_destroy(jobgraph_t* js) {
+    unsigned int i;
+
     if (!js) return;
     js->running = 0;
 
@@ -421,7 +445,7 @@ void jobgraph_system_destroy(jobgraph_system_t* js) {
     JG_COND_BROADCAST(&js->ready_queue.not_empty);
     JG_MUTEX_UNLOCK(&js->ready_queue.mutex);
 
-    for (unsigned int i = 0; i < js->worker_count; i++) {
+    for (i = 0; i < js->worker_count; i++) {
         if (js->workers[i].running) {
 #ifdef JG_WINDOWS
             WaitForSingleObject(js->workers[i].thread, INFINITE);
@@ -438,52 +462,64 @@ void jobgraph_system_destroy(jobgraph_system_t* js) {
     JG_MUTEX_DESTROY(&js->pool_mutex);
     JG_MUTEX_DESTROY(&js->id_mutex);
 
+    /* Free any chains that were never reset (should not happen in normal use) */
+    for (i = 0; i < js->chain_count; i++) {
+        jobchain_t* chain = js->chains[i];
+        unsigned int j;
+        for (j = 0; j < chain->link_count; j++) {
+            free(chain->links[j]->jobs);
+            free(chain->links[j]);
+        }
+        free(chain->links);
+        free(chain);
+    }
+    free(js->chains);
+
     free(js->workers);
     free(js->job_pool);
     free(js);
 }
 
-void jobgraph_wait_all(jobgraph_system_t* js) {
+void jobgraph_reset(jobgraph_t* js) {
+    unsigned int i;
     if (!js) return;
-    JG_MUTEX_LOCK(&js->stats_mutex);
-    while (js->pending_jobs > 0 || js->running_jobs > 0) {
-        JG_COND_WAIT(&js->all_complete, &js->stats_mutex);
+
+    /* Free all chains created since last reset */
+    for (i = 0; i < js->chain_count; i++) {
+        jobchain_t* chain = js->chains[i];
+        unsigned int j;
+        for (j = 0; j < chain->link_count; j++) {
+            free(chain->links[j]->jobs);
+            free(chain->links[j]);
+        }
+        free(chain->links);
+        free(chain);
     }
-    JG_MUTEX_UNLOCK(&js->stats_mutex);
+    free(js->chains);
+    js->chains = NULL;
+    js->chain_count = 0;
+    js->chain_capacity = 0;
+
+    /* Reset the job pool */
+    ATOMIC_SUB(&js->job_pool_used, ATOMIC_LOAD(&js->job_pool_used));
 }
 
-int jobgraph_pending_count(jobgraph_system_t* js) {
+int jobgraph_pending_count(jobgraph_t* js) {
     if (!js) return 0;
-    int c;
-    JG_MUTEX_LOCK(&js->stats_mutex);
-    c = js->pending_jobs;
-    JG_MUTEX_UNLOCK(&js->stats_mutex);
-    return c;
+    return (int)ATOMIC_LOAD(&js->jobs_remaining);
 }
 
-int jobgraph_running_count(jobgraph_system_t* js) {
+unsigned long jobgraph_total_completed(jobgraph_t* js) {
     if (!js) return 0;
-    int c;
-    JG_MUTEX_LOCK(&js->stats_mutex);
-    c = js->running_jobs;
-    JG_MUTEX_UNLOCK(&js->stats_mutex);
-    return c;
-}
-
-unsigned long jobgraph_total_completed(jobgraph_system_t* js) {
-    if (!js) return 0;
-    unsigned long c;
-    JG_MUTEX_LOCK(&js->stats_mutex);
-    c = js->total_jobs_completed;
-    JG_MUTEX_UNLOCK(&js->stats_mutex);
-    return c;
+    return ATOMIC_LOAD(&js->total_jobs_completed);
 }
 
 /* ==================== JOB CREATION ==================== */
 
-job_t* job_create(jobgraph_system_t* js, job_func_t func, void* context) {
+job_t* job_create(jobgraph_t* js, job_func_t func, void* context) {
+    struct job_t* job;
     if (!js || !func) return NULL;
-    struct job_t* job = pool_alloc_job(js);
+    job = pool_alloc_job(js);
     if (!job) return NULL;
 
     JG_MUTEX_LOCK(&js->id_mutex);
@@ -495,206 +531,15 @@ job_t* job_create(jobgraph_system_t* js, job_func_t func, void* context) {
     return job;
 }
 
-job_t* job_create_standalone(jobgraph_system_t* js, job_func_t func, void* context) {
-    struct job_t* job = job_create(js, func, context);
-    if (job) {
-        job->is_standalone = 1;
-        job->parent_chain = (jobchain_t*)js;   /* store system pointer */
-    }
-    return job;
-}
-
-/* ==================== CHAIN LINK MANAGEMENT ==================== */
-
-static int ensure_links(jobchain_t* chain, int required_index) {
-    jobgraph_system_t* js = chain->system;
-    while ((int)chain->link_count <= required_index) {
-        joblink_t* link = (joblink_t*)calloc(1, sizeof(joblink_t));
-        if (!link) return -1;
-
-        struct job_t* barrier = pool_alloc_job(js);
-        if (!barrier) {
-            free(link);
-            return -1;
-        }
-        barrier->is_barrier = 1;
-        barrier->parent_chain = chain;
-        barrier->my_link = link;
-        barrier->state = JOB_STATE_WAITING;
-        link->barrier = barrier;
-        link->id = chain->link_count;
-
-        joblink_t** tmp = (joblink_t**)realloc(chain->links, (chain->link_count + 1) * sizeof(joblink_t*));
-        if (!tmp) {
-            pool_free_job(js, barrier);
-            free(link);
-            return -1;
-        }
-        chain->links = tmp;
-        chain->links[chain->link_count++] = link;
-    }
-    return 0;
-}
-
-/* Helper: add an already created job to a specific link (must be unassigned) */
-static int link_add_job(jobchain_t* chain, joblink_t* link, struct job_t* job) {
-    if (!job) return -1;
-    jobgraph_system_t* js = chain->system;
-
-    job->parent_chain = chain;
-    job->is_standalone = 0;
-    job->my_link = link;
-
-    struct job_t** tmp = (struct job_t**)realloc(link->jobs, (link->count + 1) * sizeof(struct job_t*));
-    if (!tmp) return -1;
-    link->jobs = tmp;
-    link->jobs[link->count++] = job;
-
-    if (link->id > 0) {
-        struct job_t* prev_barrier = chain->links[link->id - 1]->barrier;
-        add_dependent(prev_barrier, job);
-    }
-    add_dependent(job, link->barrier);
-
-    return 0;
-}
-
-/* ==================== CHAIN PUBLIC API ==================== */
-
-jobchain_t* jobchain_create(jobgraph_system_t* js) {
-    if (!js) return NULL;
-    jobchain_t* chain = (jobchain_t*)calloc(1, sizeof(jobchain_t));
-    if (!chain) return NULL;
-    chain->system = js;
-    return chain;
-}
-
-joblink_t* jobchain_add_link(jobchain_t* chain, job_t* job) {
-    if (!chain || !job) return NULL;
-    if (chain->submitted) return NULL;
-    if (job->parent_chain != NULL || job->is_standalone) return NULL;
-
-    int idx = (int)chain->link_count;
-    if (ensure_links(chain, idx) != 0) return NULL;
-    if (link_add_job(chain, chain->links[idx], job) != 0) return NULL;
-    return chain->links[idx];
-}
-
-job_t* joblink_add_job(joblink_t* link, job_t* job) {
-    if (!link || !job) return NULL;
-    /* We need the parent chain to validate and wire dependencies.
-       The link's barrier already holds a pointer to the chain, so we can get it. */
-    jobchain_t* chain = link->barrier->parent_chain;
-    if (!chain || chain->submitted) return NULL;
-    if (job->parent_chain != NULL || job->is_standalone) return NULL;
-    if (link->id >= chain->link_count || chain->links[link->id] != link) return NULL;
-
-    if (link_add_job(chain, link, job) != 0) return NULL;
-    return job;
-}
-
-job_t* jobchain_add_job_at(jobchain_t* chain, int link_index, job_t* job) {
-    if (!chain || !job) return NULL;
-    if (chain->submitted) return NULL;
-    if (job->parent_chain != NULL || job->is_standalone) return NULL;
-    if (ensure_links(chain, link_index) != 0) return NULL;
-
-    if (link_add_job(chain, chain->links[link_index], job) != 0) return NULL;
-    return job;
-}
-
-void jobchain_add_chain_to_link(jobchain_t* parent_chain, joblink_t* link,
-                                jobchain_t* sub_chain) {
-    if (!parent_chain || !link || !sub_chain) return;
-    if (parent_chain->submitted) return;
-    if (link->id >= parent_chain->link_count ||
-        parent_chain->links[link->id] != link) return;
-
-    if (sub_chain->link_count == 0) return;
-
-    if (link->id > 0) {
-        struct job_t* prev_barrier = parent_chain->links[link->id - 1]->barrier;
-        joblink_t* first_sub_link = sub_chain->links[0];
-        for (unsigned int i = 0; i < first_sub_link->count; i++) {
-            add_dependent(prev_barrier, first_sub_link->jobs[i]);
-        }
-    }
-
-    struct job_t* sub_last_barrier = sub_chain->links[sub_chain->link_count - 1]->barrier;
-    add_dependent(sub_last_barrier, link->barrier);
-}
-
-unsigned int joblink_get_id(joblink_t* link) {
-    return link ? link->id : 0;
-}
-
-void jobchain_submit(jobchain_t* chain) {
-    if (!chain || chain->submitted) return;
-    jobgraph_system_t* js = chain->system;
-
-    JG_MUTEX_LOCK(&js->stats_mutex);
-    chain->submitted = 1;
-
-    if (chain->link_count == 0) {
-        chain->completed = 1;
-        JG_MUTEX_UNLOCK(&js->stats_mutex);
-        return;
-    }
-
-    joblink_t* first_link = chain->links[0];
-    for (unsigned int i = 0; i < first_link->count; i++) {
-        struct job_t* job = first_link->jobs[i];
-        js->total_jobs_created++;
-        js->pending_jobs++;
-        job_try_make_ready(js, job);
-    }
-    js->total_jobs_created++;
-    js->pending_jobs++;
-    JG_MUTEX_UNLOCK(&js->stats_mutex);
-}
-
-void jobchain_wait(jobchain_t* chain) {
-    if (!chain) return;
-    jobgraph_system_t* js = chain->system;
-    JG_MUTEX_LOCK(&js->stats_mutex);
-    while (!chain->completed) {
-        JG_COND_WAIT(&js->all_complete, &js->stats_mutex);
-    }
-    JG_MUTEX_UNLOCK(&js->stats_mutex);
-}
-
-int jobchain_is_complete(jobchain_t* chain) {
-    return chain ? chain->completed : 1;
-}
-
-/* ==================== CROSS DEPENDENCIES ==================== */
-
-void job_add_dependency(job_t* job_a, job_t* job_b) {
-    if (!job_a || !job_b) return;
-    add_dependent(job_a, job_b);
-}
-
-void jobchain_add_dependency(job_t* job_a, jobchain_t* chain_b) {
-    if (!job_a || !chain_b) return;
-    if (chain_b->link_count == 0) return;
-    joblink_t* first_link = chain_b->links[0];
-    for (unsigned int i = 0; i < first_link->count; i++) {
-        add_dependent(job_a, first_link->jobs[i]);
-    }
-}
-
-void jobchain_add_dependency_chain(jobchain_t* chain_a, jobchain_t* chain_b) {
-    if (!chain_a || !chain_b) return;
-    if (chain_a->link_count == 0) return;
-    struct job_t* last_barrier = chain_a->links[chain_a->link_count - 1]->barrier;
-    jobchain_add_dependency(last_barrier, chain_b);
+unsigned int job_get_id(job_t* job) {
+    return job ? job->job_id : 0;
 }
 
 void job_wait(job_t* job) {
+    jobgraph_t* js;
     if (!job || !job->parent_chain) return;
-    jobgraph_system_t* js;
     if (job->is_standalone)
-        js = (jobgraph_system_t*)job->parent_chain;
+        js = (jobgraph_t*)job->parent_chain;
     else
         js = job->parent_chain->system;
     if (!js) return;
@@ -706,24 +551,200 @@ void job_wait(job_t* job) {
     JG_MUTEX_UNLOCK(&js->stats_mutex);
 }
 
-unsigned int job_get_id(job_t* job) {
-    return job ? job->job_id : 0;
+/* ==================== CHAIN & LINK MANAGEMENT ==================== */
+
+static int ensure_links(jobchain_t* chain, int required_index) {
+    jobgraph_t* js = chain->system;
+    while ((int)chain->link_count <= required_index) {
+        joblink_t* link = (joblink_t*)calloc(1, sizeof(joblink_t));
+        if (!link) return -1;
+
+        {
+            struct job_t* barrier = pool_alloc_job(js);
+            if (!barrier) {
+                free(link);
+                return -1;
+            }
+            barrier->is_barrier = 1;
+            barrier->parent_chain = chain;
+            barrier->my_link = link;
+            barrier->state = JOB_STATE_WAITING;
+            link->barrier = barrier;
+            link->id = chain->link_count;
+        }
+
+        {
+            joblink_t** tmp = (joblink_t**)realloc(chain->links,
+                                    (chain->link_count + 1) * sizeof(joblink_t*));
+            if (!tmp) {
+                pool_free_job(js, link->barrier);
+                free(link);
+                return -1;
+            }
+            chain->links = tmp;
+            chain->links[chain->link_count++] = link;
+        }
+    }
+    return 0;
 }
 
-/* ==================== STANDALONE JOB SUBMISSION ==================== */
+static int link_add_job(jobchain_t* chain, joblink_t* link, struct job_t* job) {
+    if (!job) return -1;
+    {
+        jobgraph_t* js = chain->system;
+        (void)js;   /* unused */
+    }
 
-void job_submit(job_t* job) {
-    if (!job) return;
-    jobgraph_system_t* js;
-    if (job->is_standalone)
-        js = (jobgraph_system_t*)job->parent_chain;
-    else
-        js = job->parent_chain->system;
+    job->parent_chain = chain;
+    job->is_standalone = 0;
+    job->my_link = link;
+
+    {
+        struct job_t** tmp = (struct job_t**)realloc(link->jobs,
+                              (link->count + 1) * sizeof(struct job_t*));
+        if (!tmp) return -1;
+        link->jobs = tmp;
+        link->jobs[link->count++] = job;
+    }
+
+    if (link->id > 0) {
+        struct job_t* prev_barrier = chain->links[link->id - 1]->barrier;
+        add_dependent(prev_barrier, job);
+    }
+    add_dependent(job, link->barrier);
+
+    return 0;
+}
+
+/* ==================== PUBLIC CHAIN / LINK API ==================== */
+
+jobchain_t* jobgraph_add_chain(jobgraph_t* js) {
+    jobchain_t* chain;
+    if (!js) return NULL;
+
+    chain = (jobchain_t*)calloc(1, sizeof(jobchain_t));
+    if (!chain) return NULL;
+    chain->system = js;
+
+    /* Add to graph's chain list */
+    if (js->chain_count >= js->chain_capacity) {
+        unsigned int new_cap = js->chain_capacity ? js->chain_capacity * 2 : 4;
+        jobchain_t** tmp = (jobchain_t**)realloc(js->chains, new_cap * sizeof(jobchain_t*));
+        if (!tmp) { free(chain); return NULL; }
+        js->chains = tmp;
+        js->chain_capacity = new_cap;
+    }
+    js->chains[js->chain_count++] = chain;
+    return chain;
+}
+
+joblink_t* jobchain_add_link(jobchain_t* chain) {
+    if (!chain || chain->submitted) return NULL;
+    if (ensure_links(chain, (int)chain->link_count) != 0) return NULL;
+    return chain->links[chain->link_count - 1];
+}
+
+void joblink_add_job(joblink_t* link, job_t* job) {
+    jobchain_t* chain;
+    if (!link || !job) return;
+    chain = link->barrier->parent_chain;
+    if (!chain || chain->submitted) return;
+    if (job->parent_chain != NULL || job->is_standalone) return;
+    if (link->id >= chain->link_count || chain->links[link->id] != link) return;
+
+    link_add_job(chain, link, job);
+}
+
+void joblink_add_chain(joblink_t* link, jobchain_t* sub_chain) {
+    jobchain_t* parent_chain;
+    unsigned int i;
+
+    if (!link || !sub_chain) return;
+    parent_chain = link->barrier->parent_chain;
+    if (!parent_chain || parent_chain->submitted) return;
+    if (link->id >= parent_chain->link_count ||
+        parent_chain->links[link->id] != link) return;
+
+    if (sub_chain->link_count == 0) return;
+
+    if (link->id > 0) {
+        struct job_t* prev_barrier = parent_chain->links[link->id - 1]->barrier;
+        joblink_t* first_sub_link = sub_chain->links[0];
+        for (i = 0; i < first_sub_link->count; i++) {
+            add_dependent(prev_barrier, first_sub_link->jobs[i]);
+        }
+    }
+
+    {
+        struct job_t* sub_last_barrier =
+            sub_chain->links[sub_chain->link_count - 1]->barrier;
+        add_dependent(sub_last_barrier, link->barrier);
+    }
+}
+
+unsigned int joblink_get_id(joblink_t* link) {
+    return link ? link->id : 0;
+}
+
+/* ==================== CROSS‑CHAIN ORDERING ==================== */
+
+void jobchain_then(jobchain_t* first, jobchain_t* second) {
+    struct job_t* last_barrier;
+    unsigned int i;
+    joblink_t* first_link_second;
+
+    if (!first || !second) return;
+    if (first->link_count == 0 || second->link_count == 0) return;
+
+    last_barrier = first->links[first->link_count - 1]->barrier;
+    first_link_second = second->links[0];
+    for (i = 0; i < first_link_second->count; i++) {
+        add_dependent(last_barrier, first_link_second->jobs[i]);
+    }
+}
+
+/* ==================== EXECUTION ==================== */
+
+void jobgraph_submit(jobgraph_t* js) {
+    unsigned int i, j;
+    unsigned int total_user_jobs = 0;
+
     if (!js) return;
 
+    /* Count user jobs in all chains (including sub‑chains, which are also in the list) */
+    for (i = 0; i < js->chain_count; i++) {
+        jobchain_t* chain = js->chains[i];
+        if (chain->submitted) continue;
+        chain->submitted = 1;
+        if (chain->link_count == 0) {
+            chain->completed = 1;
+            continue;
+        }
+        for (j = 0; j < chain->link_count; j++) {
+            total_user_jobs += chain->links[j]->count;
+        }
+    }
+
+    ATOMIC_ADD(&js->jobs_remaining, total_user_jobs);
+    ATOMIC_ADD(&js->total_jobs_created, total_user_jobs);
+
+    /* Make first‑link jobs ready (only those with all dependencies satisfied will actually run) */
+    for (i = 0; i < js->chain_count; i++) {
+        jobchain_t* chain = js->chains[i];
+        joblink_t* first_link;
+        if (chain->completed || chain->link_count == 0) continue;
+        first_link = chain->links[0];
+        for (j = 0; j < first_link->count; j++) {
+            job_try_make_ready(js, first_link->jobs[j]);
+        }
+    }
+}
+
+void jobgraph_wait(jobgraph_t* js) {
+    if (!js) return;
     JG_MUTEX_LOCK(&js->stats_mutex);
-    js->total_jobs_created++;
-    js->pending_jobs++;
-    job_try_make_ready(js, job);
+    while (ATOMIC_LOAD(&js->jobs_remaining) > 0) {
+        JG_COND_WAIT(&js->all_complete, &js->stats_mutex);
+    }
     JG_MUTEX_UNLOCK(&js->stats_mutex);
 }

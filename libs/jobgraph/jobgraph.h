@@ -5,61 +5,43 @@
 extern "C" {
 #endif
 
-typedef struct jobgraph_system_t jobgraph_system_t;
+typedef struct jobgraph_t jobgraph_t;
 typedef struct job_t job_t;
 typedef struct jobchain_t jobchain_t;
-typedef struct joblink_t joblink_t;               /* renamed */
+typedef struct joblink_t joblink_t;
 
 typedef job_t* (*job_func_t)(void* context);
 
-/* ==================== SYSTEM MANAGEMENT ==================== */
+/* ==================== JOB SYSTEM ==================== */
 
-jobgraph_system_t* jobgraph_system_create(int worker_threads);
-void jobgraph_system_destroy(jobgraph_system_t* js);
-void jobgraph_wait_all(jobgraph_system_t* js);
-int  jobgraph_pending_count(jobgraph_system_t* js);
-int  jobgraph_running_count(jobgraph_system_t* js);
-unsigned long jobgraph_total_completed(jobgraph_system_t* js);
+jobgraph_t* jobgraph_create(int worker_threads);
+void        jobgraph_destroy(jobgraph_t* js);
+void        jobgraph_reset(jobgraph_t* js);          /* recycle job memory, free chains */
 
-/* ==================== JOB CREATION ==================== */
+int          jobgraph_pending_count(jobgraph_t* js);
+unsigned long jobgraph_total_completed(jobgraph_t* js);
 
-job_t* job_create(jobgraph_system_t* js, job_func_t func, void* context);
-job_t* job_create_standalone(jobgraph_system_t* js, job_func_t func, void* context);
+/* ==================== JOB ==================== */
 
-/* ==================== JOB CHAINS (link-based fork/join) ==================== */
-
-jobchain_t* jobchain_create(jobgraph_system_t* js);
-
-/* Append a new stage (link) with the given job, return the link handle */
-joblink_t* jobchain_add_link(jobchain_t* chain, job_t* job);
-
-/* Add an extra job to an existing link (all jobs in a link run in parallel) */
-job_t*     joblink_add_job(joblink_t* link, job_t* job);
-
-/* Add a job at a specific numeric link index (advanced usage) */
-job_t*     jobchain_add_job_at(jobchain_t* chain, int link_index, job_t* job);
-
-/* Add an entire sub‑chain as a parallel element inside a link */
-void       jobchain_add_chain_to_link(jobchain_t* chain, joblink_t* link,
-                                      jobchain_t* sub_chain);
-
-unsigned int joblink_get_id(joblink_t* link);
-
-void       jobchain_submit(jobchain_t* chain);
-void       jobchain_wait(jobchain_t* chain);
-int        jobchain_is_complete(jobchain_t* chain);
-
-/* ==================== DEPENDENCIES ==================== */
-
-void         job_add_dependency(job_t* job_a, job_t* job_b);
-void         jobchain_add_dependency(job_t* job_a, jobchain_t* chain_b);
-void         jobchain_add_dependency_chain(jobchain_t* chain_a, jobchain_t* chain_b);
-void         job_wait(job_t* job);
+job_t*       job_create(jobgraph_t* js, job_func_t func, void* context);
 unsigned int job_get_id(job_t* job);
+void         job_wait(job_t* job);
 
-/* ==================== STANDALONE JOB SUBMISSION ==================== */
+/* ==================== CHAIN & LINK (the only way to build work) ========= */
 
-void job_submit(job_t* job);
+jobchain_t* jobgraph_add_chain(jobgraph_t* js);      /* create a new chain in the graph */
+joblink_t*  jobchain_add_link(jobchain_t* chain);    /* add an empty stage at the end */
+void        joblink_add_job(joblink_t* link, job_t* job);
+void        joblink_add_chain(joblink_t* link, jobchain_t* sub_chain); /* embed a sub‑chain */
+
+unsigned int joblink_get_id(joblink_t* link);        /* for debugging */
+
+/* ==================== ORDERING (cross‑chain) ==================== */
+void jobchain_then(jobchain_t* first, jobchain_t* second);
+
+/* ==================== EXECUTION ==================== */
+void jobgraph_submit(jobgraph_t* js);    /* submit all chains at once */
+void jobgraph_wait(jobgraph_t* js);      /* wait until everything finishes */
 
 #ifdef __cplusplus
 }
