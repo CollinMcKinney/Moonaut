@@ -158,8 +158,9 @@ static i32 scenario_load_tag(const char *scenario_name) {
     return scn_handle;
 }
 
+/* TODO: move to rasterizer.h */
 /* ------------------------------------------------------------------------
-   Draw one model primitive with its material
+   Draw one model primitive with its material 
    ------------------------------------------------------------------------ */
 static void scenario_draw_primitive(model_primitive *prim, model_definition *mod,
                                     vec3 pos, vec4 orient) {
@@ -206,6 +207,7 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 }
 
+/* TODO: move to rasterizer.h */
 /* ------------------------------------------------------------------------
     Main render call
     ------------------------------------------------------------------------ */
@@ -965,13 +967,6 @@ static void runtime_init(void) {
     runtime_start();
 }
 
-static void runtime_update(real dt) {
-    scripts_update(dt);
-    if (!sc_pause_physics) {
-        physics_step(&g_scene_world->physics, dt);
-    }
-}
-
 static void runtime_reconfigure_thread_count(i32 new_thread_count)
 {
     if (new_thread_count < 1) new_thread_count = 1;
@@ -1049,7 +1044,12 @@ static void runtime_start(void)
         accumulator += frame_time;
         step_count = 0;
         while (accumulator >= fixed_dt) {
-            runtime_update(fixed_dt);
+            
+            scripts_update(fixed_dt);
+            if (!sc_pause_physics) {
+                physics_step(&g_scene_world->physics, fixed_dt);
+            }
+
             accumulator -= fixed_dt;
             step_count++;
             if (step_count >= 15) {
