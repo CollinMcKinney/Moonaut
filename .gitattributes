@@ -2,9 +2,9 @@ libs/lua-5.5.0/** linguist-vendored
 
 *.md linguist-documentation
 
-*.vert linguist-language=GLSL
-*.geom linguist-language=GLSL
 *.frag linguist-language=GLSL
+*.geom linguist-language=GLSL
+*.vert linguist-language=GLSL
 
 *.c liguist-language=C
 *.h linguist-language=C
