@@ -40,9 +40,9 @@ elseif(CMAKE_C_COMPILER_ID MATCHES "GNU")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(PLATFORM_LIBS m X11 Xext Xrandr dl pthread asound)
+    set(PLATFORM_LIBS m X11 Xext Xrandr dl pthread asound GL)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(PLATFORM_LIBS gdi32.lib ole32.lib avrt.lib uuid.lib)
+    set(PLATFORM_LIBS gdi32.lib ole32.lib avrt.lib uuid.lib opengl32.lib xinput.lib)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(PLATFORM_LIBS Cocoa CoreVideo OpenGL IOKit CoreAudio AudioUnit)
 endif()
@@ -54,6 +54,7 @@ add_executable(Moonaut
 
     libs/audiopipe/audiopipe.c
     libs/audiopipe/audiomixer.c
+    libs/audiopipe/wavloader.c
 
     libs/lua-5.5.0/src/lapi.c
     libs/lua-5.5.0/src/lauxlib.c
