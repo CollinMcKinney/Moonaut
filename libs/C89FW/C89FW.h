@@ -1,17 +1,35 @@
 /*
- * C89FW.h - v0.1.0-alpha
+ * C89FW.h - v1.0.0
  *
- * Copyright © 2026 Collin McKinney. All Rights Reserved.
+ * Single-header cross-platform window & input library.
+ * Written in ANSI C89 / Objective-C (macOS).
  *
- * Single-header cross-platform window & input library
- * Written in ANSI C89 with minimal Objective-C for macOS Cocoa backend
- * Supports Windows, Linux (X11), and macOS (Cocoa)
- * Assumes BGRA8888 framebuffer format
- * 
- * Compatibility targets:
- *   Windows:   Win32 API (Windows 95 and later)
- *   Linux:     X11 (any modern X11 implementation)
- *   macOS:     Cocoa (macOS 10.6 Snow Leopard and later)
+ * Provides:
+ *   - Window creation (Windows, Linux/X11, macOS)
+ *   - Input (keyboard, mouse, gamepad)
+ *   - Software framebuffer rendering (optional)
+ *   - Native handle getter (for attaching external rendering APIs)
+ *
+ * EXTENSIBILITY: Use C89FW_get_native_handles() to get raw OS handles
+ * (HWND, X11 Window, NSView) and attach any rendering backend
+ * (OpenGL, Vulkan, DirectX, Metal, console SDKs) externally.
+ *
+ * Usage (Software):
+ *   #define C89FW_IMPLEMENTATION
+ *   #include "C89FW.h"
+ *
+ *   C89FW_window_t win;
+ *   C89FW_open(&win, 800, 600, "Software Renderer");
+ *   unsigned char* fb = (unsigned char*)malloc(800*600*4);
+ *   C89FW_set_framebuffer(&win, fb, 800, 600);
+ *
+ *   while (!win.should_close) {
+ *       C89FW_update(&win);
+ *       // Draw to framebuffer...
+ *       C89FW_present(&win);
+ *   }
+ *   free(fb);
+ *   C89FW_close(&win);
  */
 
 #ifndef C89FW_H
@@ -23,7 +41,7 @@ extern "C" {
 
 #include <stddef.h>
 
-/* Platform detection */
+/* ---------- Platform Detection ---------- */
 #if defined(_WIN32)
     #define C89FW_WINDOWS
 #elif defined(__APPLE__)
@@ -34,11 +52,11 @@ extern "C" {
     #error "C89FW supports Windows, macOS, and Linux"
 #endif
 
-/* Minimum window dimensions (16:9 * 16) */
+/* ---------- Minimum Window Size ---------- */
 #define C89FW_MIN_WIDTH  256
 #define C89FW_MIN_HEIGHT 144
 
-/* Key codes */
+/* ---------- Input Enums ---------- */
 typedef enum {
     C89FW_KEY_UNKNOWN = 0,
     C89FW_KEY_ESCAPE,
@@ -102,6 +120,7 @@ typedef enum {
     C89FW_GAMEPAD_AXIS_COUNT
 } C89FW_gamepad_axis_t;
 
+/* ---------- Event System ---------- */
 typedef enum {
     C89FW_EVENT_NONE = 0,
     C89FW_EVENT_KEY_DOWN,
@@ -140,14 +159,19 @@ typedef struct {
     } data;
 } C89FW_event_t;
 
+/* ========================================================================
+   WINDOW STRUCT
+   ======================================================================== */
 typedef struct C89FW_window_t {
-    void* internal;
+    void* internal;                 /* Platform-specific data */
     int width;
     int height;
     int should_close;
     double time;
     double delta_time;
     int has_focus;
+
+    /* Input state */
     unsigned char keys[C89FW_KEY_COUNT];
     unsigned char keys_previous[C89FW_KEY_COUNT];
     unsigned char mouse_buttons[C89FW_MOUSE_BUTTON_COUNT];
@@ -161,24 +185,51 @@ typedef struct C89FW_window_t {
         unsigned char buttons_previous[C89FW_GAMEPAD_BUTTON_COUNT];
         float axes[C89FW_GAMEPAD_AXIS_COUNT];
     } gamepads[4];
+
+    /* Software framebuffer (optional) */
     unsigned char* framebuffer;
     int framebuffer_owned;
+
     void* event_queue_internal;
 } C89FW_window_t;
 
-/* API */
-int C89FW_open(C89FW_window_t* window, int width, int height, const char* title);
+/* ========================================================================
+   NATIVE HANDLES – THE EXTENSIBILITY BRIDGE
+   ======================================================================== */
+typedef struct C89FW_native_handles_t {
+#if defined(C89FW_WINDOWS)
+    void* hwnd;          /* HWND */
+#elif defined(C89FW_LINUX)
+    void* display;       /* Display* */
+    unsigned long window;/* X11 Window */
+#elif defined(C89FW_MACOS)
+    void* ns_window;     /* NSWindow* */
+    void* ns_view;       /* NSView* */
+#endif
+} C89FW_native_handles_t;
+
+/* Retrieve native handles for external rendering APIs */
+C89FW_native_handles_t C89FW_get_native_handles(const C89FW_window_t* window);
+
+/* ========================================================================
+   PUBLIC API
+   ======================================================================== */
+
+/* --- Window & Input --- */
+int  C89FW_open(C89FW_window_t* window, int width, int height, const char* title);
 void C89FW_close(C89FW_window_t* window);
-int C89FW_update(C89FW_window_t* window);
-int C89FW_poll_event(C89FW_window_t* window, C89FW_event_t* event);
-void C89FW_present(C89FW_window_t* window);
+int  C89FW_update(C89FW_window_t* window);
+int  C89FW_poll_event(C89FW_window_t* window, C89FW_event_t* event);
 void C89FW_set_title(C89FW_window_t* window, const char* title);
 void C89FW_set_size(C89FW_window_t* window, int width, int height);
-void C89FW_set_framebuffer(C89FW_window_t* window, unsigned char* framebuffer, int width, int height);
 void C89FW_apply_resize(C89FW_window_t* window);
 double C89FW_get_time(void);
 
-/* Polling helpers */
+/* --- Software Rendering --- */
+void C89FW_set_framebuffer(C89FW_window_t* window, unsigned char* framebuffer, int width, int height);
+void C89FW_present(C89FW_window_t* window);
+
+/* --- Polling Helpers (inline) --- */
 static int C89FW_key_down(const C89FW_window_t* window, C89FW_key_t key);
 static int C89FW_key_pressed(const C89FW_window_t* window, C89FW_key_t key);
 static int C89FW_key_released(const C89FW_window_t* window, C89FW_key_t key);
@@ -197,87 +248,18 @@ static float C89FW_gamepad_axis(const C89FW_window_t* window, int gamepad_index,
 
 #endif /* C89FW_H */
 
-/*
- * Implementation
- */
-#define C89FW_IMPLEMENTATION
+/* ================================================================
+   IMPLEMENTATION
+   ================================================================ */
 #ifdef C89FW_IMPLEMENTATION
+#ifndef C89FW_IMPLEMENTATION_DONE
+#define C89FW_IMPLEMENTATION_DONE
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-/* Polling helpers */
-static int C89FW_key_down(const C89FW_window_t* window, C89FW_key_t key) {
-    return (key >= 0 && key < C89FW_KEY_COUNT) ? window->keys[key] : 0;
-}
-
-static int C89FW_key_pressed(const C89FW_window_t* window, C89FW_key_t key) {
-    return (key >= 0 && key < C89FW_KEY_COUNT) ? (window->keys[key] && !window->keys_previous[key]) : 0;
-}
-
-static int C89FW_key_released(const C89FW_window_t* window, C89FW_key_t key) {
-    return (key >= 0 && key < C89FW_KEY_COUNT) ? (!window->keys[key] && window->keys_previous[key]) : 0;
-}
-
-static int C89FW_mouse_down(const C89FW_window_t* window, C89FW_mouse_button_t button) {
-    return (button >= 0 && button < C89FW_MOUSE_BUTTON_COUNT) ? window->mouse_buttons[button] : 0;
-}
-
-static int C89FW_mouse_pressed(const C89FW_window_t* window, C89FW_mouse_button_t button) {
-    return (button >= 0 && button < C89FW_MOUSE_BUTTON_COUNT) ? (window->mouse_buttons[button] && !window->mouse_buttons_previous[button]) : 0;
-}
-
-static int C89FW_mouse_released(const C89FW_window_t* window, C89FW_mouse_button_t button) {
-    return (button >= 0 && button < C89FW_MOUSE_BUTTON_COUNT) ? (!window->mouse_buttons[button] && window->mouse_buttons_previous[button]) : 0;
-}
-
-static int C89FW_gamepad_present(const C89FW_window_t* window, int gamepad_index) {
-    return (gamepad_index >= 0 && gamepad_index < 4) ? window->gamepads[gamepad_index].present : 0;
-}
-
-static int C89FW_gamepad_down(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_button_t button) {
-    if (gamepad_index >= 0 && gamepad_index < 4 && button >= 0 && button < C89FW_GAMEPAD_BUTTON_COUNT) {
-        return window->gamepads[gamepad_index].buttons[button];
-    }
-    return 0;
-}
-
-static int C89FW_gamepad_pressed(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_button_t button) {
-    if (gamepad_index >= 0 && gamepad_index < 4 && button >= 0 && button < C89FW_GAMEPAD_BUTTON_COUNT) {
-        return window->gamepads[gamepad_index].buttons[button] && 
-               !window->gamepads[gamepad_index].buttons_previous[button];
-    }
-    return 0;
-}
-
-static int C89FW_gamepad_released(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_button_t button) {
-    if (gamepad_index >= 0 && gamepad_index < 4 && button >= 0 && button < C89FW_GAMEPAD_BUTTON_COUNT) {
-        return !window->gamepads[gamepad_index].buttons[button] && 
-               window->gamepads[gamepad_index].buttons_previous[button];
-    }
-    return 0;
-}
-
-static float C89FW_gamepad_axis(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_axis_t axis) {
-    if (gamepad_index >= 0 && gamepad_index < 4 && axis >= 0 && axis < C89FW_GAMEPAD_AXIS_COUNT) {
-        return window->gamepads[gamepad_index].axes[axis];
-    }
-    return 0.0f;
-}
-
-void C89FW_set_framebuffer(C89FW_window_t* window, unsigned char* framebuffer, int width, int height) {
-    if (!window) return;
-    if (window->framebuffer && window->framebuffer_owned) {
-        free(window->framebuffer);
-    }
-    window->framebuffer = framebuffer;
-    window->framebuffer_owned = 0;
-    window->width = width;
-    window->height = height;
-}
-
-/* Event queue */
+/* ---------- Event Queue ---------- */
 #define C89FW_EVENT_QUEUE_SIZE 256
 
 typedef struct {
@@ -314,7 +296,66 @@ int C89FW_poll_event(C89FW_window_t* window, C89FW_event_t* event) {
     return C89FW_event_queue_pop(queue, event);
 }
 
-/* Cross-platform gamepad deadzone */
+/* ---------- Polling Helpers ---------- */
+static int C89FW_key_down(const C89FW_window_t* window, C89FW_key_t key) {
+    return (key >= 0 && key < C89FW_KEY_COUNT) ? window->keys[key] : 0;
+}
+static int C89FW_key_pressed(const C89FW_window_t* window, C89FW_key_t key) {
+    return (key >= 0 && key < C89FW_KEY_COUNT) ? (window->keys[key] && !window->keys_previous[key]) : 0;
+}
+static int C89FW_key_released(const C89FW_window_t* window, C89FW_key_t key) {
+    return (key >= 0 && key < C89FW_KEY_COUNT) ? (!window->keys[key] && window->keys_previous[key]) : 0;
+}
+static int C89FW_mouse_down(const C89FW_window_t* window, C89FW_mouse_button_t button) {
+    return (button >= 0 && button < C89FW_MOUSE_BUTTON_COUNT) ? window->mouse_buttons[button] : 0;
+}
+static int C89FW_mouse_pressed(const C89FW_window_t* window, C89FW_mouse_button_t button) {
+    return (button >= 0 && button < C89FW_MOUSE_BUTTON_COUNT) ? (window->mouse_buttons[button] && !window->mouse_buttons_previous[button]) : 0;
+}
+static int C89FW_mouse_released(const C89FW_window_t* window, C89FW_mouse_button_t button) {
+    return (button >= 0 && button < C89FW_MOUSE_BUTTON_COUNT) ? (!window->mouse_buttons[button] && window->mouse_buttons_previous[button]) : 0;
+}
+static int C89FW_gamepad_present(const C89FW_window_t* window, int gamepad_index) {
+    return (gamepad_index >= 0 && gamepad_index < 4) ? window->gamepads[gamepad_index].present : 0;
+}
+static int C89FW_gamepad_down(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_button_t button) {
+    if (gamepad_index >= 0 && gamepad_index < 4 && button >= 0 && button < C89FW_GAMEPAD_BUTTON_COUNT) {
+        return window->gamepads[gamepad_index].buttons[button];
+    }
+    return 0;
+}
+static int C89FW_gamepad_pressed(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_button_t button) {
+    if (gamepad_index >= 0 && gamepad_index < 4 && button >= 0 && button < C89FW_GAMEPAD_BUTTON_COUNT) {
+        return window->gamepads[gamepad_index].buttons[button] && !window->gamepads[gamepad_index].buttons_previous[button];
+    }
+    return 0;
+}
+static int C89FW_gamepad_released(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_button_t button) {
+    if (gamepad_index >= 0 && gamepad_index < 4 && button >= 0 && button < C89FW_GAMEPAD_BUTTON_COUNT) {
+        return !window->gamepads[gamepad_index].buttons[button] && window->gamepads[gamepad_index].buttons_previous[button];
+    }
+    return 0;
+}
+static float C89FW_gamepad_axis(const C89FW_window_t* window, int gamepad_index, C89FW_gamepad_axis_t axis) {
+    if (gamepad_index >= 0 && gamepad_index < 4 && axis >= 0 && axis < C89FW_GAMEPAD_AXIS_COUNT) {
+        return window->gamepads[gamepad_index].axes[axis];
+    }
+    return 0.0f;
+}
+
+/* ---------- Software Framebuffer ---------- */
+void C89FW_set_framebuffer(C89FW_window_t* window, unsigned char* framebuffer, int width, int height) {
+    if (!window) return;
+    if (window->framebuffer && window->framebuffer_owned) {
+        free(window->framebuffer);
+    }
+    window->framebuffer = framebuffer;
+    window->framebuffer_owned = 0;
+    window->width = width;
+    window->height = height;
+}
+
+/* ---------- Cross-platform Event Generation ---------- */
 #define C89FW_GAMEPAD_DEADZONE 0.15f
 
 static float C89FW_normalize_gamepad_axis(float raw) {
@@ -323,88 +364,65 @@ static float C89FW_normalize_gamepad_axis(float raw) {
     return (raw + C89FW_GAMEPAD_DEADZONE) / (1.0f - C89FW_GAMEPAD_DEADZONE);
 }
 
-/* Cross-platform event generation */
 static void C89FW_generate_events(C89FW_window_t* window, double time) {
     C89FW_event_queue_t* queue;
     int i;
-    
     if (!window || !window->event_queue_internal) return;
     queue = (C89FW_event_queue_t*)window->event_queue_internal;
-    
+
     for (i = 0; i < C89FW_KEY_COUNT; ++i) {
         if (window->keys[i] && !window->keys_previous[i]) {
-            C89FW_event_t event;
-            memset(&event, 0, sizeof(event));
-            event.type = C89FW_EVENT_KEY_DOWN;
-            event.timestamp = time;
-            event.data.key.code = (C89FW_key_t)i;
+            C89FW_event_t event; memset(&event, 0, sizeof(event));
+            event.type = C89FW_EVENT_KEY_DOWN; event.timestamp = time; event.data.key.code = (C89FW_key_t)i;
             C89FW_event_queue_push(queue, &event);
         } else if (!window->keys[i] && window->keys_previous[i]) {
-            C89FW_event_t event;
-            memset(&event, 0, sizeof(event));
-            event.type = C89FW_EVENT_KEY_UP;
-            event.timestamp = time;
-            event.data.key.code = (C89FW_key_t)i;
+            C89FW_event_t event; memset(&event, 0, sizeof(event));
+            event.type = C89FW_EVENT_KEY_UP; event.timestamp = time; event.data.key.code = (C89FW_key_t)i;
             C89FW_event_queue_push(queue, &event);
         }
     }
-    
+
     for (i = 0; i < C89FW_MOUSE_BUTTON_COUNT; i++) {
         if (window->mouse_buttons[i] && !window->mouse_buttons_previous[i]) {
-            C89FW_event_t event;
-            memset(&event, 0, sizeof(event));
-            event.type = C89FW_EVENT_MOUSE_DOWN;
-            event.timestamp = time;
+            C89FW_event_t event; memset(&event, 0, sizeof(event));
+            event.type = C89FW_EVENT_MOUSE_DOWN; event.timestamp = time;
             event.data.mouse_button.button = (C89FW_mouse_button_t)i;
-            event.data.mouse_button.x = window->mouse_x;
-            event.data.mouse_button.y = window->mouse_y;
+            event.data.mouse_button.x = window->mouse_x; event.data.mouse_button.y = window->mouse_y;
             C89FW_event_queue_push(queue, &event);
         } else if (!window->mouse_buttons[i] && window->mouse_buttons_previous[i]) {
-            C89FW_event_t event;
-            memset(&event, 0, sizeof(event));
-            event.type = C89FW_EVENT_MOUSE_UP;
-            event.timestamp = time;
+            C89FW_event_t event; memset(&event, 0, sizeof(event));
+            event.type = C89FW_EVENT_MOUSE_UP; event.timestamp = time;
             event.data.mouse_button.button = (C89FW_mouse_button_t)i;
-            event.data.mouse_button.x = window->mouse_x;
-            event.data.mouse_button.y = window->mouse_y;
+            event.data.mouse_button.x = window->mouse_x; event.data.mouse_button.y = window->mouse_y;
             C89FW_event_queue_push(queue, &event);
         }
     }
-    
+
     if (window->mouse_delta_x != 0 || window->mouse_delta_y != 0) {
-        C89FW_event_t event;
-        memset(&event, 0, sizeof(event));
-        event.type = C89FW_EVENT_MOUSE_MOVE;
-        event.timestamp = time;
-        event.data.mouse_move.x = window->mouse_x;
-        event.data.mouse_move.y = window->mouse_y;
-        event.data.mouse_move.delta_x = window->mouse_delta_x;
-        event.data.mouse_move.delta_y = window->mouse_delta_y;
+        C89FW_event_t event; memset(&event, 0, sizeof(event));
+        event.type = C89FW_EVENT_MOUSE_MOVE; event.timestamp = time;
+        event.data.mouse_move.x = window->mouse_x; event.data.mouse_move.y = window->mouse_y;
+        event.data.mouse_move.delta_x = window->mouse_delta_x; event.data.mouse_move.delta_y = window->mouse_delta_y;
         C89FW_event_queue_push(queue, &event);
     }
-    
+
     if (window->mouse_scroll_x != 0.0 || window->mouse_scroll_y != 0.0) {
-        C89FW_event_t event;
-        memset(&event, 0, sizeof(event));
-        event.type = C89FW_EVENT_MOUSE_SCROLL;
-        event.timestamp = time;
-        event.data.mouse_scroll.delta_x = window->mouse_scroll_x;
-        event.data.mouse_scroll.delta_y = window->mouse_scroll_y;
+        C89FW_event_t event; memset(&event, 0, sizeof(event));
+        event.type = C89FW_EVENT_MOUSE_SCROLL; event.timestamp = time;
+        event.data.mouse_scroll.delta_x = window->mouse_scroll_x; event.data.mouse_scroll.delta_y = window->mouse_scroll_y;
         C89FW_event_queue_push(queue, &event);
     }
-    
+
     if (window->should_close) {
-        C89FW_event_t event;
-        memset(&event, 0, sizeof(event));
-        event.type = C89FW_EVENT_CLOSE;
-        event.timestamp = time;
+        C89FW_event_t event; memset(&event, 0, sizeof(event));
+        event.type = C89FW_EVENT_CLOSE; event.timestamp = time;
         C89FW_event_queue_push(queue, &event);
     }
 }
 
 /* ========================================================================
- * Windows implementation - pure C89 + Win32 API
- * ======================================================================== */
+   WINDOWS IMPLEMENTATION
+   ======================================================================== */
 #if defined(C89FW_WINDOWS)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -416,10 +434,6 @@ static void C89FW_generate_events(C89FW_window_t* window, double time) {
 #include <windows.h>
 #include <windowsx.h>
 #include <xinput.h>
-
-#ifdef _MSC_VER
-#pragma comment(lib, "xinput.lib")
-#endif
 
 typedef struct {
     unsigned char key_changes[C89FW_KEY_COUNT];
@@ -495,11 +509,11 @@ static LRESULT CALLBACK C89FW_win32_window_proc(HWND hwnd, UINT msg, WPARAM wpar
     C89FW_win32_data_t* data;
     C89FW_raw_input_t* raw;
     int i;
-    
+
     if (!window || !window->internal) return DefWindowProc(hwnd, msg, wparam, lparam);
     data = (C89FW_win32_data_t*)window->internal;
     raw = &data->raw;
-    
+
     switch (msg) {
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lparam;
@@ -585,62 +599,61 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     C89FW_event_queue_t* queue;
     WNDCLASS wc = {0};
     RECT rect;
-    
+
     if (!window) return 0;
     memset(window, 0, sizeof(C89FW_window_t));
-    
+
     data = (C89FW_win32_data_t*)malloc(sizeof(C89FW_win32_data_t));
     queue = (C89FW_event_queue_t*)malloc(sizeof(C89FW_event_queue_t));
     if (!data || !queue) { free(data); free(queue); return 0; }
     memset(data, 0, sizeof(C89FW_win32_data_t));
     C89FW_event_queue_init(queue);
-    
+
     window->internal = data;
     window->event_queue_internal = queue;
     window->width = width;
     window->height = height;
     window->has_focus = 1;
-    
+
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     wc.lpfnWndProc = C89FW_win32_window_proc;
     wc.hInstance = GetModuleHandle(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.lpszClassName = "C89FW_WindowClass";
-    
+
     if (!RegisterClass(&wc)) { free(queue); free(data); return 0; }
-    
+
     rect.left = 0; rect.top = 0; rect.right = width; rect.bottom = height;
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    
+
     data->hwnd = CreateWindowEx(0, "C89FW_WindowClass", title, WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
         NULL, NULL, GetModuleHandle(NULL), NULL);
-    
+
     if (!data->hwnd) { free(queue); free(data); return 0; }
-    
+
     SetWindowLongPtr(data->hwnd, GWLP_USERDATA, (LONG_PTR)window);
     data->hdc = GetDC(data->hwnd);
-    
-    /* Create backbuffer DIB section */
+
     data->bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     data->bmi.bmiHeader.biWidth = width;
     data->bmi.bmiHeader.biHeight = -height;
     data->bmi.bmiHeader.biPlanes = 1;
     data->bmi.bmiHeader.biBitCount = 32;
     data->bmi.bmiHeader.biCompression = BI_RGB;
-    
-    data->backbuffer = CreateDIBSection(data->hdc, &data->bmi, DIB_RGB_COLORS, 
+
+    data->backbuffer = CreateDIBSection(data->hdc, &data->bmi, DIB_RGB_COLORS,
                                          &data->backbuffer_bits, NULL, 0);
     data->backbuffer_dc = CreateCompatibleDC(data->hdc);
     if (data->backbuffer) SelectObject(data->backbuffer_dc, data->backbuffer);
-    
+
     QueryPerformanceFrequency(&data->frequency);
     QueryPerformanceCounter(&data->start_time);
     data->last_time = data->start_time;
-    
+
     ShowWindow(data->hwnd, SW_SHOW);
     UpdateWindow(data->hwnd);
-    
+
     return 1;
 }
 
@@ -670,33 +683,33 @@ int C89FW_update(C89FW_window_t* window) {
     MSG msg;
     LARGE_INTEGER current_time;
     int i;
-    
+
     if (!window || !window->internal) return 0;
     data = (C89FW_win32_data_t*)window->internal;
     raw = &data->raw;
     if (window->should_close) return 0;
-    
+
     QueryPerformanceCounter(&current_time);
     window->delta_time = (double)(current_time.QuadPart - data->last_time.QuadPart) / (double)data->frequency.QuadPart;
     window->time = (double)(current_time.QuadPart - data->start_time.QuadPart) / (double)data->frequency.QuadPart;
     data->last_time = current_time;
-    
+
     memcpy(window->keys_previous, window->keys, sizeof(window->keys));
     memcpy(window->mouse_buttons_previous, window->mouse_buttons, sizeof(window->mouse_buttons));
     { int g; for (g = 0; g < 4; g++) memcpy(window->gamepads[g].buttons_previous, window->gamepads[g].buttons, sizeof(window->gamepads[g].buttons)); }
-    
+
     memset(raw->key_changes, 0, sizeof(raw->key_changes));
     memset(raw->mouse_button_changes, 0, sizeof(raw->mouse_button_changes));
     raw->mouse_delta_x = 0; raw->mouse_delta_y = 0;
     raw->scroll_delta_x = 0.0; raw->scroll_delta_y = 0.0;
     raw->resized = 0; raw->focus_changed = 0;
-    
+
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) { window->should_close = 1; return 0; }
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-    
+
     for (i = 0; i < C89FW_KEY_COUNT; i++) {
         if (raw->key_changes[i] == 1) window->keys[i] = 1;
         else if (raw->key_changes[i] == 2) window->keys[i] = 0;
@@ -705,15 +718,14 @@ int C89FW_update(C89FW_window_t* window) {
         if (raw->mouse_button_changes[i] == 1) window->mouse_buttons[i] = 1;
         else if (raw->mouse_button_changes[i] == 2) window->mouse_buttons[i] = 0;
     }
-    
+
     window->mouse_delta_x = raw->mouse_delta_x;
     window->mouse_delta_y = raw->mouse_delta_y;
     window->mouse_x = raw->mouse_x;
     window->mouse_y = raw->mouse_y;
     window->mouse_scroll_x = raw->scroll_delta_x;
     window->mouse_scroll_y = raw->scroll_delta_y;
-    
-    /* Store resize as pending - application must call C89FW_apply_resize */
+
     if (raw->resized) {
         C89FW_event_t event;
         raw->pending_resize = 1;
@@ -726,7 +738,7 @@ int C89FW_update(C89FW_window_t* window) {
         event.data.resize.height = raw->new_height;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &event);
     }
-    
+
     if (raw->focus_changed) {
         C89FW_event_t event;
         window->has_focus = raw->new_focus;
@@ -735,9 +747,9 @@ int C89FW_update(C89FW_window_t* window) {
         event.timestamp = window->time;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &event);
     }
-    
+
     C89FW_generate_events(window, window->time);
-    
+
     {
         C89FW_event_queue_t* queue = (C89FW_event_queue_t*)window->event_queue_internal;
         for (i = 0; i < 4; i++) {
@@ -802,17 +814,17 @@ int C89FW_update(C89FW_window_t* window) {
             }
         }
     }
-    
+
     return 1;
 }
 
 void C89FW_present(C89FW_window_t* window) {
     C89FW_win32_data_t* data;
     int use_w, use_h;
-    
+
     if (!window || !window->internal || !window->framebuffer) return;
     data = (C89FW_win32_data_t*)window->internal;
-    
+
     if (data->raw.pending_resize) {
         use_w = data->raw.pending_width;
         use_h = data->raw.pending_height;
@@ -820,29 +832,25 @@ void C89FW_present(C89FW_window_t* window) {
         use_w = window->width;
         use_h = window->height;
     }
-    
-    /* Update backbuffer if size changed */
-    if (!data->backbuffer || data->bmi.bmiHeader.biWidth != use_w || 
+
+    if (!data->backbuffer || data->bmi.bmiHeader.biWidth != use_w ||
         -data->bmi.bmiHeader.biHeight != use_h) {
         if (data->backbuffer) {
             DeleteObject(data->backbuffer);
             DeleteDC(data->backbuffer_dc);
         }
-        
+
         data->bmi.bmiHeader.biWidth = use_w;
         data->bmi.bmiHeader.biHeight = -use_h;
-        
-        data->backbuffer = CreateDIBSection(data->hdc, &data->bmi, DIB_RGB_COLORS, 
+
+        data->backbuffer = CreateDIBSection(data->hdc, &data->bmi, DIB_RGB_COLORS,
                                              &data->backbuffer_bits, NULL, 0);
         data->backbuffer_dc = CreateCompatibleDC(data->hdc);
         if (data->backbuffer) SelectObject(data->backbuffer_dc, data->backbuffer);
     }
-    
+
     if (data->backbuffer_bits && window->framebuffer) {
-        /* Copy framebuffer into DIB section (single memcpy instead of StretchDIBits) */
         memcpy(data->backbuffer_bits, window->framebuffer, use_w * use_h * 4);
-        
-        /* Fast 1:1 Blit - no scaling overhead */
         BitBlt(data->hdc, 0, 0, use_w, use_h, data->backbuffer_dc, 0, 0, SRCCOPY);
     }
 }
@@ -875,9 +883,18 @@ void C89FW_set_size(C89FW_window_t* window, int width, int height) {
     SetWindowPos(data->hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top, SWP_NOMOVE | SWP_NOZORDER);
 }
 
+C89FW_native_handles_t C89FW_get_native_handles(const C89FW_window_t* window) {
+    C89FW_native_handles_t handles = {0};
+    if (window && window->internal) {
+        C89FW_win32_data_t* data = (C89FW_win32_data_t*)window->internal;
+        handles.hwnd = data->hwnd;
+    }
+    return handles;
+}
+
 /* ========================================================================
- * Linux/X11 implementation - pure C89 + Xlib with MIT-SHM support
- * ======================================================================== */
+   LINUX / X11 IMPLEMENTATION
+   ======================================================================== */
 #elif defined(C89FW_LINUX)
 
 #include <X11/Xlib.h>
@@ -958,61 +975,32 @@ static C89FW_key_t C89FW_x11_translate_key(KeySym keysym) {
     }
 }
 
-/* MIT-SHM helper functions */
 static int C89FW_x11_init_shm(C89FW_x11_data_t* data) {
     int major, minor;
     Bool pixmaps;
-    
-    /* Query SHM extension */
-    if (!XShmQueryVersion(data->display, &major, &minor, &pixmaps)) {
-        return 0;
-    }
-    
+    if (!XShmQueryVersion(data->display, &major, &minor, &pixmaps)) return 0;
     return 1;
 }
 
 static XImage* C89FW_x11_create_shm_image(C89FW_x11_data_t* data, int width, int height) {
     XImage* img;
-    
-    img = XShmCreateImage(data->display, 
+    img = XShmCreateImage(data->display,
                           DefaultVisual(data->display, data->screen),
                           DefaultDepth(data->display, data->screen),
                           ZPixmap, NULL, &data->shminfo, width, height);
-    
     if (!img) return NULL;
-    
-    /* Allocate shared memory */
-    data->shminfo.shmid = shmget(IPC_PRIVATE, 
-                                  img->bytes_per_line * img->height, 
-                                  IPC_CREAT | 0777);
-    
-    if (data->shminfo.shmid < 0) {
-        XDestroyImage(img);
-        return NULL;
-    }
-    
-    /* Attach shared memory */
+    data->shminfo.shmid = shmget(IPC_PRIVATE, img->bytes_per_line * img->height, IPC_CREAT | 0777);
+    if (data->shminfo.shmid < 0) { XDestroyImage(img); return NULL; }
     data->shminfo.shmaddr = img->data = (char*)shmat(data->shminfo.shmid, 0, 0);
-    
-    if (data->shminfo.shmaddr == (char*)-1) {
-        XDestroyImage(img);
-        shmctl(data->shminfo.shmid, IPC_RMID, 0);
-        return NULL;
-    }
-    
+    if (data->shminfo.shmaddr == (char*)-1) { XDestroyImage(img); shmctl(data->shminfo.shmid, IPC_RMID, 0); return NULL; }
     data->shminfo.readOnly = False;
-    
-    /* Attach to X server */
     if (!XShmAttach(data->display, &data->shminfo)) {
         XDestroyImage(img);
         shmdt(data->shminfo.shmaddr);
         shmctl(data->shminfo.shmid, IPC_RMID, 0);
         return NULL;
     }
-    
-    /* Ensure server has processed the attach */
     XSync(data->display, False);
-    
     return img;
 }
 
@@ -1037,16 +1025,16 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     C89FW_event_queue_t* queue;
     XSetWindowAttributes swa;
     XSizeHints hints;
-    
+
     if (!window) return 0;
     memset(window, 0, sizeof(C89FW_window_t));
-    
+
     data = (C89FW_x11_data_t*)malloc(sizeof(C89FW_x11_data_t));
     queue = (C89FW_event_queue_t*)malloc(sizeof(C89FW_event_queue_t));
     if (!data || !queue) { free(data); free(queue); return 0; }
     memset(data, 0, sizeof(C89FW_x11_data_t));
     C89FW_event_queue_init(queue);
-    
+
     window->internal = data;
     window->event_queue_internal = queue;
     window->width = width;
@@ -1056,43 +1044,41 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     XInitThreads();
     data->display = XOpenDisplay(NULL);
     if (!data->display) { free(queue); free(data); return 0; }
-    
+
     data->screen = DefaultScreen(data->display);
-    
-    /* Check for MIT-SHM availability */
     data->use_shm = C89FW_x11_init_shm(data);
-    
+
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      StructureNotifyMask | FocusChangeMask;
-    
+
     data->window = XCreateWindow(data->display, RootWindow(data->display, data->screen),
         0, 0, width, height, 0, DefaultDepth(data->display, data->screen),
         InputOutput, DefaultVisual(data->display, data->screen), CWEventMask, &swa);
-    
+
     if (!data->window) { XCloseDisplay(data->display); free(queue); free(data); return 0; }
-    
+
     XStoreName(data->display, data->window, title);
-    
+
     hints.flags = PSize | PMinSize;
     hints.width = width;
     hints.height = height;
     hints.min_width = C89FW_MIN_WIDTH;
     hints.min_height = C89FW_MIN_HEIGHT;
     XSetNormalHints(data->display, data->window, &hints);
-    
+
     data->wm_delete_message = XInternAtom(data->display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(data->display, data->window, &data->wm_delete_message, 1);
-    
+
     data->gc = XCreateGC(data->display, data->window, 0, NULL);
     data->ximage = NULL;
-    
+
     XMapWindow(data->display, data->window);
     XFlush(data->display);
-    
+
     gettimeofday(&data->start_time, NULL);
     data->last_time = data->start_time;
-    
+
     return 1;
 }
 
@@ -1109,12 +1095,8 @@ void C89FW_close(C89FW_window_t* window) {
         window->event_queue_internal = NULL;
     }
     if (data->ximage) {
-        if (data->use_shm) {
-            C89FW_x11_destroy_shm_image(data);
-        } else {
-            data->ximage->data = NULL;
-            XDestroyImage(data->ximage);
-        }
+        if (data->use_shm) C89FW_x11_destroy_shm_image(data);
+        else { data->ximage->data = NULL; XDestroyImage(data->ximage); }
     }
     if (data->gc) XFreeGC(data->display, data->gc);
     if (data->window) XDestroyWindow(data->display, data->window);
@@ -1129,32 +1111,32 @@ int C89FW_update(C89FW_window_t* window) {
     XEvent xevent;
     struct timeval current_time;
     int i;
-    
+
     if (!window || !window->internal) return 0;
     data = (C89FW_x11_data_t*)window->internal;
     raw = &data->raw;
     if (window->should_close) return 0;
-    
+
     gettimeofday(&current_time, NULL);
     window->delta_time = (double)(current_time.tv_sec - data->last_time.tv_sec) +
                          (double)(current_time.tv_usec - data->last_time.tv_usec) / 1000000.0;
     window->time = (double)(current_time.tv_sec - data->start_time.tv_sec) +
                    (double)(current_time.tv_usec - data->start_time.tv_usec) / 1000000.0;
     data->last_time = current_time;
-    
+
     memcpy(window->keys_previous, window->keys, sizeof(window->keys));
     memcpy(window->mouse_buttons_previous, window->mouse_buttons, sizeof(window->mouse_buttons));
     { int g; for (g = 0; g < 4; g++) memcpy(window->gamepads[g].buttons_previous, window->gamepads[g].buttons, sizeof(window->gamepads[g].buttons)); }
-    
+
     memset(raw->key_changes, 0, sizeof(raw->key_changes));
     memset(raw->mouse_button_changes, 0, sizeof(raw->mouse_button_changes));
     raw->mouse_delta_x = 0; raw->mouse_delta_y = 0;
     raw->scroll_delta_x = 0.0; raw->scroll_delta_y = 0.0;
     raw->resized = 0; raw->focus_changed = 0;
-    
+
     while (XPending(data->display)) {
         XNextEvent(data->display, &xevent);
-        
+
         switch (xevent.type) {
             case ClientMessage:
                 if ((Atom)xevent.xclient.data.l[0] == data->wm_delete_message)
@@ -1230,7 +1212,7 @@ int C89FW_update(C89FW_window_t* window) {
             }
         }
     }
-    
+
     for (i = 0; i < C89FW_KEY_COUNT; i++) {
         if (raw->key_changes[i] == 1) window->keys[i] = 1;
         else if (raw->key_changes[i] == 2) window->keys[i] = 0;
@@ -1239,15 +1221,14 @@ int C89FW_update(C89FW_window_t* window) {
         if (raw->mouse_button_changes[i] == 1) window->mouse_buttons[i] = 1;
         else if (raw->mouse_button_changes[i] == 2) window->mouse_buttons[i] = 0;
     }
-    
+
     window->mouse_delta_x = raw->mouse_delta_x;
     window->mouse_delta_y = raw->mouse_delta_y;
     window->mouse_x = raw->mouse_x;
     window->mouse_y = raw->mouse_y;
     window->mouse_scroll_x = raw->scroll_delta_x;
     window->mouse_scroll_y = raw->scroll_delta_y;
-    
-    /* Store resize as pending - application must call C89FW_apply_resize */
+
     if (raw->resized) {
         C89FW_event_t event;
         data->pending_resize = 1;
@@ -1260,7 +1241,7 @@ int C89FW_update(C89FW_window_t* window) {
         event.data.resize.height = raw->new_height;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &event);
     }
-    
+
     if (raw->focus_changed) {
         C89FW_event_t event;
         window->has_focus = raw->new_focus;
@@ -1269,11 +1250,11 @@ int C89FW_update(C89FW_window_t* window) {
         event.timestamp = window->time;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &event);
     }
-    
+
     C89FW_generate_events(window, window->time);
-    
+
     for (i = 0; i < 4; i++) window->gamepads[i].present = 0;
-    
+
     return 1;
 }
 
@@ -1292,52 +1273,38 @@ void C89FW_present(C89FW_window_t* window) {
     C89FW_x11_data_t* data;
     int present_w, present_h;
     unsigned char* fb;
-    
+
     if (!window || !window->internal || !window->framebuffer) return;
     data = (C89FW_x11_data_t*)window->internal;
-    
-    /* Don't present if resize is pending */
+
     if (data->pending_resize) return;
-    
+
     present_w = window->width;
     present_h = window->height;
     fb = window->framebuffer;
-    
+
     if (data->use_shm) {
-        /* MIT-SHM fast path */
-        if (!data->ximage || 
-            data->ximage->width != present_w || 
+        if (!data->ximage ||
+            data->ximage->width != present_w ||
             data->ximage->height != present_h) {
-            
-            /* Destroy old SHM image if exists */
-            if (data->ximage) {
-                C89FW_x11_destroy_shm_image(data);
-            }
-            
-            /* Create new SHM image */
+            if (data->ximage) C89FW_x11_destroy_shm_image(data);
             data->ximage = C89FW_x11_create_shm_image(data, present_w, present_h);
         }
-        
+
         if (data->ximage && data->ximage->data) {
-            /* Zero-copy: framebuffer is copied once to shared memory */
             memcpy(data->ximage->data, fb, present_w * present_h * 4);
-            
-            /* X server reads directly from shared memory - no socket transfer! */
             XShmPutImage(data->display, data->window, data->gc, data->ximage,
                         0, 0, 0, 0, present_w, present_h, False);
             XFlush(data->display);
         }
     } else {
-        /* Standard X11 fallback path */
-        if (!data->ximage || 
-            data->ximage->width != present_w || 
+        if (!data->ximage ||
+            data->ximage->width != present_w ||
             data->ximage->height != present_h) {
-            
             if (data->ximage) {
                 data->ximage->data = NULL;
                 XDestroyImage(data->ximage);
             }
-            
             data->ximage = XCreateImage(data->display,
                 DefaultVisual(data->display, data->screen),
                 DefaultDepth(data->display, data->screen),
@@ -1345,12 +1312,9 @@ void C89FW_present(C89FW_window_t* window) {
                 (char*)fb,
                 present_w, present_h, 32, 0);
         }
-        
+
         if (!data->ximage) return;
-        
-        /* Update data pointer (framebuffer may have changed after resize) */
         data->ximage->data = (char*)fb;
-        
         XPutImage(data->display, data->window, data->gc, data->ximage,
             0, 0, 0, 0, present_w, present_h);
         XFlush(data->display);
@@ -1373,9 +1337,19 @@ void C89FW_set_size(C89FW_window_t* window, int width, int height) {
     XFlush(data->display);
 }
 
+C89FW_native_handles_t C89FW_get_native_handles(const C89FW_window_t* window) {
+    C89FW_native_handles_t handles = {0};
+    if (window && window->internal) {
+        C89FW_x11_data_t* data = (C89FW_x11_data_t*)window->internal;
+        handles.display = data->display;
+        handles.window = data->window;
+    }
+    return handles;
+}
+
 /* ========================================================================
- * macOS (Cocoa) implementation
- * ======================================================================== */
+   MACOS / COCOA IMPLEMENTATION
+   ======================================================================== */
 #elif defined(C89FW_MACOS)
 
 #include <Cocoa/Cocoa.h>
@@ -1633,57 +1607,58 @@ int C89FW_open(C89FW_window_t* window, int width, int height, const char* title)
     C89FW_WindowDelegate* delegate;
     C89FW_WindowView* view;
     NSString* titleString;
-    
+
     if (!window) return 0;
     memset(window, 0, sizeof(C89FW_window_t));
-    
+
     data = (C89FW_mac_data_t*)malloc(sizeof(C89FW_mac_data_t));
     queue = (C89FW_event_queue_t*)malloc(sizeof(C89FW_event_queue_t));
     if (!data || !queue) { free(data); free(queue); return 0; }
     memset(data, 0, sizeof(C89FW_mac_data_t));
     C89FW_event_queue_init(queue);
-    
+
     window->internal = data;
     window->event_queue_internal = queue;
     window->width = width;
     window->height = height;
     window->has_focus = 1;
-    
+
     data->pool = [[NSAutoreleasePool alloc] init];
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:0];
-    
+
     frame = NSMakeRect(0.0f, 0.0f, (CGFloat)width, (CGFloat)height);
-    
+
     data->ns_window = [[NSWindow alloc] initWithContentRect:frame
-        styleMask:(NSTitledWindowMask | NSClosableWindowMask | 
+        styleMask:(NSTitledWindowMask | NSClosableWindowMask |
                    NSMiniaturizableWindowMask | NSResizableWindowMask)
         backing:NSBackingStoreBuffered defer:NO];
-    
+
     titleString = [NSString stringWithUTF8String:title];
     [data->ns_window setTitle:titleString];
     [data->ns_window setAcceptsMouseMovedEvents:YES];
-    
+
     delegate = [[C89FW_WindowDelegate alloc] initWithWindow:window];
     [data->ns_window setDelegate:delegate];
-    
+
     view = [[C89FW_WindowView alloc] initWithFrame:frame window:window];
-    
-    /* Setup CALayer for efficient rendering */
+
     data->contentLayer = [CALayer layer];
     [view setLayer:data->contentLayer];
     [view setWantsLayer:YES];
-    
+
     [data->ns_window setContentView:view];
     [data->ns_window makeFirstResponder:view];
     [data->ns_window makeKeyAndOrderFront:nil];
-    
+
     [NSApp activateIgnoringOtherApps:YES];
-    
+
+    data->ns_view = view;
+
     mach_timebase_info(&data->timebase);
     data->start_time = mach_absolute_time();
     data->last_time = data->start_time;
-    
+
     return 1;
 }
 
@@ -1711,29 +1686,29 @@ int C89FW_update(C89FW_window_t* window) {
     NSEvent* event;
     uint64_t current_time;
     int i;
-    
+
     if (!window || !window->internal) return 0;
     data = (C89FW_mac_data_t*)window->internal;
     raw = &data->raw;
     if (window->should_close) return 0;
-    
+
     current_time = mach_absolute_time();
     window->delta_time = (double)(current_time - data->last_time) *
                          (double)data->timebase.numer / (double)data->timebase.denom / 1000000000.0;
     window->time = (double)(current_time - data->start_time) *
                    (double)data->timebase.numer / (double)data->timebase.denom / 1000000000.0;
     data->last_time = current_time;
-    
+
     memcpy(window->keys_previous, window->keys, sizeof(window->keys));
     memcpy(window->mouse_buttons_previous, window->mouse_buttons, sizeof(window->mouse_buttons));
     { int g; for (g = 0; g < 4; g++) memcpy(window->gamepads[g].buttons_previous, window->gamepads[g].buttons, sizeof(window->gamepads[g].buttons)); }
-    
+
     memset(raw->key_changes, 0, sizeof(raw->key_changes));
     memset(raw->mouse_button_changes, 0, sizeof(raw->mouse_button_changes));
     raw->mouse_delta_x = 0; raw->mouse_delta_y = 0;
     raw->scroll_delta_x = 0.0; raw->scroll_delta_y = 0.0;
     raw->resized = 0; raw->focus_changed = 0;
-    
+
     event = [NSApp nextEventMatchingMask:NSAnyEventMask
                                untilDate:[NSDate distantPast]
                                   inMode:NSDefaultRunLoopMode
@@ -1745,7 +1720,7 @@ int C89FW_update(C89FW_window_t* window) {
                                       inMode:NSDefaultRunLoopMode
                                      dequeue:YES];
     }
-    
+
     for (i = 0; i < C89FW_KEY_COUNT; i++) {
         if (raw->key_changes[i] == 1) window->keys[i] = 1;
         else if (raw->key_changes[i] == 2) window->keys[i] = 0;
@@ -1754,14 +1729,14 @@ int C89FW_update(C89FW_window_t* window) {
         if (raw->mouse_button_changes[i] == 1) window->mouse_buttons[i] = 1;
         else if (raw->mouse_button_changes[i] == 2) window->mouse_buttons[i] = 0;
     }
-    
+
     window->mouse_delta_x = raw->mouse_delta_x;
     window->mouse_delta_y = raw->mouse_delta_y;
     window->mouse_x = raw->mouse_x;
     window->mouse_y = raw->mouse_y;
     window->mouse_scroll_x = raw->scroll_delta_x;
     window->mouse_scroll_y = raw->scroll_delta_y;
-    
+
     if (raw->resized) {
         C89FW_event_t wevent;
         data->pending_resize = 1;
@@ -1774,7 +1749,7 @@ int C89FW_update(C89FW_window_t* window) {
         wevent.data.resize.height = raw->new_height;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &wevent);
     }
-    
+
     if (raw->focus_changed) {
         C89FW_event_t wevent;
         window->has_focus = raw->new_focus;
@@ -1783,55 +1758,12 @@ int C89FW_update(C89FW_window_t* window) {
         wevent.timestamp = window->time;
         C89FW_event_queue_push((C89FW_event_queue_t*)window->event_queue_internal, &wevent);
     }
-    
-    C89FW_generate_events(window, window->time);
-    
-    for (i = 0; i < 4; i++) window->gamepads[i].present = 0;
-    
-    return 1;
-}
 
-void C89FW_present(C89FW_window_t* window) {
-    C89FW_mac_data_t* data;
-    CGColorSpaceRef colorSpace;
-    CGDataProviderRef provider;
-    CGImageRef image;
-    int use_w, use_h;
-    
-    if (!window || !window->internal || !window->framebuffer) return;
-    data = (C89FW_mac_data_t*)window->internal;
-    
-    if (data->pending_resize) {
-        use_w = data->pending_width;
-        use_h = data->pending_height;
-    } else {
-        use_w = window->width;
-        use_h = window->height;
-    }
-    
-    if (!data->contentLayer) return;
-    
-    /* Create image directly from framebuffer without intermediate copies */
-    colorSpace = CGColorSpaceCreateDeviceRGB();
-    provider = CGDataProviderCreateWithData(NULL, window->framebuffer,
-        use_w * use_h * 4, NULL);
-    
-    image = CGImageCreate((size_t)use_w, (size_t)use_h, 8, 32,
-        (size_t)(use_w * 4), colorSpace,
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
-        provider, NULL, NO, kCGRenderingIntentDefault);
-    
-    if (image) {
-        /* Use CATransaction to disable implicit animations */
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        data->contentLayer.contents = (id)image;
-        [CATransaction commit];
-        CGImageRelease(image);
-    }
-    
-    CGDataProviderRelease(provider);
-    CGColorSpaceRelease(colorSpace);
+    C89FW_generate_events(window, window->time);
+
+    for (i = 0; i < 4; i++) window->gamepads[i].present = 0;
+
+    return 1;
 }
 
 void C89FW_apply_resize(C89FW_window_t* window) {
@@ -1843,6 +1775,47 @@ void C89FW_apply_resize(C89FW_window_t* window) {
         window->height = data->pending_height;
         data->pending_resize = 0;
     }
+}
+
+void C89FW_present(C89FW_window_t* window) {
+    C89FW_mac_data_t* data;
+    CGColorSpaceRef colorSpace;
+    CGDataProviderRef provider;
+    CGImageRef image;
+    int use_w, use_h;
+
+    if (!window || !window->internal || !window->framebuffer) return;
+    data = (C89FW_mac_data_t*)window->internal;
+
+    if (data->pending_resize) {
+        use_w = data->pending_width;
+        use_h = data->pending_height;
+    } else {
+        use_w = window->width;
+        use_h = window->height;
+    }
+
+    if (!data->contentLayer) return;
+
+    colorSpace = CGColorSpaceCreateDeviceRGB();
+    provider = CGDataProviderCreateWithData(NULL, window->framebuffer,
+        use_w * use_h * 4, NULL);
+
+    image = CGImageCreate((size_t)use_w, (size_t)use_h, 8, 32,
+        (size_t)(use_w * 4), colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+        provider, NULL, NO, kCGRenderingIntentDefault);
+
+    if (image) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        data->contentLayer.contents = (id)image;
+        [CATransaction commit];
+        CGImageRelease(image);
+    }
+
+    CGDataProviderRelease(provider);
+    CGColorSpaceRelease(colorSpace);
 }
 
 void C89FW_set_title(C89FW_window_t* window, const char* title) {
@@ -1863,6 +1836,17 @@ void C89FW_set_size(C89FW_window_t* window, int width, int height) {
     [data->ns_window setFrame:frame display:YES];
 }
 
+C89FW_native_handles_t C89FW_get_native_handles(const C89FW_window_t* window) {
+    C89FW_native_handles_t handles = {0};
+    if (window && window->internal) {
+        C89FW_mac_data_t* data = (C89FW_mac_data_t*)window->internal;
+        handles.ns_window = data->ns_window;
+        handles.ns_view = data->ns_view;
+    }
+    return handles;
+}
+
 #endif /* C89FW_MACOS */
 
+#endif /* C89FW_IMPLEMENTATION_DONE */
 #endif /* C89FW_IMPLEMENTATION */

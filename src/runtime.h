@@ -5,7 +5,9 @@
 #include "input.h"
 #include "common.h"
 #include "physics.h"
-#include "rasterizer.h"
+
+#define RASTERIZER_IMPLEMENTATION
+#include "rasterizer/rasterizer.h"
 #include "scripts.h"
 #include "clock.h"
 #include "cpu_threads.h"
@@ -37,6 +39,12 @@ extern "C" {
 #define SCENARIO_DEFAULT_HEIGHT (144 * SCENARIO_WINDOW_SCALE)
 
 /* ------------------------------------------------------------------------
+   Globals used by Lua and render loop
+   ------------------------------------------------------------------------ */
+static vec3 light_dir, light_col, ambient_col;
+static C89GL_Context g_gl_ctx;
+
+/* ------------------------------------------------------------------------
    Scenario world
    ------------------------------------------------------------------------ */
 typedef struct scenario_world {
@@ -61,6 +69,10 @@ static real sc_cam_fov    = 90.0f;
 static u8   sc_clear_r = 16, sc_clear_g = 24, sc_clear_b = 40;
 static i32  sc_pause_physics = 0;
 static real sc_fixed_dt = 1.0f / 60.0f;
+
+/* ---- Debug: track printed materials ---- */
+static int g_printed_materials[256];
+static int g_print_material_count = 0;
 
 /* ------------------------------------------------------------------------
    Lua helper – return the internal physics_body for a given entity index,
@@ -111,6 +123,13 @@ static i32 scenario_load_tag(const char *scenario_name) {
             sc_clear_b = color_to_u8(g->clear_color.position.z);
             render_set_fog(g->fog_color, g->fog_start, g->fog_end);
             render_set_light(g->light_dir, g->light_col, g->ambient_col);
+
+            /* DEBUG: Print globals values */
+            printf("Globals loaded:\n");
+            printf("  Light dir: (%f, %f, %f)\n", g->light_dir.position.x, g->light_dir.position.y, g->light_dir.position.z);
+            printf("  Light col: (%f, %f, %f)\n", g->light_col.position.x, g->light_col.position.y, g->light_col.position.z);
+            printf("  Ambient col: (%f, %f, %f)\n", g->ambient_col.position.x, g->ambient_col.position.y, g->ambient_col.position.z);
+            printf("  Clear color: (%f, %f, %f)\n", g->clear_color.position.x, g->clear_color.position.y, g->clear_color.position.z);
         }
     }
 
@@ -158,7 +177,6 @@ static i32 scenario_load_tag(const char *scenario_name) {
     return scn_handle;
 }
 
-/* TODO: move to rasterizer.h */
 /* ------------------------------------------------------------------------
    Draw one model primitive with its material 
    ------------------------------------------------------------------------ */
@@ -180,6 +198,26 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     if (!mat) {
         static material_definition fallback = DEFAULT_MATERIAL_BRICK;
         mat = &fallback;
+    }
+
+    /* ---- DEBUG: Print material info once per unique material ---- */
+    {
+        int already_printed = 0;
+        int j;
+        for (j = 0; j < g_print_material_count; j++) {
+            if (g_printed_materials[j] == resolved_mat_handle) {
+                already_printed = 1;
+                break;
+            }
+        }
+        if (!already_printed && g_print_material_count < 256) {
+            g_printed_materials[g_print_material_count++] = resolved_mat_handle;
+            printf("Primitive material: handle=%d color=(%f,%f,%f) effects=0x%x ambient_factor=%f\n",
+                   resolved_mat_handle,
+                   mat->color.color.r, mat->color.color.g, mat->color.color.b,
+                   mat->effects,
+                   mat->ambient_light_factor);
+        }
     }
 
     model_vertex *verts = (model_vertex*)prim->vertices.address;
@@ -207,12 +245,11 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 }
 
-/* TODO: move to rasterizer.h */
 /* ------------------------------------------------------------------------
-    Main render call
-    ------------------------------------------------------------------------ */
+   Main render call
+   ------------------------------------------------------------------------ */
 static void scenario_render(void) {
-    real aspect = (real)RENDER_WIDTH / (real)RENDER_HEIGHT;
+    real aspect = (real)render_get_render_width() / (real)render_get_render_height();
     i32 i;
 
     render_set_camera(sc_cam_eye, sc_cam_center, sc_cam_up,
@@ -265,7 +302,6 @@ static i32 lua_to_vec3_or_error(lua_State *L, i32 index, vec3 *out, const char *
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_get_block_field. */
 static i32 lua_check_entity_id(lua_State *L, i32 index) {
     i32 id = (i32)luaL_checkinteger(L, index);
     if (id < 0 || id >= g_scene_world->entity_count)
@@ -314,7 +350,6 @@ static i32 lua_clear(lua_State *L) {
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_camera_eye(lua_State *L) {
     i32 argc = lua_gettop(L);
     if (argc == 1) {
@@ -329,7 +364,6 @@ static i32 lua_camera_eye(lua_State *L) {
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_camera_lookat(lua_State *L) {
     i32 argc = lua_gettop(L);
     if (argc == 2) {
@@ -348,13 +382,11 @@ static i32 lua_camera_lookat(lua_State *L) {
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_camera_fov(lua_State *L) {
     sc_cam_fov = (real)luaL_checknumber(L, 1);
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 dir, col, amb;
@@ -375,11 +407,13 @@ static i32 lua_light(lua_State *L) {
     } else {
         return luaL_error(L, "light(dir, color, ambient) or light(dirx,diry,dirz, colr,colg,colb, ambr,ambg,ambb)");
     }
-    render_set_light(dir, col, amb);
+    light_dir = dir;
+    light_col = col;
+    ambient_col = amb;
+    render_set_light(light_dir, light_col, ambient_col);
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light_direction(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 dir;
@@ -392,11 +426,11 @@ static i32 lua_light_direction(lua_State *L) {
     } else {
         return luaL_error(L, "light_direction(vec3) or light_direction(x,y,z)");
     }
-    render_set_light(dir, light_col, ambient_col);
+    light_dir = dir;
+    render_set_light(light_dir, light_col, ambient_col);
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light_color(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 col;
@@ -409,11 +443,11 @@ static i32 lua_light_color(lua_State *L) {
     } else {
         return luaL_error(L, "light_color(vec3) or light_color(r,g,b)");
     }
-    render_set_light(light_dir, col, ambient_col);
+    light_col = col;
+    render_set_light(light_dir, light_col, ambient_col);
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_light_ambient(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 amb;
@@ -426,11 +460,11 @@ static i32 lua_light_ambient(lua_State *L) {
     } else {
         return luaL_error(L, "light_ambient(vec3) or light_ambient(r,g,b)");
     }
-    render_set_light(light_dir, light_col, amb);
+    ambient_col = amb;
+    render_set_light(light_dir, light_col, ambient_col);
     return 0;
 }
 
-/* TODO: Remove this and make it setable through tag_set_field. */
 static i32 lua_clear_color(lua_State *L) {
     i32 argc = lua_gettop(L);
     vec3 color;
@@ -449,7 +483,6 @@ static i32 lua_clear_color(lua_State *L) {
     return 0;
 }
 
-/* TODO: consider making this work using tag_load instead of having it's own function. */
 static i32 lua_load_scenario(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
     i32 handle = scenario_load_tag(name);
@@ -892,8 +925,6 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_set_global_integer(state, "SHADE_WIREFRAME",    SHADE_WIREFRAME);
     lua_set_global_integer(state, "SHADE_FLAT",         SHADE_FLAT);
     lua_set_global_integer(state, "SHADE_GOURAUD",      SHADE_GOURAUD);
-    lua_set_global_integer(state, "SHADE_QUADRATIC",    SHADE_QUADRATIC);
-    lua_set_global_integer(state, "SHADE_CUBIC",        SHADE_CUBIC);
     lua_set_global_integer(state, "SHADE_PHONG",        SHADE_PHONG);
 
     /* Tag groups. */
@@ -945,11 +976,49 @@ static void runtime_init(void) {
         return;
     }
 
-    if (render_init(width, height) != 0) {
+    /* ---- Create OpenGL context ---- */
+    if (!C89GL_create_context(window_get(), &g_gl_ctx)) {
+        fprintf(stderr, "Failed to create OpenGL context\n");
+        window_shutdown();
+        return;
+    }
+    C89GL_make_current(&g_gl_ctx);
+    if (!C89GL_load_functions()) {
+        fprintf(stderr, "Failed to load OpenGL functions\n");
+        window_shutdown();
+        return;
+    }
+
+    if (render_init(width, height, &g_gl_ctx) == 0) {
         fprintf(stderr, "Failed to initialise renderer\n");
         window_shutdown();
         return;
     }
+
+    printf("FBO check: %d\n", C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER));
+    printf("OpenGL version: %s\n", C89GL_glGetString(GL_VERSION));
+    printf("OpenGL vendor: %s\n", C89GL_glGetString(GL_VENDOR));
+    printf("OpenGL renderer: %s\n", C89GL_glGetString(GL_RENDERER));
+
+    /* ---- RED SCREEN TEST ---- */
+    printf("Red screen test: clearing to red and swapping...\n");
+    C89GL_glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    C89GL_glClear(GL_COLOR_BUFFER_BIT);
+    C89GL_swap_buffers(&g_gl_ctx);
+#ifdef _WIN32
+    Sleep(2000);
+#else
+    sleep(2);
+#endif
+    /* --------------------------- */
+
+    /* ---- FORCE BRIGHT AMBIENT FOR TESTING ---- */
+    printf("Forcing bright ambient for testing...\n");
+    light_dir = vec3_init_from_3(0.0f, -1.0f, -1.0f);
+    light_col = vec3_init_from_3(1.0f, 1.0f, 1.0f);
+    ambient_col = vec3_init_from_3(0.5f, 0.5f, 0.5f);
+    render_set_light(light_dir, light_col, ambient_col);
+    /* ------------------------------------------- */
 
     tag_register_default_all();
     clock_init();
@@ -1075,4 +1144,3 @@ static void runtime_start(void)
 #endif
 
 #endif /* RUNTIME_H */
-

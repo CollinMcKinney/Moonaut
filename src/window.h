@@ -4,7 +4,7 @@
 #define C89FW_IMPLEMENTATION
 #include "../libs/C89FW/C89FW.h"
 
-#include "rasterizer.h"
+#include "rasterizer/rasterizer.h"
 
 #ifdef __cplusplus
 extern "C" {
