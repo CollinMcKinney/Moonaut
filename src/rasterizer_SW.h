@@ -1,25 +1,80 @@
 /*
- * rasterizer.h – Unified rasterizer (CPU)
+ * rasterizer_SW.h – Unified software rasterizer
  *
  * Uses material_definition.h for shading parameters.
  * Supports: Wireframe, Flat, Gouraud, Quadratic, Cubic, and Phong.
  * Transparent triangles are binned into tiles and rendered per-tile
  * with depth testing and writes to handle per-pixel ordering.
  * Each tile is processed by exactly one thread, eliminating race conditions.
+ *
+ * Public API is identical to rasterizer_GL.h, allowing drop‑in replacement.
  */
-#ifndef RASTERIZER_H
-#define RASTERIZER_H
+
+#ifndef RASTERIZER_SW_H
+#define RASTERIZER_SW_H
 
 #include "common.h"
 #include "tags/material.h"
+#include "tags/entity.h"
+#include "tags/model.h"
 #include <string.h>
 
-/* --- new jobgraph include --- */
+/* --- jobgraph include --- */
 #include "libs/jobgraph/jobgraph.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ---- Public API (identical to rasterizer_GL.h) ---- */
+int  render_init(i32 window_width, i32 window_height);
+void render_shutdown(void);
+void render_set_light(vec3 dir, vec3 col, vec3 amb);
+void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect);
+void render_set_fog(vec3 color, real start, real end);
+void render_set_time(real t);
+void render_clear(u8 r, u8 g, u8 b);
+void render_clear_color(real r, real g, real b);
+
+/* Legacy per‑triangle draw */
+void draw_triangle_shaded(
+    vec3 v0, vec3 v1, vec3 v2,
+    vec3 n0, vec3 n1, vec3 n2,
+    vec3 l0, vec3 l1, vec3 l2,
+    const struct material_definition *mat
+);
+
+/* Entity‑level draw */
+void render_draw_entity(const struct entity_definition *ent);
+void render_draw_entities(struct entity_definition **entities, int count);
+
+void render_finish(void);
+const u32* render_get_fb(void);
+int render_resize(i32 new_w, i32 new_h);
+
+/* ---- Upscaling control ---- */
+void render_set_render_resolution(i32 render_width, i32 render_height);
+
+/* ---- Get current render resolution ---- */
+i32 render_get_render_width(void);
+i32 render_get_render_height(void);
+
+static INLINE u8 color_to_u8(real x);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* RASTERIZER_SW_H */
+
+/* ================================================================
+   IMPLEMENTATION – define RASTERIZER_SW_IMPLEMENTATION in ONE .c file
+   ================================================================ */
+#ifdef RASTERIZER_SW_IMPLEMENTATION
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
 
 #define TILE_SIZE 128
 #define MIN_TILES_PER_THREAD 4
@@ -146,23 +201,19 @@ static tile_bounds screen_bounds;
 static frustum_plane frustum[6];
 static real render_time = 0.0f;
 
-/* ---------------------------------------------------------------------------*/
-/*  Forward Declarations                                                      */
-/* ---------------------------------------------------------------------------*/
-
-static void tile_init(i32 width, i32 height);
-static void tile_shutdown(void);
+/* ---- Forward declarations for static functions ---- */
 static void tile_bin_triangle(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
     vec3 c0, vec3 c1, vec3 c2,
-    vec3 orig_v0, vec3 orig_v1, vec3 orig_v2,
-    vec3 orig_l0, vec3 orig_l1, vec3 orig_l2,
-    vec3 orig_n0, vec3 orig_n1, vec3 orig_n2,
-    real *bary0, real *bary1, real *bary2,
-    i32 is_clipped,
+    vec3 ov0, vec3 ov1, vec3 ov2,
+    vec3 ol0, vec3 ol1, vec3 ol2,
+    vec3 on0, vec3 on1, vec3 on2,
+    real *ba0, real *ba1, real *ba2,
+    i32 ic,
     const struct material_definition *mat);
+
 static void tile_bin_transparent_triangle(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
@@ -173,61 +224,54 @@ static void tile_bin_transparent_triangle(
     real *bary0, real *bary1, real *bary2,
     i32 is_clipped,
     const struct material_definition *mat);
-static void tile_render_all(void);
-static void tile_clear_bins(void);
+
+static job_t* render_tile(void *arg);
+static job_t* tile_clear_bins_range(void *arg);
 static job_t* upscale_tile(void *arg);
 static job_t* clear_tile_range(void *arg);
-static job_t* tile_clear_bins_range(void *arg);
-static job_t* render_tile(void *arg);
+static void tile_init(i32 w, i32 h);
+static void tile_shutdown(void);
 
 /* ---------------------------------------------------------------------------*/
 /*  Inline Helpers                                                            */
 /* ---------------------------------------------------------------------------*/
 
-static INLINE void swapi(i32 *a, i32 *b)
-{
+static INLINE void swapi(i32 *a, i32 *b) {
     i32 t = *a;
     *a = *b;
     *b = t;
 }
 
-static INLINE void swapr(real *a, real *b)
-{
+static INLINE void swapr(real *a, real *b) {
     real t = *a;
     *a = *b;
     *b = t;
 }
 
-static INLINE void swapv(vec3 *a, vec3 *b)
-{
+static INLINE void swapv(vec3 *a, vec3 *b) {
     vec3 t = *a;
     *a = *b;
     *b = t;
 }
 
-static INLINE i32 raster_round(real x)
-{
+static INLINE i32 raster_round(real x) {
     return (i32)real_floor(x + 0.5f);
 }
 
-static INLINE u32 pack_color(u8 r, u8 g, u8 b)
-{
+static INLINE u32 pack_color(u8 r, u8 g, u8 b) {
     return (r << 16) | (g << 8) | b;
 }
 
-static INLINE real saturate(real x)
-{
+static INLINE real saturate(real x) {
     return real_clamp(x, 0.0f, 1.0f);
 }
 
-static INLINE u8 color_to_u8(real x)
-{
+static INLINE u8 color_to_u8(real x) {
     x = saturate(x);
     return (u8)(x * 255.0f + 0.5f);
 }
 
-static INLINE u32 pack_color_real(real r, real g, real b)
-{
+static INLINE u32 pack_color_real(real r, real g, real b) {
     return pack_color(color_to_u8(r), color_to_u8(g), color_to_u8(b));
 }
 
@@ -242,8 +286,7 @@ static INLINE vec3 interpolate_color_barycentric(
     return r;
 }
 
-static INLINE i32 clip_code(i32 x, i32 y, const tile_bounds *b)
-{
+static INLINE i32 clip_code(i32 x, i32 y, const tile_bounds *b) {
     i32 c = 0;
     if (x < b->x0)      c |= CLIP_LEFT;
     else if (x >= b->x1) c |= CLIP_RIGHT;
@@ -252,18 +295,15 @@ static INLINE i32 clip_code(i32 x, i32 y, const tile_bounds *b)
     return c;
 }
 
-static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw)
-{
+static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
     vec4 c = mat4_mul_vec4(vp, vec4_init_from_4(
         w.position.x, w.position.y, w.position.z, 1.0f));
-
     if (c.rotation.w <= 1e-6f) {
         *sx = -1;
         *sy = -1;
         *iw = 0;
         return;
     }
-
     *iw = 1.0f / c.rotation.w;
     real ndcx = c.position.x * (*iw);
     real ndcy = c.position.y * (*iw);
@@ -275,8 +315,7 @@ static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw)
 /*  Frustum Culling                                                           */
 /* ---------------------------------------------------------------------------*/
 
-static void extract_frustum_planes(void)
-{
+static void extract_frustum_planes(void) {
     vec4 c0 = vp.columns[0];
     vec4 c1 = vp.columns[1];
     vec4 c2 = vp.columns[2];
@@ -322,8 +361,7 @@ static void extract_frustum_planes(void)
     }
 }
 
-static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2)
-{
+static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
     i32 i;
     for (i = 0; i < 6; i++) {
         i32 o0 = (vec3_dot(frustum[i].normal, v0) + frustum[i].d) < 0.0f;
@@ -345,17 +383,14 @@ static INLINE i32 clip_triangle_plane(
 {
     i32 out_count = 0;
     i32 i, prev;
-
     for (i = 0, prev = in_count - 1; i < in_count; prev = i, i++) {
         real dp1 = vec3_dot(normal, in[prev].v) + d;
         real dp2 = vec3_dot(normal, in[i].v) + d;
         i32 in1 = (dp1 >= 0.0f);
         i32 in2 = (dp2 >= 0.0f);
-
         if (in1 && in2) {
             out[out_count++] = in[i];
-        }
-        else if (in1 && !in2) {
+        } else if (in1 && !in2) {
             real t = dp1 / (dp1 - dp2);
             clip_vertex iv;
             iv.v = vec3_add(in[prev].v, vec3_mul_scalar(vec3_sub(in[i].v, in[prev].v), t));
@@ -365,8 +400,7 @@ static INLINE i32 clip_triangle_plane(
             iv.l1_t = in[prev].l1_t + t * (in[i].l1_t - in[prev].l1_t);
             iv.l2_t = in[prev].l2_t + t * (in[i].l2_t - in[prev].l2_t);
             out[out_count++] = iv;
-        }
-        else if (!in1 && in2) {
+        } else if (!in1 && in2) {
             real t = dp1 / (dp1 - dp2);
             clip_vertex iv;
             iv.v = vec3_add(in[prev].v, vec3_mul_scalar(vec3_sub(in[i].v, in[prev].v), t));
@@ -404,21 +438,16 @@ static INLINE i32 clip_triangle_full(
 
     for (i = 0; i < 6; i++) {
         if (in_count < 3) return 0;
-
         all_in = 1;
         for (k = 0; k < in_count; k++) {
             real d = vec3_dot(frustum[i].normal, in[k].v) + frustum[i].d;
             if (d < 0.0f) all_in = 0;
         }
         if (all_in) continue;
-
         out_count = clip_triangle_plane(in, in_count, out,
             frustum[i].normal, frustum[i].d);
         if (out_count < 3) return 0;
-
-        for (j = 0; j < out_count; j++) {
-            in[j] = out[j];
-        }
+        for (j = 0; j < out_count; j++) in[j] = out[j];
         in_count = out_count;
     }
 
@@ -452,235 +481,6 @@ static INLINE i32 clip_triangle_full(
         cl_out[i*3+2].position.z = in[i+2].l0_t*l0.position.z + in[i+2].l1_t*l1.position.z + in[i+2].l2_t*l2.position.z;
     }
     return tri_count;
-}
-
-/* ---------------------------------------------------------------------------*/
-/*  API Functions                                                             */
-/* ---------------------------------------------------------------------------*/
-
-static void render_set_light(vec3 dir, vec3 col, vec3 amb)
-{
-    light_dir = vec3_normalize(dir);
-    light_col = col;
-    ambient_col = amb;
-}
-
-static void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect)
-{
-    mat4 proj = mat4_perspective(fov, aspect, 0.05f, 1000.0f);
-    mat4 view = mat4_lookat(eye, center, up);
-    vp = mat4_mul(proj, view);
-    cam_eye = eye;
-    extract_frustum_planes();
-}
-
-static void render_set_fog(vec3 color, real start, real end)
-{
-    fog_color = color;
-    fog_start = start;
-    fog_end = end;
-}
-
-static void render_set_time(real t)
-{
-    render_time = t;
-}
-
-static i32 render_init(i32 w, i32 h)
-{
-    fw = w;
-    fh = h;
-    fb_pitch = (w + 3) & ~3;
-
-    fb_front = (u32*)malloc(fb_pitch * h * sizeof(u32));
-    zbuf_front = (real*)malloc(fb_pitch * h * sizeof(real));
-    fb_back = (u32*)malloc(fb_pitch * h * sizeof(u32));
-    zbuf_back = (real*)malloc(fb_pitch * h * sizeof(real));
-
-    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
-        free(fb_front);
-        free(zbuf_front);
-        free(fb_back);
-        free(zbuf_back);
-        fb = NULL;
-        zbuf = NULL;
-        return -1;
-    }
-
-    internal_pitch = (RENDER_WIDTH + 3) & ~3;
-    fb_render = (u32*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(u32));
-    zbuf_render = (real*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(real));
-
-    if (!fb_render || !zbuf_render) {
-        free(fb_render);
-        free(zbuf_render);
-        fb_render = NULL;
-        zbuf_render = NULL;
-        return -1;
-    }
-
-    fb = fb_back;
-    zbuf = zbuf_back;
-    scale_x = (real)w / (real)RENDER_WIDTH;
-    scale_y = (real)h / (real)RENDER_HEIGHT;
-    tile_init(w, h);
-    return 0;
-}
-
-/* -------- render_clear (converted to chain/link) -------- */
-static void render_clear(u8 r, u8 g, u8 b)
-{
-    u32 col = pack_color(r, g, b);
-    i32 i, j;
-
-    if (!fb_render || !zbuf_render) return;
-
-    if (g_thread_count <= 1) {
-        u32 *fb32 = (u32*)fb_render;
-        real *zb = (real*)zbuf_render;
-        i32 n = internal_pitch * RENDER_HEIGHT;
-
-        for (i = 0; i + 3 < n; i += 4) {
-            fb32[i] = col;
-            fb32[i+1] = col;
-            fb32[i+2] = col;
-            fb32[i+3] = col;
-            zb[i] = 0.0f;
-            zb[i+1] = 0.0f;
-            zb[i+2] = 0.0f;
-            zb[i+3] = 0.0f;
-        }
-        return;
-    }
-
-    if (total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
-        if (clear_job_count < total_tiles) {
-            if (clear_jobs) free(clear_jobs);
-            clear_jobs = (clear_job*)malloc(total_tiles * sizeof(clear_job));
-            clear_job_count = total_tiles;
-        }
-
-        /* Build a chain with one link containing all clear jobs */
-        {
-            jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
-            joblink_t  *link  = jobchain_add_link(chain);
-
-            for (j = 0; j < total_tiles; j++) {
-                clear_jobs[j].tile_idx = j;
-                clear_jobs[j].color = col;
-                job_t *job = job_create(g_jobgraph, clear_tile_range, &clear_jobs[j]);
-                joblink_add_job(link, job);
-            }
-
-            jobgraph_submit(g_jobgraph);
-            jobgraph_wait(g_jobgraph);
-            jobgraph_reset(g_jobgraph);
-        }
-    }
-    else {
-        u32 *fb32 = (u32*)fb_render;
-        real *zb = (real*)zbuf_render;
-        i32 n = internal_pitch * RENDER_HEIGHT;
-
-        for (i = 0; i + 3 < n; i += 4) {
-            fb32[i] = col;
-            fb32[i+1] = col;
-            fb32[i+2] = col;
-            fb32[i+3] = col;
-            zb[i] = 0.0f;
-            zb[i+1] = 0.0f;
-            zb[i+2] = 0.0f;
-            zb[i+3] = 0.0f;
-        }
-    }
-}
-
-static const u32* render_get_fb(void)
-{
-    return fb_front;
-}
-
-static void render_shutdown(void)
-{
-    free(fb_front);
-    free(zbuf_front);
-    free(fb_back);
-    free(zbuf_back);
-    fb_front = fb_back = fb = NULL;
-    zbuf_front = zbuf_back = zbuf = NULL;
-    free(fb_render);
-    free(zbuf_render);
-    fb_render = NULL;
-    zbuf_render = NULL;
-    tile_shutdown();
-}
-
-static i32 render_resize(i32 new_w, i32 new_h)
-{
-    if (new_w == fw && new_h == fh) return 0;
-
-    free(fb_front);
-    free(zbuf_front);
-    free(fb_back);
-    free(zbuf_back);
-
-    fw = new_w;
-    fh = new_h;
-    fb_pitch = (new_w + 3) & ~3;
-
-    fb_front = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
-    zbuf_front = (real*)malloc(fb_pitch * new_h * sizeof(real));
-    fb_back = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
-    zbuf_back = (real*)malloc(fb_pitch * new_h * sizeof(real));
-
-    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
-        free(fb_front);
-        free(zbuf_front);
-        free(fb_back);
-        free(zbuf_back);
-        fb_front = fb_back = fb = NULL;
-        zbuf_front = zbuf_back = zbuf = NULL;
-        return -1;
-    }
-
-    fb = fb_back;
-    zbuf = zbuf_back;
-    scale_x = (real)new_w / (real)RENDER_WIDTH;
-    scale_y = (real)new_h / (real)RENDER_HEIGHT;
-    return 0;
-}
-
-/* ---------------------------------------------------------------------------*/
-/*  Transparent Pixel Write                                                    */
-/* ---------------------------------------------------------------------------*/
-
-static INLINE void write_scaled_transparent_pixel(
-    i32 rx, i32 ry, real iw,
-    vec3 color, real alpha, i32 effects)
-{
-    i32 ridx;
-    u32 dst, result;
-    u8 dr, dg, db, sr, sg, sb, ia;
-
-    if (rx < 0 || rx >= RENDER_WIDTH || ry < 0 || ry >= RENDER_HEIGHT) return;
-    if (iw <= 0.0f) return;
-
-    (void)effects;
-
-    ridx = ry * RENDER_WIDTH + rx;
-    dst = fb_render[ridx];
-    dr = (u8)((dst >> 16) & 0xFF);
-    dg = (u8)((dst >> 8) & 0xFF);
-    db = (u8)(dst & 0xFF);
-    sr = color_to_u8(color.color.r);
-    sg = color_to_u8(color.color.g);
-    sb = color_to_u8(color.color.b);
-    ia = (u8)(alpha * 255.0f + 0.5f);
-
-    result = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
-             ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
-             ((u32)((sb * ia + db * (255 - ia)) / 255));
-    fb_render[ridx] = result;
 }
 
 /* ---------------------------------------------------------------------------*/
@@ -761,8 +561,7 @@ static INLINE vec3 shade_surface(
                 if (ndotl > ndotv) {
                     sin_alpha = sin_v;
                     tan_beta = sin_l / ndotl;
-                }
-                else {
+                } else {
                     sin_alpha = sin_l;
                     tan_beta = sin_v / ndotv;
                 }
@@ -783,8 +582,7 @@ static INLINE vec3 shade_surface(
             vec3_mul_scalar(mat->gooch_cool, 1.0f - t),
             vec3_mul_scalar(mat->gooch_warm, t));
         color = vec3_mul(color, gooch);
-    }
-    else {
+    } else {
         color = vec3_mul(color, mat->color);
     }
 
@@ -929,6 +727,38 @@ static INLINE vec3 shade_surface(
 }
 
 /* ---------------------------------------------------------------------------*/
+/*  Transparent Pixel Write                                                    */
+/* ---------------------------------------------------------------------------*/
+
+static INLINE void write_scaled_transparent_pixel(
+    i32 rx, i32 ry, real iw,
+    vec3 color, real alpha, i32 effects)
+{
+    i32 ridx;
+    u32 dst, result;
+    u8 dr, dg, db, sr, sg, sb, ia;
+    (void)effects;
+
+    if (rx < 0 || rx >= RENDER_WIDTH || ry < 0 || ry >= RENDER_HEIGHT) return;
+    if (iw <= 0.0f) return;
+
+    ridx = ry * RENDER_WIDTH + rx;
+    dst = fb_render[ridx];
+    dr = (u8)((dst >> 16) & 0xFF);
+    dg = (u8)((dst >> 8) & 0xFF);
+    db = (u8)(dst & 0xFF);
+    sr = color_to_u8(color.color.r);
+    sg = color_to_u8(color.color.g);
+    sb = color_to_u8(color.color.b);
+    ia = (u8)(alpha * 255.0f + 0.5f);
+
+    result = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
+             ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
+             ((u32)((sb * ia + db * (255 - ia)) / 255));
+    fb_render[ridx] = result;
+}
+
+/* ---------------------------------------------------------------------------*/
 /*  Line Drawing (Wireframe)                                                  */
 /* ---------------------------------------------------------------------------*/
 
@@ -943,71 +773,61 @@ static void draw_line_z(
     i32 accept = 0;
 
     do {
-        if ((code0 | code1) == 0) {
-            accept = 1;
-            break;
+        if ((code0 | code1) == 0) { accept = 1; break; }
+        if ((code0 & code1) != 0) break;
+
+        i32 outcode = code0 ? code0 : code1;
+        real x = (real)x0;
+        real y = (real)y0;
+        if (outcode & CLIP_TOP) {
+            if (y1 != y0) {
+                x = x0 + (real)(x1 - x0) * (bounds->y1 - 1 - y0) / (y1 - y0);
+                y = bounds->y1 - 1;
+            }
+        } else if (outcode & CLIP_BOTTOM) {
+            if (y1 != y0) {
+                x = x0 + (real)(x1 - x0) * (bounds->y0 - y0) / (y1 - y0);
+                y = bounds->y0;
+            }
+        } else if (outcode & CLIP_RIGHT) {
+            if (x1 != x0) {
+                y = y0 + (real)(y1 - y0) * (bounds->x1 - 1 - x0) / (x1 - x0);
+                x = bounds->x1 - 1;
+            }
+        } else if (outcode & CLIP_LEFT) {
+            if (x1 != x0) {
+                y = y0 + (real)(y1 - y0) * (bounds->x0 - x0) / (x1 - x0);
+                x = bounds->x0;
+            }
         }
-        else if ((code0 & code1) != 0) {
-            break;
-        }
-        else {
-            i32 outcode = code0 ? code0 : code1;
-            real x = (real)x0;
-            real y = (real)y0;
 
-            if (outcode & CLIP_TOP) {
-                if (y1 != y0) {
-                    x = x0 + (real)(x1 - x0) * (bounds->y1 - 1 - y0) / (y1 - y0);
-                    y = bounds->y1 - 1;
-                }
-            }
-            else if (outcode & CLIP_BOTTOM) {
-                if (y1 != y0) {
-                    x = x0 + (real)(x1 - x0) * (bounds->y0 - y0) / (y1 - y0);
-                    y = bounds->y0;
-                }
-            }
-            else if (outcode & CLIP_RIGHT) {
-                if (x1 != x0) {
-                    y = y0 + (real)(y1 - y0) * (bounds->x1 - 1 - x0) / (x1 - x0);
-                    x = bounds->x1 - 1;
-                }
-            }
-            else if (outcode & CLIP_LEFT) {
-                if (x1 != x0) {
-                    y = y0 + (real)(y1 - y0) * (bounds->x0 - x0) / (x1 - x0);
-                    x = bounds->x0;
-                }
-            }
-
-            real dx_line = (real)(x1 - x0);
-            real dy_line = (real)(y1 - y0);
-            real len_sq = dx_line * dx_line + dy_line * dy_line;
-            if (len_sq > 0) {
-                real t;
-                real new_iw;
-                if (outcode == code0)
-                    t = real_sqrt((x - x0)*(x - x0) + (y - y0)*(y - y0)) /
-                        real_sqrt(len_sq);
-                else
-                    t = real_sqrt((x - x1)*(x - x1) + (y - y1)*(y - y1)) /
-                        real_sqrt(len_sq);
-                new_iw = (outcode == code0) ? iw0 + t * (iw1 - iw0)
-                                           : iw1 + t * (iw0 - iw1);
-                if (outcode == code0) iw0 = new_iw;
-                else iw1 = new_iw;
-            }
-
+        real dx_line = (real)(x1 - x0);
+        real dy_line = (real)(y1 - y0);
+        real len_sq = dx_line * dx_line + dy_line * dy_line;
+        if (len_sq > 0) {
+            real t;
+            real new_iw;
             if (outcode == code0) {
-                x0 = (i32)x;
-                y0 = (i32)y;
-                code0 = clip_code(x0, y0, bounds);
+                t = real_sqrt((x - x0)*(x - x0) + (y - y0)*(y - y0)) /
+                    real_sqrt(len_sq);
+            } else {
+                t = real_sqrt((x - x1)*(x - x1) + (y - y1)*(y - y1)) /
+                    real_sqrt(len_sq);
             }
-            else {
-                x1 = (i32)x;
-                y1 = (i32)y;
-                code1 = clip_code(x1, y1, bounds);
-            }
+            new_iw = (outcode == code0) ? iw0 + t * (iw1 - iw0)
+                                        : iw1 + t * (iw0 - iw1);
+            if (outcode == code0) iw0 = new_iw;
+            else iw1 = new_iw;
+        }
+
+        if (outcode == code0) {
+            x0 = (i32)x;
+            y0 = (i32)y;
+            code0 = clip_code(x0, y0, bounds);
+        } else {
+            x1 = (i32)x;
+            y1 = (i32)y;
+            code1 = clip_code(x1, y1, bounds);
         }
     } while (1);
 
@@ -1037,21 +857,11 @@ static void draw_line_z(
                         color.color.g, color.color.b);
                 }
                 if (x0 == x1 && y0 == y1) break;
-
                 i32 e2 = 2 * err;
-                if (e2 >= dy_abs) {
-                    err += dy_abs;
-                    x0 += sx;
-                    iw += diw;
-                }
-                if (e2 <= dx_abs) {
-                    err += dx_abs;
-                    y0 += sy;
-                    iw += diw;
-                }
+                if (e2 >= dy_abs) { err += dy_abs; x0 += sx; iw += diw; }
+                if (e2 <= dx_abs) { err += dx_abs; y0 += sy; iw += diw; }
             }
-        }
-        else {
+        } else {
             while (1) {
                 i32 ridx = y0 * RENDER_WIDTH + x0;
                 if (iw > zbuf_render[ridx]) {
@@ -1059,18 +869,9 @@ static void draw_line_z(
                     zbuf_render[ridx] = iw;
                 }
                 if (x0 == x1 && y0 == y1) break;
-
                 i32 e2 = 2 * err;
-                if (e2 >= dy_abs) {
-                    err += dy_abs;
-                    x0 += sx;
-                    iw += diw;
-                }
-                if (e2 <= dx_abs) {
-                    err += dx_abs;
-                    y0 += sy;
-                    iw += diw;
-                }
+                if (e2 >= dy_abs) { err += dy_abs; x0 += sx; iw += diw; }
+                if (e2 <= dx_abs) { err += dx_abs; y0 += sy; iw += diw; }
             }
         }
     }
@@ -1131,8 +932,7 @@ static void raster_triangle_flat(
                 ex = x0 + raster_round(dx2 * t);
                 siw = iw0 + diw0 * t;
                 eiw = iw0 + diw2 * t;
-            }
-            else {
+            } else {
                 real t = (real)(y - y1);
                 sx = x1 + raster_round(dx1 * t);
                 ex = x0 + raster_round(dx2 * (y - y0));
@@ -1144,7 +944,6 @@ static void raster_triangle_flat(
 
             {
                 real iw_step = (ex > sx) ? (eiw - siw) / (ex - sx) : 0;
-
                 if (sx < bounds->x0) {
                     siw += (bounds->x0 - sx) * iw_step;
                     sx = bounds->x0;
@@ -1164,8 +963,7 @@ static void raster_triangle_flat(
                         }
                         iw += iw_step;
                     }
-                }
-                else {
+                } else {
                     real iw = siw;
                     i32 x;
                     for (x = sx; x < ex; x++) {
@@ -1246,8 +1044,7 @@ static void raster_triangle_gouraud(
                 ce.color.r = c0.color.r + dc2.color.r*t;
                 ce.color.g = c0.color.g + dc2.color.g*t;
                 ce.color.b = c0.color.b + dc2.color.b*t;
-            }
-            else {
+            } else {
                 real t = (real)(y-y1);
                 sx = x1 + raster_round(dx1*t);
                 ex = x0 + raster_round(dx2*(y-y0));
@@ -1296,8 +1093,7 @@ static void raster_triangle_gouraud(
                         col.color.g += dc_step.color.g;
                         col.color.b += dc_step.color.b;
                     }
-                }
-                else {
+                } else {
                     real iw = siw;
                     vec3 col = cs;
                     i32 x;
@@ -1438,8 +1234,7 @@ static void raster_triangle_phong(
                         lpe_x = lp0w.position.x + dlpw2.position.x*t;
                         lpe_y = lp0w.position.y + dlpw2.position.y*t;
                         lpe_z = lp0w.position.z + dlpw2.position.z*t;
-                    }
-                    else {
+                    } else {
                         real t = (real)(y-y1);
                         sx = x1 + raster_round(dx1*t);
                         ex = x0 + raster_round(dx2*(real)(y-y0));
@@ -1494,8 +1289,7 @@ static void raster_triangle_phong(
                             dlp_step_x = (lpe_x-lps_x)/(real)(ex-sx);
                             dlp_step_y = (lpe_y-lps_y)/(real)(ex-sx);
                             dlp_step_z = (lpe_z-lps_z)/(real)(ex-sx);
-                        }
-                        else {
+                        } else {
                             dnw_step_x = dnw_step_y = dnw_step_z = 0;
                             dwp_step_x = dwp_step_y = dwp_step_z = 0;
                             dlp_step_x = dlp_step_y = dlp_step_z = 0;
@@ -1557,8 +1351,7 @@ static void raster_triangle_phong(
                                     lp_val_y += dlp_step_y;
                                     lp_val_z += dlp_step_z;
                                 }
-                            }
-                            else {
+                            } else {
                                 real iw = siw;
                                 i32 x;
                                 for (x = sx; x < ex; x++) {
@@ -1698,8 +1491,7 @@ static void raster_triangle_quadratic(
                     ex = x0 + raster_round(dx2*t);
                     siw = iw0 + diw0*t;
                     eiw = iw0 + diw2*t;
-                }
-                else {
+                } else {
                     real t = (real)(y-y1);
                     sx = x1 + raster_round(dx1*t);
                     ex = x0 + raster_round(dx2*(real)(y-y0));
@@ -1743,8 +1535,7 @@ static void raster_triangle_quadratic(
                                     a_val = la*bary0[0] + lb*bary1[0] + lc*bary2[0];
                                     b_val = la*bary0[1] + lb*bary1[1] + lc*bary2[1];
                                     c_val = la*bary0[2] + lb*bary1[2] + lc*bary2[2];
-                                }
-                                else {
+                                } else {
                                     a_val = la; b_val = lb; c_val = lc;
                                 }
 
@@ -1781,8 +1572,7 @@ static void raster_triangle_quadratic(
                             }
                             iw += iw_step;
                         }
-                    }
-                    else {
+                    } else {
                         real iw = siw;
                         i32 x;
                         for (x = sx; x < ex; x++) {
@@ -1806,8 +1596,7 @@ static void raster_triangle_quadratic(
                                     a_val = la*bary0[0] + lb*bary1[0] + lc*bary2[0];
                                     b_val = la*bary0[1] + lb*bary1[1] + lc*bary2[1];
                                     c_val = la*bary0[2] + lb*bary1[2] + lc*bary2[2];
-                                }
-                                else {
+                                } else {
                                     a_val = la; b_val = lb; c_val = lc;
                                 }
 
@@ -1983,8 +1772,7 @@ static void raster_triangle_cubic(
                     ex=x0+raster_round(dx2*t);
                     siw=iw0+diw0*t;
                     eiw=iw0+diw2*t;
-                }
-                else {
+                } else {
                     real t=(real)(y-y1);
                     sx=x1+raster_round(dx1*t);
                     ex=x0+raster_round(dx2*(real)(y-y0));
@@ -2026,8 +1814,7 @@ static void raster_triangle_cubic(
                                     a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];
                                     b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];
                                     c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];
-                                }
-                                else { a_val=la; b_val=lb; c_val=lc; }
+                                } else { a_val=la; b_val=lb; c_val=lc; }
 
                                 {
                                     vec3 fc;
@@ -2075,8 +1862,7 @@ static void raster_triangle_cubic(
                             }
                             iw+=iw_step;
                         }
-                    }
-                    else {
+                    } else {
                         real iw=siw;
                         i32 x;
                         for (x = sx; x<ex; x++) {
@@ -2098,8 +1884,7 @@ static void raster_triangle_cubic(
                                     a_val=la*bary0[0]+lb*bary1[0]+lc*bary2[0];
                                     b_val=la*bary0[1]+lb*bary1[1]+lc*bary2[1];
                                     c_val=la*bary0[2]+lb*bary1[2]+lc*bary2[2];
-                                }
-                                else { a_val=la; b_val=lb; c_val=lc; }
+                                } else { a_val=la; b_val=lb; c_val=lc; }
 
                                 {
                                     vec3 fc;
@@ -2241,7 +2026,7 @@ static void draw_triangle_internal(
 /*  Main Triangle Dispatch                                                    */
 /* ---------------------------------------------------------------------------*/
 
-static void draw_triangle_shaded(
+void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
@@ -2267,8 +2052,7 @@ static void draw_triangle_shaded(
             orig_c0 = shade_surface(n0, v0, l0, mat);
             orig_c1 = shade_surface(n1, v1, l1, mat);
             orig_c2 = shade_surface(n2, v2, l2, mat);
-        }
-        else {
+        } else {
             orig_c0 = vec3_init_from_3(0, 0, 0);
             orig_c1 = vec3_init_from_3(0, 0, 0);
             orig_c2 = vec3_init_from_3(0, 0, 0);
@@ -2308,8 +2092,7 @@ static void draw_triangle_shaded(
                                 b1[0], b1[1], b1[2]);
                             cc2 = interpolate_color_barycentric(orig_c0, orig_c1, orig_c2,
                                 b2[0], b2[1], b2[2]);
-                        }
-                        else {
+                        } else {
                             cc0 = vec3_init_from_3(0, 0, 0);
                             cc1 = vec3_init_from_3(0, 0, 0);
                             cc2 = vec3_init_from_3(0, 0, 0);
@@ -2320,16 +2103,14 @@ static void draw_triangle_shaded(
                                 cn0, cn1, cn2, cl0, cl1, cl2,
                                 v0, v1, v2, n0, n1, n2, l0, l1, l2,
                                 b0, b1, b2, 1, mat);
-                        }
-                        else {
+                        } else {
                             if (g_thread_count <= 1) {
                                 draw_triangle_internal(cv0, cv1, cv2,
                                     cn0, cn1, cn2, cl0, cl1, cl2,
                                     cc0, cc1, cc2, b0, b1, b2,
                                     v0, v1, v2, l0, l1, l2, n0, n1, n2,
                                     mat, &screen_bounds, 1);
-                            }
-                            else {
+                            } else {
                                 tile_bin_triangle(cv0, cv1, cv2,
                                     cn0, cn1, cn2, cl0, cl1, cl2,
                                     cc0, cc1, cc2,
@@ -2359,8 +2140,7 @@ static void draw_triangle_shaded(
                         orig_c0, orig_c1, orig_c2, zb, zb, zb,
                         v0, v1, v2, l0, l1, l2, n0, n1, n2,
                         mat, &screen_bounds, 0);
-                }
-                else {
+                } else {
                     tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2,
                         orig_c0, orig_c1, orig_c2,
                         v0, v1, v2, l0, l1, l2, n0, n1, n2,
@@ -2372,210 +2152,8 @@ static void draw_triangle_shaded(
 }
 
 /* ---------------------------------------------------------------------------*/
-/*  Upscale and Finish                                                        */
-/* ---------------------------------------------------------------------------*/
-
-static job_t* upscale_tile(void *arg)
-{
-    upscale_job *j = (upscale_job*)arg;
-    i32 y, x;
-
-    for (y = j->y_start; y < j->y_end; y++) {
-        i32 ry = (y * j->src_height) / j->dst_height;
-        i32 rb = y * j->dst_width;
-        i32 sb = ry * j->src_width;
-
-        for (x = j->x_start; x < j->x_end; x++) {
-            i32 rx = (x * j->src_width) / j->dst_width;
-            j->fb_dst[rb + x] = j->fb_src[sb + rx];
-        }
-    }
-    return NULL;
-}
-
-/* ---------------------------------------------------------------------------*/
 /*  Tile Management                                                           */
 /* ---------------------------------------------------------------------------*/
-
-static job_t* render_tile(void *arg)
-{
-    tile_job *j = (tile_job*)arg;
-    tile_bin *b = &tile_bins[j->tile_idx];
-
-    tile_bounds bnd;
-    bnd.x0 = j->tile_x;
-    bnd.y0 = j->tile_y;
-    bnd.x1 = (j->tile_x + j->tile_w > RENDER_WIDTH) ?
-             RENDER_WIDTH : j->tile_x + j->tile_w;
-    bnd.y1 = (j->tile_y + j->tile_h > RENDER_HEIGHT) ?
-             RENDER_HEIGHT : j->tile_y + j->tile_h;
-
-    /* Render opaque triangles */
-    if (b->tri_count > 0) {
-        i32 t;
-        for (t = 0; t < b->tri_count; t++) {
-            tile_tri *tr = &b->tris[t];
-
-            switch (tr->mode) {
-                case SHADE_WIREFRAME: {
-                    vec3 fn = vec3_normalize(vec3_cross(
-                        vec3_sub(tr->v1, tr->v0), vec3_sub(tr->v2, tr->v0)));
-                    vec3 fc = vec3_mul_scalar(
-                        vec3_add(vec3_add(tr->v0, tr->v1), tr->v2), 1.0f/3.0f);
-                    vec3 lc = vec3_mul_scalar(
-                        vec3_add(vec3_add(tr->l0, tr->l1), tr->l2), 1.0f/3.0f);
-                    vec3 col = shade_surface(fn, fc, lc, tr->mat);
-                    raster_triangle_wireframe(tr->v0, tr->v1, tr->v2, col,
-                        tr->mat->alpha, tr->mat->effects, &bnd);
-                    break;
-                }
-                case SHADE_FLAT: {
-                    vec3 fn = vec3_normalize(vec3_cross(
-                        vec3_sub(tr->orig_v1, tr->orig_v0),
-                        vec3_sub(tr->orig_v2, tr->orig_v0)));
-                    vec3 fc = vec3_mul_scalar(
-                        vec3_add(vec3_add(tr->orig_v0, tr->orig_v1), tr->orig_v2),
-                        1.0f/3.0f);
-                    vec3 lc = vec3_mul_scalar(
-                        vec3_add(vec3_add(tr->orig_l0, tr->orig_l1), tr->orig_l2),
-                        1.0f/3.0f);
-                    vec3 col = shade_surface(fn, fc, lc, tr->mat);
-                    raster_triangle_flat(tr->v0, tr->v1, tr->v2, col, tr->mat, &bnd);
-                    break;
-                }
-                case SHADE_GOURAUD:
-                    raster_triangle_gouraud(tr->v0, tr->v1, tr->v2,
-                        tr->c0, tr->c1, tr->c2, tr->mat, &bnd);
-                    break;
-
-                case SHADE_PHONG:
-                    raster_triangle_phong(tr->v0, tr->v1, tr->v2,
-                        tr->n0, tr->n1, tr->n2,
-                        tr->l0, tr->l1, tr->l2, tr->mat, &bnd);
-                    break;
-
-                case SHADE_QUADRATIC:
-                    raster_triangle_quadratic(tr->v0, tr->v1, tr->v2,
-                        tr->n0, tr->n1, tr->n2,
-                        tr->l0, tr->l1, tr->l2,
-                        tr->c0, tr->c1, tr->c2,
-                        tr->bary0, tr->bary1, tr->bary2,
-                        tr->orig_v0, tr->orig_v1, tr->orig_v2,
-                        tr->orig_l0, tr->orig_l1, tr->orig_l2,
-                        tr->orig_n0, tr->orig_n1, tr->orig_n2,
-                        tr->mat, &bnd, tr->is_clipped);
-                    break;
-
-                case SHADE_CUBIC:
-                    raster_triangle_cubic(tr->v0, tr->v1, tr->v2,
-                        tr->n0, tr->n1, tr->n2,
-                        tr->l0, tr->l1, tr->l2,
-                        tr->c0, tr->c1, tr->c2,
-                        tr->bary0, tr->bary1, tr->bary2,
-                        tr->orig_v0, tr->orig_v1, tr->orig_v2,
-                        tr->orig_l0, tr->orig_l1, tr->orig_l2,
-                        tr->orig_n0, tr->orig_n1, tr->orig_n2,
-                        tr->mat, &bnd, tr->is_clipped);
-                    break;
-
-                default:
-                    break;
-            }
-        }
-    }
-
-    /* Sort and render transparent triangles */
-    if (b->transparent_count > 0) {
-        /* Insertion sort by depth (smallest iw = farthest first) */
-        i32 ti, tj;
-        for (ti = 1; ti < b->transparent_count; ti++) {
-            tile_transparent_tri key = b->transparent_tris[ti];
-            tj = ti - 1;
-            while (tj >= 0 && b->transparent_tris[tj].depth > key.depth) {
-                b->transparent_tris[tj + 1] = b->transparent_tris[tj];
-                tj--;
-            }
-            b->transparent_tris[tj + 1] = key;
-        }
-
-        {
-            real zb[9] = {0};
-            for (ti = 0; ti < b->transparent_count; ti++) {
-                tile_transparent_tri *tt = &b->transparent_tris[ti];
-                vec3 tc0, tc1, tc2;
-                i32 nv = (tt->mode == SHADE_GOURAUD ||
-                          tt->mode == SHADE_QUADRATIC ||
-                          tt->mode == SHADE_CUBIC);
-                if (nv) {
-                    tc0 = shade_surface(tt->orig_n0, tt->orig_v0, tt->orig_l0, tt->mat);
-                    tc1 = shade_surface(tt->orig_n1, tt->orig_v1, tt->orig_l1, tt->mat);
-                    tc2 = shade_surface(tt->orig_n2, tt->orig_v2, tt->orig_l2, tt->mat);
-                }
-                else {
-                    tc0 = vec3_init_from_3(0, 0, 0);
-                    tc1 = vec3_init_from_3(0, 0, 0);
-                    tc2 = vec3_init_from_3(0, 0, 0);
-                }
-                draw_triangle_internal(
-                    tt->v0, tt->v1, tt->v2,
-                    tt->n0, tt->n1, tt->n2,
-                    tt->l0, tt->l1, tt->l2,
-                    tc0, tc1, tc2,
-                    tt->bary0, tt->bary1, tt->bary2,
-                    tt->orig_v0, tt->orig_v1, tt->orig_v2,
-                    tt->orig_l0, tt->orig_l1, tt->orig_l2,
-                    tt->orig_n0, tt->orig_n1, tt->orig_n2,
-                    tt->mat, &bnd, tt->is_clipped);
-            }
-        }
-    }
-    return NULL;
-}
-
-static void tile_init(i32 w, i32 h)
-{
-    i32 i;
-    (void)w;
-    (void)h;
-
-    screen_bounds.x0 = 0;
-    screen_bounds.y0 = 0;
-    screen_bounds.x1 = RENDER_WIDTH;
-    screen_bounds.y1 = RENDER_HEIGHT;
-
-    num_tiles_x = (RENDER_WIDTH + TILE_SIZE - 1) / TILE_SIZE;
-    num_tiles_y = (RENDER_HEIGHT + TILE_SIZE - 1) / TILE_SIZE;
-    total_tiles = num_tiles_x * num_tiles_y;
-
-    tile_bins = (tile_bin*)malloc(total_tiles * sizeof(tile_bin));
-    for (i = 0; i < total_tiles; i++) {
-        tile_bins[i].tri_count = 0;
-        tile_bins[i].transparent_count = 0;
-    }
-}
-
-static void tile_shutdown(void)
-{
-    if (tile_bins) {
-        free(tile_bins);
-        tile_bins = NULL;
-    }
-    if (job_pool) {
-        free(job_pool);
-        job_pool = NULL;
-        job_pool_size = 0;
-    }
-    if (upscale_jobs) {
-        free(upscale_jobs);
-        upscale_jobs = NULL;
-        upscale_job_count = 0;
-    }
-    if (clear_jobs) {
-        free(clear_jobs);
-        clear_jobs = NULL;
-        clear_job_count = 0;
-    }
-}
 
 static void tile_bin_triangle(
     vec3 v0, vec3 v1, vec3 v2,
@@ -2618,51 +2196,40 @@ static void tile_bin_triangle(
                 for (tx = tmx; tx <= tMx; tx++) {
                     i32 idx = bi + tx;
                     if (idx >= total_tiles) continue;
-
-                    {
-                        tile_bin *bn = &tile_bins[idx];
-                        if (bn->tri_count >= MAX_TRIS_PER_TILE) continue;
-
-                        {
-                            tile_tri *tr = &bn->tris[bn->tri_count++];
-                            tr->v0 = v0; tr->v1 = v1; tr->v2 = v2;
-                            tr->n0 = n0; tr->n1 = n1; tr->n2 = n2;
-                            tr->l0 = l0; tr->l1 = l1; tr->l2 = l2;
-                            tr->c0 = c0; tr->c1 = c1; tr->c2 = c2;
-                            tr->orig_v0 = ov0; tr->orig_v1 = ov1; tr->orig_v2 = ov2;
-                            tr->orig_l0 = ol0; tr->orig_l1 = ol1; tr->orig_l2 = ol2;
-                            tr->orig_n0 = on0; tr->orig_n1 = on1; tr->orig_n2 = on2;
-
-                            if (ba0) {
-                                tr->bary0[0] = ba0[0];
-                                tr->bary0[1] = ba0[1];
-                                tr->bary0[2] = ba0[2];
-                            }
-                            else {
-                                tr->bary0[0] = 0; tr->bary0[1] = 0; tr->bary0[2] = 0;
-                            }
-                            if (ba1) {
-                                tr->bary1[0] = ba1[0];
-                                tr->bary1[1] = ba1[1];
-                                tr->bary1[2] = ba1[2];
-                            }
-                            else {
-                                tr->bary1[0] = 0; tr->bary1[1] = 0; tr->bary1[2] = 0;
-                            }
-                            if (ba2) {
-                                tr->bary2[0] = ba2[0];
-                                tr->bary2[1] = ba2[1];
-                                tr->bary2[2] = ba2[2];
-                            }
-                            else {
-                                tr->bary2[0] = 0; tr->bary2[1] = 0; tr->bary2[2] = 0;
-                            }
-
-                            tr->is_clipped = ic;
-                            tr->mat = mat;
-                            tr->mode = mat->mode;
-                        }
+                    tile_bin *bn = &tile_bins[idx];
+                    if (bn->tri_count >= MAX_TRIS_PER_TILE) continue;
+                    tile_tri *tr = &bn->tris[bn->tri_count++];
+                    tr->v0 = v0; tr->v1 = v1; tr->v2 = v2;
+                    tr->n0 = n0; tr->n1 = n1; tr->n2 = n2;
+                    tr->l0 = l0; tr->l1 = l1; tr->l2 = l2;
+                    tr->c0 = c0; tr->c1 = c1; tr->c2 = c2;
+                    tr->orig_v0 = ov0; tr->orig_v1 = ov1; tr->orig_v2 = ov2;
+                    tr->orig_l0 = ol0; tr->orig_l1 = ol1; tr->orig_l2 = ol2;
+                    tr->orig_n0 = on0; tr->orig_n1 = on1; tr->orig_n2 = on2;
+                    if (ba0) {
+                        tr->bary0[0] = ba0[0];
+                        tr->bary0[1] = ba0[1];
+                        tr->bary0[2] = ba0[2];
+                    } else {
+                        tr->bary0[0] = 0; tr->bary0[1] = 0; tr->bary0[2] = 0;
                     }
+                    if (ba1) {
+                        tr->bary1[0] = ba1[0];
+                        tr->bary1[1] = ba1[1];
+                        tr->bary1[2] = ba1[2];
+                    } else {
+                        tr->bary1[0] = 0; tr->bary1[1] = 0; tr->bary1[2] = 0;
+                    }
+                    if (ba2) {
+                        tr->bary2[0] = ba2[0];
+                        tr->bary2[1] = ba2[1];
+                        tr->bary2[2] = ba2[2];
+                    } else {
+                        tr->bary2[0] = 0; tr->bary2[1] = 0; tr->bary2[2] = 0;
+                    }
+                    tr->is_clipped = ic;
+                    tr->mat = mat;
+                    tr->mode = mat->mode;
                 }
             }
         }
@@ -2709,10 +2276,8 @@ static void tile_bin_transparent_triangle(
         for (tx = tmx; tx <= tMx; tx++) {
             i32 idx = bi + tx;
             if (idx >= total_tiles) continue;
-
             tile_bin *bn = &tile_bins[idx];
             if (bn->transparent_count >= MAX_TRIS_PER_TILE) continue;
-
             tile_transparent_tri *tt = &bn->transparent_tris[bn->transparent_count++];
             tt->v0 = v0; tt->v1 = v1; tt->v2 = v2;
             tt->n0 = n0; tt->n1 = n1; tt->n2 = n2;
@@ -2724,8 +2289,7 @@ static void tile_bin_transparent_triangle(
                 tt->bary0[0] = bary0[0]; tt->bary0[1] = bary0[1]; tt->bary0[2] = bary0[2];
                 tt->bary1[0] = bary1[0]; tt->bary1[1] = bary1[1]; tt->bary1[2] = bary1[2];
                 tt->bary2[0] = bary2[0]; tt->bary2[1] = bary2[1]; tt->bary2[2] = bary2[2];
-            }
-            else {
+            } else {
                 memset(tt->bary0, 0, sizeof(tt->bary0));
                 memset(tt->bary1, 0, sizeof(tt->bary1));
                 memset(tt->bary2, 0, sizeof(tt->bary2));
@@ -2798,7 +2362,6 @@ static void tile_render_all(void)
     }
 }
 
-/* -------- tile_clear_bins (converted) -------- */
 static void tile_clear_bins(void)
 {
     if (g_thread_count > 1 &&
@@ -2825,8 +2388,7 @@ static void tile_clear_bins(void)
             jobgraph_wait(g_jobgraph);
             jobgraph_reset(g_jobgraph);
         }
-    }
-    else {
+    } else {
         i32 i;
         for (i = 0; i < total_tiles; i++) {
             tile_bins[i].tri_count = 0;
@@ -2887,9 +2449,377 @@ static job_t* clear_tile_range(void *arg)
     return NULL;
 }
 
-/* -------- render_finish (multi-threaded upscale converted) -------- */
-static void render_finish(void)
+static job_t* render_tile(void *arg)
 {
+    tile_job *j = (tile_job*)arg;
+    tile_bin *b = &tile_bins[j->tile_idx];
+
+    tile_bounds bnd;
+    bnd.x0 = j->tile_x;
+    bnd.y0 = j->tile_y;
+    bnd.x1 = (j->tile_x + j->tile_w > RENDER_WIDTH) ?
+             RENDER_WIDTH : j->tile_x + j->tile_w;
+    bnd.y1 = (j->tile_y + j->tile_h > RENDER_HEIGHT) ?
+             RENDER_HEIGHT : j->tile_y + j->tile_h;
+
+    /* Render opaque triangles */
+    if (b->tri_count > 0) {
+        i32 t;
+        for (t = 0; t < b->tri_count; t++) {
+            tile_tri *tr = &b->tris[t];
+
+            switch (tr->mode) {
+                case SHADE_WIREFRAME: {
+                    vec3 fn = vec3_normalize(vec3_cross(
+                        vec3_sub(tr->v1, tr->v0), vec3_sub(tr->v2, tr->v0)));
+                    vec3 fc = vec3_mul_scalar(
+                        vec3_add(vec3_add(tr->v0, tr->v1), tr->v2), 1.0f/3.0f);
+                    vec3 lc = vec3_mul_scalar(
+                        vec3_add(vec3_add(tr->l0, tr->l1), tr->l2), 1.0f/3.0f);
+                    vec3 col = shade_surface(fn, fc, lc, tr->mat);
+                    raster_triangle_wireframe(tr->v0, tr->v1, tr->v2, col,
+                        tr->mat->alpha, tr->mat->effects, &bnd);
+                    break;
+                }
+                case SHADE_FLAT: {
+                    vec3 fn = vec3_normalize(vec3_cross(
+                        vec3_sub(tr->orig_v1, tr->orig_v0),
+                        vec3_sub(tr->orig_v2, tr->orig_v0)));
+                    vec3 fc = vec3_mul_scalar(
+                        vec3_add(vec3_add(tr->orig_v0, tr->orig_v1), tr->orig_v2),
+                        1.0f/3.0f);
+                    vec3 lc = vec3_mul_scalar(
+                        vec3_add(vec3_add(tr->orig_l0, tr->orig_l1), tr->orig_l2),
+                        1.0f/3.0f);
+                    vec3 col = shade_surface(fn, fc, lc, tr->mat);
+                    raster_triangle_flat(tr->v0, tr->v1, tr->v2, col, tr->mat, &bnd);
+                    break;
+                }
+                case SHADE_GOURAUD:
+                    raster_triangle_gouraud(tr->v0, tr->v1, tr->v2,
+                        tr->c0, tr->c1, tr->c2, tr->mat, &bnd);
+                    break;
+                case SHADE_PHONG:
+                    raster_triangle_phong(tr->v0, tr->v1, tr->v2,
+                        tr->n0, tr->n1, tr->n2,
+                        tr->l0, tr->l1, tr->l2, tr->mat, &bnd);
+                    break;
+                case SHADE_QUADRATIC:
+                    raster_triangle_quadratic(tr->v0, tr->v1, tr->v2,
+                        tr->n0, tr->n1, tr->n2,
+                        tr->l0, tr->l1, tr->l2,
+                        tr->c0, tr->c1, tr->c2,
+                        tr->bary0, tr->bary1, tr->bary2,
+                        tr->orig_v0, tr->orig_v1, tr->orig_v2,
+                        tr->orig_l0, tr->orig_l1, tr->orig_l2,
+                        tr->orig_n0, tr->orig_n1, tr->orig_n2,
+                        tr->mat, &bnd, tr->is_clipped);
+                    break;
+                case SHADE_CUBIC:
+                    raster_triangle_cubic(tr->v0, tr->v1, tr->v2,
+                        tr->n0, tr->n1, tr->n2,
+                        tr->l0, tr->l1, tr->l2,
+                        tr->c0, tr->c1, tr->c2,
+                        tr->bary0, tr->bary1, tr->bary2,
+                        tr->orig_v0, tr->orig_v1, tr->orig_v2,
+                        tr->orig_l0, tr->orig_l1, tr->orig_l2,
+                        tr->orig_n0, tr->orig_n1, tr->orig_n2,
+                        tr->mat, &bnd, tr->is_clipped);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    /* Sort and render transparent triangles */
+    if (b->transparent_count > 0) {
+        i32 ti, tj;
+        for (ti = 1; ti < b->transparent_count; ti++) {
+            tile_transparent_tri key = b->transparent_tris[ti];
+            tj = ti - 1;
+            while (tj >= 0 && b->transparent_tris[tj].depth > key.depth) {
+                b->transparent_tris[tj + 1] = b->transparent_tris[tj];
+                tj--;
+            }
+            b->transparent_tris[tj + 1] = key;
+        }
+
+        {
+            real zb[9] = {0};
+            for (ti = 0; ti < b->transparent_count; ti++) {
+                tile_transparent_tri *tt = &b->transparent_tris[ti];
+                vec3 tc0, tc1, tc2;
+                i32 nv = (tt->mode == SHADE_GOURAUD ||
+                          tt->mode == SHADE_QUADRATIC ||
+                          tt->mode == SHADE_CUBIC);
+                if (nv) {
+                    tc0 = shade_surface(tt->orig_n0, tt->orig_v0, tt->orig_l0, tt->mat);
+                    tc1 = shade_surface(tt->orig_n1, tt->orig_v1, tt->orig_l1, tt->mat);
+                    tc2 = shade_surface(tt->orig_n2, tt->orig_v2, tt->orig_l2, tt->mat);
+                } else {
+                    tc0 = vec3_init_from_3(0, 0, 0);
+                    tc1 = vec3_init_from_3(0, 0, 0);
+                    tc2 = vec3_init_from_3(0, 0, 0);
+                }
+                draw_triangle_internal(
+                    tt->v0, tt->v1, tt->v2,
+                    tt->n0, tt->n1, tt->n2,
+                    tt->l0, tt->l1, tt->l2,
+                    tc0, tc1, tc2,
+                    tt->bary0, tt->bary1, tt->bary2,
+                    tt->orig_v0, tt->orig_v1, tt->orig_v2,
+                    tt->orig_l0, tt->orig_l1, tt->orig_l2,
+                    tt->orig_n0, tt->orig_n1, tt->orig_n2,
+                    tt->mat, &bnd, tt->is_clipped);
+            }
+        }
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------------------*/
+/*  Public API Functions                                                      */
+/* ---------------------------------------------------------------------------*/
+
+int render_init(i32 window_width, i32 window_height) {
+    fw = window_width;
+    fh = window_height;
+    fb_pitch = (fw + 3) & ~3;
+
+    fb_front = (u32*)malloc(fb_pitch * fh * sizeof(u32));
+    zbuf_front = (real*)malloc(fb_pitch * fh * sizeof(real));
+    fb_back = (u32*)malloc(fb_pitch * fh * sizeof(u32));
+    zbuf_back = (real*)malloc(fb_pitch * fh * sizeof(real));
+
+    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
+        free(fb_front); free(zbuf_front); free(fb_back); free(zbuf_back);
+        fb_front = fb_back = fb = NULL;
+        zbuf_front = zbuf_back = zbuf = NULL;
+        return 0;
+    }
+
+    internal_pitch = (RENDER_WIDTH + 3) & ~3;
+    fb_render = (u32*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(u32));
+    zbuf_render = (real*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(real));
+
+    if (!fb_render || !zbuf_render) {
+        free(fb_render); free(zbuf_render);
+        fb_render = NULL; zbuf_render = NULL;
+        return 0;
+    }
+
+    fb = fb_back;
+    zbuf = zbuf_back;
+    scale_x = (real)fw / (real)RENDER_WIDTH;
+    scale_y = (real)fh / (real)RENDER_HEIGHT;
+    tile_init(fw, fh);
+    return 1;
+}
+
+void render_shutdown(void) {
+    free(fb_front); free(zbuf_front);
+    free(fb_back); free(zbuf_back);
+    fb_front = fb_back = fb = NULL;
+    zbuf_front = zbuf_back = zbuf = NULL;
+    free(fb_render); free(zbuf_render);
+    fb_render = NULL; zbuf_render = NULL;
+    tile_shutdown();
+}
+
+void render_set_light(vec3 dir, vec3 col, vec3 amb) {
+    light_dir = vec3_normalize(dir);
+    light_col = col;
+    ambient_col = amb;
+}
+
+void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
+    mat4 proj = mat4_perspective(fov, aspect, 0.05f, 1000.0f);
+    mat4 view = mat4_lookat(eye, center, up);
+    vp = mat4_mul(proj, view);
+    cam_eye = eye;
+    extract_frustum_planes();
+}
+
+void render_set_fog(vec3 color, real start, real end) {
+    fog_color = color;
+    fog_start = start;
+    fog_end = end;
+}
+
+void render_set_time(real t) {
+    render_time = t;
+}
+
+void render_clear(u8 r, u8 g, u8 b) {
+    render_clear_color(r / 255.0f, g / 255.0f, b / 255.0f);
+}
+
+void render_clear_color(real r, real g, real b) {
+    u32 col = pack_color(color_to_u8(r), color_to_u8(g), color_to_u8(b));
+    i32 i, j;
+
+    if (!fb_render || !zbuf_render) return;
+
+    if (g_thread_count <= 1) {
+        u32 *fb32 = (u32*)fb_render;
+        real *zb = (real*)zbuf_render;
+        i32 n = internal_pitch * RENDER_HEIGHT;
+
+        for (i = 0; i + 3 < n; i += 4) {
+            fb32[i] = col;
+            fb32[i+1] = col;
+            fb32[i+2] = col;
+            fb32[i+3] = col;
+            zb[i] = 0.0f;
+            zb[i+1] = 0.0f;
+            zb[i+2] = 0.0f;
+            zb[i+3] = 0.0f;
+        }
+        return;
+    }
+
+    if (total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
+        if (clear_job_count < total_tiles) {
+            if (clear_jobs) free(clear_jobs);
+            clear_jobs = (clear_job*)malloc(total_tiles * sizeof(clear_job));
+            clear_job_count = total_tiles;
+        }
+
+        {
+            jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
+            joblink_t  *link  = jobchain_add_link(chain);
+
+            for (j = 0; j < total_tiles; j++) {
+                clear_jobs[j].tile_idx = j;
+                clear_jobs[j].color = col;
+                job_t *job = job_create(g_jobgraph, clear_tile_range, &clear_jobs[j]);
+                joblink_add_job(link, job);
+            }
+
+            jobgraph_submit(g_jobgraph);
+            jobgraph_wait(g_jobgraph);
+            jobgraph_reset(g_jobgraph);
+        }
+    }
+    else {
+        u32 *fb32 = (u32*)fb_render;
+        real *zb = (real*)zbuf_render;
+        i32 n = internal_pitch * RENDER_HEIGHT;
+
+        for (i = 0; i + 3 < n; i += 4) {
+            fb32[i] = col;
+            fb32[i+1] = col;
+            fb32[i+2] = col;
+            fb32[i+3] = col;
+            zb[i] = 0.0f;
+            zb[i+1] = 0.0f;
+            zb[i+2] = 0.0f;
+            zb[i+3] = 0.0f;
+        }
+    }
+}
+
+const u32* render_get_fb(void) {
+    return fb_front;
+}
+
+int render_resize(i32 new_w, i32 new_h) {
+    if (new_w == fw && new_h == fh) return 0;
+
+    free(fb_front); free(zbuf_front);
+    free(fb_back); free(zbuf_back);
+
+    fw = new_w;
+    fh = new_h;
+    fb_pitch = (new_w + 3) & ~3;
+
+    fb_front = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
+    zbuf_front = (real*)malloc(fb_pitch * new_h * sizeof(real));
+    fb_back = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
+    zbuf_back = (real*)malloc(fb_pitch * new_h * sizeof(real));
+
+    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
+        free(fb_front); free(zbuf_front);
+        free(fb_back); free(zbuf_back);
+        fb_front = fb_back = fb = NULL;
+        zbuf_front = zbuf_back = zbuf = NULL;
+        return -1;
+    }
+
+    fb = fb_back;
+    zbuf = zbuf_back;
+    scale_x = (real)new_w / (real)RENDER_WIDTH;
+    scale_y = (real)new_h / (real)RENDER_HEIGHT;
+    return 0;
+}
+
+void render_set_render_resolution(i32 render_width, i32 render_height) {
+    (void)render_width;
+    (void)render_height;
+    /* Software rasterizer uses fixed RENDER_WIDTH/RENDER_HEIGHT */
+}
+
+i32 render_get_render_width(void) {
+    return RENDER_WIDTH;
+}
+
+i32 render_get_render_height(void) {
+    return RENDER_HEIGHT;
+}
+
+void render_draw_entity(const struct entity_definition *ent) {
+    if (!ent) return;
+    if (ent->model.handle < 0) return;
+
+    model_definition *mod = (model_definition*)tag_get(ent->model.handle, TAG_model);
+    if (!mod) return;
+
+    u32 p;
+    for (p = 0; p < mod->primitives.count; ++p) {
+        model_primitive *prim = TAG_BLOCK_GET_ELEMENT(&mod->primitives, p, model_primitive);
+        if (prim->vertices.count == 0 || prim->indices.count == 0) continue;
+
+        material_definition *mat = NULL;
+        if (prim->material_index >= 0 && mod->materials.address) {
+            tag_reference *refs = (tag_reference*)mod->materials.address;
+            i32 mat_handle = refs[prim->material_index].handle;
+            if (mat_handle >= 0)
+                mat = (material_definition*)tag_get(mat_handle, TAG_material);
+        }
+        if (!mat) {
+            static material_definition fallback = DEFAULT_MATERIAL_BRICK;
+            mat = &fallback;
+        }
+
+        model_vertex *verts = (model_vertex*)prim->vertices.address;
+        u16 *indices = (u16*)prim->indices.address;
+        u32 tri_count = prim->indices.count / 3;
+        u32 t;
+        for (t = 0; t < tri_count; ++t) {
+            u16 i0 = indices[t*3+0], i1 = indices[t*3+1], i2 = indices[t*3+2];
+            vec3 local_v0 = verts[i0].position, local_v1 = verts[i1].position, local_v2 = verts[i2].position;
+            vec3 v0 = vec3_add(ent->position, quat_rotate_vec3(ent->orientation, local_v0));
+            vec3 v1 = vec3_add(ent->position, quat_rotate_vec3(ent->orientation, local_v1));
+            vec3 v2 = vec3_add(ent->position, quat_rotate_vec3(ent->orientation, local_v2));
+            vec3 n0 = quat_rotate_vec3(ent->orientation, verts[i0].normal);
+            vec3 n1 = quat_rotate_vec3(ent->orientation, verts[i1].normal);
+            vec3 n2 = quat_rotate_vec3(ent->orientation, verts[i2].normal);
+
+            draw_triangle_shaded(v0, v1, v2, n0, n1, n2, local_v0, local_v1, local_v2, mat);
+        }
+    }
+}
+
+void render_draw_entities(struct entity_definition **entities, int count) {
+    if (!entities || count <= 0) return;
+    int i;
+    for (i = 0; i < count; ++i) {
+        render_draw_entity(entities[i]);
+    }
+}
+
+void render_finish(void) {
     if (g_thread_count <= 1) {
         i32 i;
         for (i = 0; i < total_tiles; i++) {
@@ -2906,8 +2836,7 @@ static void render_finish(void)
             }
         }
         tile_clear_bins();
-    }
-    else {
+    } else {
         tile_render_all();
         tile_clear_bins();
     }
@@ -2988,8 +2917,53 @@ static void render_finish(void)
     }
 }
 
-#ifdef __cplusplus
-}
-#endif
+/* ---------------------------------------------------------------------------*/
+/*  Static helpers for tile management (used internally)                     */
+/* ---------------------------------------------------------------------------*/
 
-#endif /* RASTERIZER_H */
+static void tile_init(i32 w, i32 h) {
+    (void)w;
+    (void)h;
+    screen_bounds.x0 = 0;
+    screen_bounds.y0 = 0;
+    screen_bounds.x1 = RENDER_WIDTH;
+    screen_bounds.y1 = RENDER_HEIGHT;
+
+    num_tiles_x = (RENDER_WIDTH + TILE_SIZE - 1) / TILE_SIZE;
+    num_tiles_y = (RENDER_HEIGHT + TILE_SIZE - 1) / TILE_SIZE;
+    total_tiles = num_tiles_x * num_tiles_y;
+
+    tile_bins = (tile_bin*)malloc(total_tiles * sizeof(tile_bin));
+    if (tile_bins) {
+        i32 i;
+        for (i = 0; i < total_tiles; i++) {
+            tile_bins[i].tri_count = 0;
+            tile_bins[i].transparent_count = 0;
+        }
+    }
+}
+
+static void tile_shutdown(void) {
+    if (tile_bins) { free(tile_bins); tile_bins = NULL; }
+    if (job_pool) { free(job_pool); job_pool = NULL; job_pool_size = 0; }
+    if (upscale_jobs) { free(upscale_jobs); upscale_jobs = NULL; upscale_job_count = 0; }
+    if (clear_jobs) { free(clear_jobs); clear_jobs = NULL; clear_job_count = 0; }
+}
+
+static job_t* upscale_tile(void *arg) {
+    upscale_job *j = (upscale_job*)arg;
+    i32 y;
+    for (y = j->y_start; y < j->y_end; y++) {
+        i32 ry = (y * j->src_height) / j->dst_height;
+        i32 rb = y * j->dst_width;
+        i32 sb = ry * j->src_width;
+        i32 x;
+        for (x = j->x_start; x < j->x_end; x++) {
+            i32 rx = (x * j->src_width) / j->dst_width;
+            j->fb_dst[rb + x] = j->fb_src[sb + rx];
+        }
+    }
+    return NULL;
+}
+
+#endif /* RASTERIZER_SW_IMPLEMENTATION */

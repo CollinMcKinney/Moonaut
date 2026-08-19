@@ -1,24 +1,22 @@
 #version 330 core
 
-out vec4 FragColor;
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec3 vLocalPos;
+in vec3 vVertexColor;
 
-flat in vec3 gFlatColor;
-in vec3 gVertexColor;
-in vec3 gWorldPos;
-in vec3 gNormal;
-in vec3 gLocalPos;
-flat in int gMode;   // 0=wireframe,1=flat,2=gouraud,3=phong
+uniform int   uMatMode;
+uniform int   uMatEffects;
+uniform float uMatAlpha;
+uniform vec3  uMatColor;
+uniform vec3  uCamEye;
 
+/* All uniforms needed for shade_surface() – copy from vertex shader */
 uniform vec3 uLightDir;
 uniform vec3 uLightCol;
 uniform vec3 uAmbientCol;
-uniform vec3 uCamEye;
 uniform float uTime;
-uniform int   uMatMode;
-uniform int   uMatEffects;
-uniform vec3  uMatColor;
 uniform vec3  uMatTint;
-uniform float uMatAlpha;
 uniform vec3  uMatEmissiveColor;
 uniform float uMatEmissivePulseAmplitude;
 uniform float uMatEmissivePulseFrequency;
@@ -95,8 +93,8 @@ float hash_float(vec3 p) {
     return float(h) / 4294967296.0;
 }
 
-/* ---- Full lighting function (identical to geometry shader) ---- */
-vec3 shade_surface(vec3 N, vec3 worldPos) {
+/* ---- Full lighting function (identical to vertex shader) ---- */
+vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     N = normalize(N);
     vec3 L = normalize(uLightDir);
     vec3 V = normalize(uCamEye - worldPos);
@@ -230,7 +228,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos) {
     }
 
     if ((uMatEffects & EFFECT_ROUGHNESS) != 0) {
-        vec3 q = floor(worldPos * 256.0);
+        vec3 q = floor(localPos * 256.0);
         float offset = (hash_float(q)-0.5) * uMatRoughness;
         color += offset * 0.25;
     }
@@ -253,24 +251,31 @@ vec3 shade_surface(vec3 N, vec3 worldPos) {
     }
 
     color *= uMatTint;
-
     return clamp(color, 0.0, 1.0);
 }
 
+out vec4 FragColor;
+
 void main() {
     vec3 color;
-    float alpha = (uMatEffects & EFFECT_ALPHA) != 0 ? uMatAlpha : 1.0;
+    if (uMatMode == 0) { /* SHADE_WIREFRAME – use base colour */
+        color = uMatColor;
+    }
+    else if (uMatMode == 1) { /* SHADE_FLAT – compute face normal via derivatives */
+        vec3 dx = dFdx(vWorldPos);
+        vec3 dy = dFdy(vWorldPos);
+        vec3 N = normalize(cross(dx, dy));
+        vec3 V = normalize(uCamEye - vWorldPos);
+        if (dot(N, V) < 0.0) N = -N;
+        color = shade_surface(N, vWorldPos, vLocalPos);
+    }
+    else if (uMatMode == 2) { /* SHADE_GOURAUD – use interpolated vertex colour */
+        color = vVertexColor;
+    }
+    else { /* SHADE_PHONG (and fallback) */
+        color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
+    }
 
-    if (gMode == 1) { // SHADE_FLAT
-        color = gFlatColor;
-    }
-    else if (gMode == 2) { // SHADE_GOURAUD
-        color = gVertexColor;
-    }
-    else { // SHADE_PHONG (and fallback for any other value)
-        vec3 N = normalize(gNormal);
-        color = shade_surface(N, gWorldPos);
-    }
-
+    float alpha = (uMatEffects & EFFECT_ALPHA) != 0 ? uMatAlpha : 1.0f;
     FragColor = vec4(color, alpha);
 }

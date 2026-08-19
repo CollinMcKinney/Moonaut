@@ -4,20 +4,15 @@
 #define C89FW_IMPLEMENTATION
 #include "../libs/C89FW/C89FW.h"
 
-#include "rasterizer/rasterizer.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Window state tracked by the window system */
 static C89FW_window_t *g_window = NULL;
 static int g_window_inited = 0;
 
-/* Expose window for input.c */
 static C89FW_window_t* window_get(void) { return g_window; }
 
-/* Initialize the window with C89FW */
 static int window_init(const char *title, int w, int h)
 {
     g_window = (C89FW_window_t*)malloc(sizeof(C89FW_window_t));
@@ -25,7 +20,6 @@ static int window_init(const char *title, int w, int h)
         fprintf(stderr, "Failed to allocate window\n");
         return -1;
     }
-    
     if (!C89FW_open(g_window, w, h, title)) {
         fprintf(stderr, "Failed to create window\n");
         free(g_window);
@@ -33,7 +27,6 @@ static int window_init(const char *title, int w, int h)
         g_window_inited = 0;
         return -1;
     }
-    
     g_window_inited = 1;
     return 0;
 }
@@ -41,11 +34,7 @@ static int window_init(const char *title, int w, int h)
 static int is_running(void)
 {
     if (!g_window_inited || !g_window) return 0;
-    
-    if (!C89FW_update(g_window)) {
-        return 0;
-    }
-    
+    if (!C89FW_update(g_window)) return 0;
     return !g_window->should_close;
 }
 
@@ -66,11 +55,12 @@ static void window_shutdown(void)
     g_window_inited = 0;
 }
 
+/* window_resize is not needed – if you need it, call render_resize from runtime.h. */
+/* Remove the call to render_resize from window_resize, or delete the function. */
 static void window_resize(int new_w, int new_h)
 {
-    /* Resize the renderer first */
-    render_resize(new_w, new_h);
-    /* Tell C89FW the resize is complete - this updates window->width/height */
+    /* render_resize is not available here – remove this line: */
+    /* render_resize(new_w, new_h); */
     C89FW_apply_resize(g_window);
 }
 

@@ -6,8 +6,14 @@
 #include "common.h"
 #include "physics.h"
 
-#define RASTERIZER_IMPLEMENTATION
-#include "rasterizer/rasterizer.h"
+/* TODO: */
+#define RASTERIZER_SW_IMPLEMENTATION
+#include "rasterizer_SW.h"
+/*
+#define RASTERIZER_GL_IMPLEMENTATION
+#include "rasterizer_GL.h"
+*/
+
 #include "scripts.h"
 #include "clock.h"
 #include "cpu_threads.h"
@@ -42,7 +48,6 @@ extern "C" {
    Globals used by Lua and render loop
    ------------------------------------------------------------------------ */
 static vec3 light_dir, light_col, ambient_col;
-static C89GL_Context g_gl_ctx;
 
 /* ------------------------------------------------------------------------
    Scenario world
@@ -196,7 +201,7 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 
     if (!mat) {
-        static material_definition fallback = DEFAULT_MATERIAL_BRICK;
+        static material_definition fallback = DEFAULT_MATERIAL_GLASS;
         mat = &fallback;
     }
 
@@ -257,19 +262,7 @@ static void scenario_render(void) {
     render_set_light(light_dir, light_col, ambient_col);
     render_clear(sc_clear_r, sc_clear_g, sc_clear_b);
 
-    for (i = 0; i < g_scene_world->entity_count; ++i) {
-        entity_definition *ent = g_scene_world->entities[i];
-        if (ent->model.handle < 0) continue;
-
-        model_definition *mod = (model_definition*)tag_get(ent->model.handle, TAG_model);
-        if (!mod) continue;
-
-        u32 p;
-        for (p = 0; p < mod->primitives.count; ++p) {
-            model_primitive *prim = TAG_BLOCK_GET_ELEMENT(&mod->primitives, p, model_primitive);
-            scenario_draw_primitive(prim, mod, ent->position, ent->orientation);
-        }
-    }
+    render_draw_entities(g_scene_world->entities, g_scene_world->entity_count);
 
     render_finish();   /* sorts & draws transparent, swaps buffers */
 }
@@ -976,41 +969,11 @@ static void runtime_init(void) {
         return;
     }
 
-    /* ---- Create OpenGL context ---- */
-    if (!C89GL_create_context(window_get(), &g_gl_ctx)) {
-        fprintf(stderr, "Failed to create OpenGL context\n");
-        window_shutdown();
-        return;
-    }
-    C89GL_make_current(&g_gl_ctx);
-    if (!C89GL_load_functions()) {
-        fprintf(stderr, "Failed to load OpenGL functions\n");
-        window_shutdown();
-        return;
-    }
-
-    if (render_init(width, height, &g_gl_ctx) == 0) {
+    if (render_init(width, height) == 0) {
         fprintf(stderr, "Failed to initialise renderer\n");
         window_shutdown();
         return;
     }
-
-    printf("FBO check: %d\n", C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER));
-    printf("OpenGL version: %s\n", C89GL_glGetString(GL_VERSION));
-    printf("OpenGL vendor: %s\n", C89GL_glGetString(GL_VENDOR));
-    printf("OpenGL renderer: %s\n", C89GL_glGetString(GL_RENDERER));
-
-    /* ---- RED SCREEN TEST ---- */
-    printf("Red screen test: clearing to red and swapping...\n");
-    C89GL_glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
-    C89GL_glClear(GL_COLOR_BUFFER_BIT);
-    C89GL_swap_buffers(&g_gl_ctx);
-#ifdef _WIN32
-    Sleep(2000);
-#else
-    sleep(2);
-#endif
-    /* --------------------------- */
 
     /* ---- FORCE BRIGHT AMBIENT FOR TESTING ---- */
     printf("Forcing bright ambient for testing...\n");
