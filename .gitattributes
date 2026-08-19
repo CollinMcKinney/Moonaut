@@ -11,4 +11,6 @@ libs/lua-5.5.0/** linguist-vendored
 *.geom linguist-language=GLSL
 *.vert linguist-language=GLSL
 
+*.hlsl linguist-language=HLSL
+
 *.go linguist-language=Go
