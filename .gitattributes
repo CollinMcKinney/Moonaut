@@ -6,5 +6,5 @@ libs/lua-5.5.0/** linguist-vendored
 *.geom linguist-language=GLSL
 *.frag linguist-language=GLSL
 
-.c liguist-language=C
-.h linguist-language=C
+*.c liguist-language=C
+*.h linguist-language=C
