@@ -16,30 +16,46 @@ add_compile_definitions(
     _POSIX_C_SOURCE=200809L 
 )
 
-if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # Windows SDK headers are not C89-clean (they use // comments, etc.)
+    # so we must use gnu89 on this platform. Our own source code is
+    # written in strict ANSI C89 subset and compiles on all platforms.
     add_compile_options(
-        -std=c89 -pedantic -w -g -O3
+        -std=gnu89 -pedantic -w -g -O3
+        -fno-math-errno -ffp-contract=fast -fno-trapping-math
+        -fcx-limited-range -fno-strict-aliasing -fomit-frame-pointer -flto
+        -march=x86-64-v2 -mtune=generic)
+elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_options(
+        -std=c89 -pedantic -w -g -O3 -Wc++-compat
         -fno-math-errno -ffp-contract=fast -fno-trapping-math
         -fcx-limited-range -fno-strict-aliasing -fomit-frame-pointer -flto
         -march=x86-64-v2 -mtune=generic)
 elseif(CMAKE_C_COMPILER_ID MATCHES "GNU")
     add_compile_options(
-        -std=c89 -pedantic -Wall -Wextra -Wno-unused-function -g -O3
+        -std=c89 -pedantic -Wall -Wextra -Wc++-compat -Wno-unused-function -g -O3
         -fno-math-errno -ffp-contract=fast -fno-trapping-math
         -fcx-limited-range -fno-strict-aliasing -fomit-frame-pointer -flto
         -march=x86-64-v2 -mtune=generic)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(PLATFORM_LIBS m X11 Xext Xrandr dl pthread)
+    set(PLATFORM_LIBS m X11 Xext Xrandr dl pthread asound GL)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(PLATFORM_LIBS gdi32)
+    set(PLATFORM_LIBS gdi32.lib ole32.lib avrt.lib uuid.lib opengl32.lib xinput.lib)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(PLATFORM_LIBS Cocoa CoreVideo OpenGL IOKit)
+    set(PLATFORM_LIBS Cocoa CoreVideo OpenGL IOKit CoreAudio AudioUnit)
 endif()
 
 add_executable(Moonaut
     main.c
+
+    libs/jobgraph/jobgraph.c
+
+    libs/audiopipe/audiopipe.c
+    libs/audiopipe/audiomixer.c
+    libs/audiopipe/wavloader.c
+
     libs/lua-5.5.0/src/lapi.c
     libs/lua-5.5.0/src/lauxlib.c
     libs/lua-5.5.0/src/lbaselib.c
@@ -72,7 +88,6 @@ add_executable(Moonaut
     libs/lua-5.5.0/src/lutf8lib.c
     libs/lua-5.5.0/src/lvm.c
     libs/lua-5.5.0/src/lzio.c
-    libs/jobgraph/jobgraph.c
 )
 
 target_compile_definitions(Moonaut PRIVATE LUA_USE_C89)
