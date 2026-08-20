@@ -166,6 +166,10 @@ typedef float GLclampf;
 #define GL_DRAW_FRAMEBUFFER              0x8CA9
 #define GL_RGBA8                         0x8058
 
+/* ---- UBO support ---- */
+#define GL_UNIFORM_BUFFER                 0x8A11
+#define GL_INVALID_INDEX                  0xFFFFFFFFu
+
 /* ---------- Additional common enums ---------- */
 #define GL_ZERO                                     0
 #define GL_ONE                                      1
@@ -228,7 +232,6 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glBlendColor)(float r, float g, float b,
 typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilFunc)(unsigned int func, int ref, unsigned int mask);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilOp)(unsigned int sfail, unsigned int dpfail, unsigned int dppass);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilMask)(unsigned int mask);
-/* NEW: glDepthMask */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDepthMask)(unsigned char flag);
 
 /* 1.5 Buffers */
@@ -260,7 +263,6 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1f)(int location, float v0);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2f)(int location, float v0, float v1);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3f)(int location, float v0, float v1, float v2);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4f)(int location, float v0, float v1, float v2, float v3);
-/* NEW: glUniform3fv and glUniform4fv */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3fv)(int location, int count, const float* value);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4fv)(int location, int count, const float* value);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1i)(int location, int v0);
@@ -362,6 +364,9 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glBeginTransformFeedback)(unsigned int p
 typedef void (C89GL_APIENTRY *C89GL_PFN_glEndTransformFeedback)(void);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glTransformFeedbackVaryings)(unsigned int program, int count, const char** varyings, unsigned int bufferMode);
 
+/* ---- UBO functions (new) ---- */
+typedef void (C89GL_APIENTRY *C89GL_PFN_glBindBufferBase)(unsigned int target, unsigned int index, unsigned int buffer);
+
 /* ========================================================================
    GLOBAL FUNCTION POINTERS
    ======================================================================== */
@@ -392,7 +397,6 @@ extern C89GL_PFN_glBlendColor C89GL_glBlendColor;
 extern C89GL_PFN_glStencilFunc C89GL_glStencilFunc;
 extern C89GL_PFN_glStencilOp C89GL_glStencilOp;
 extern C89GL_PFN_glStencilMask C89GL_glStencilMask;
-/* NEW: glDepthMask */
 extern C89GL_PFN_glDepthMask C89GL_glDepthMask;
 
 /* 1.5 */
@@ -424,7 +428,6 @@ extern C89GL_PFN_glUniform1f C89GL_glUniform1f;
 extern C89GL_PFN_glUniform2f C89GL_glUniform2f;
 extern C89GL_PFN_glUniform3f C89GL_glUniform3f;
 extern C89GL_PFN_glUniform4f C89GL_glUniform4f;
-/* NEW: glUniform3fv and glUniform4fv */
 extern C89GL_PFN_glUniform3fv C89GL_glUniform3fv;
 extern C89GL_PFN_glUniform4fv C89GL_glUniform4fv;
 extern C89GL_PFN_glUniform1i C89GL_glUniform1i;
@@ -511,6 +514,9 @@ extern C89GL_PFN_glBindTransformFeedback C89GL_glBindTransformFeedback;
 extern C89GL_PFN_glBeginTransformFeedback C89GL_glBeginTransformFeedback;
 extern C89GL_PFN_glEndTransformFeedback C89GL_glEndTransformFeedback;
 extern C89GL_PFN_glTransformFeedbackVaryings C89GL_glTransformFeedbackVaryings;
+
+/* ---- UBO (new) ---- */
+extern C89GL_PFN_glBindBufferBase C89GL_glBindBufferBase;
 
 /* ========================================================================
    CONTEXT STRUCTURE
@@ -620,7 +626,6 @@ C89GL_PFN_glBlendColor C89GL_glBlendColor = NULL;
 C89GL_PFN_glStencilFunc C89GL_glStencilFunc = NULL;
 C89GL_PFN_glStencilOp C89GL_glStencilOp = NULL;
 C89GL_PFN_glStencilMask C89GL_glStencilMask = NULL;
-/* NEW: glDepthMask */
 C89GL_PFN_glDepthMask C89GL_glDepthMask = NULL;
 
 /* 1.5 */
@@ -652,7 +657,6 @@ C89GL_PFN_glUniform1f C89GL_glUniform1f = NULL;
 C89GL_PFN_glUniform2f C89GL_glUniform2f = NULL;
 C89GL_PFN_glUniform3f C89GL_glUniform3f = NULL;
 C89GL_PFN_glUniform4f C89GL_glUniform4f = NULL;
-/* NEW: glUniform3fv and glUniform4fv */
 C89GL_PFN_glUniform3fv C89GL_glUniform3fv = NULL;
 C89GL_PFN_glUniform4fv C89GL_glUniform4fv = NULL;
 C89GL_PFN_glUniform1i C89GL_glUniform1i = NULL;
@@ -740,6 +744,9 @@ C89GL_PFN_glBeginTransformFeedback C89GL_glBeginTransformFeedback = NULL;
 C89GL_PFN_glEndTransformFeedback C89GL_glEndTransformFeedback = NULL;
 C89GL_PFN_glTransformFeedbackVaryings C89GL_glTransformFeedbackVaryings = NULL;
 
+/* ---- UBO (new) ---- */
+C89GL_PFN_glBindBufferBase C89GL_glBindBufferBase = NULL;
+
 /* ---------- Loader Implementation ---------- */
 int C89GL_load_functions(void) {
     /* 1.0 / 1.1 */
@@ -768,7 +775,6 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glStencilFunc, "glStencilFunc");
     C89GL_LOAD_FUNC(C89GL_glStencilOp, "glStencilOp");
     C89GL_LOAD_FUNC(C89GL_glStencilMask, "glStencilMask");
-    /* NEW: glDepthMask */
     C89GL_LOAD_FUNC(C89GL_glDepthMask, "glDepthMask");
 
     /* 1.5 */
@@ -800,7 +806,6 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glUniform2f, "glUniform2f");
     C89GL_LOAD_FUNC(C89GL_glUniform3f, "glUniform3f");
     C89GL_LOAD_FUNC(C89GL_glUniform4f, "glUniform4f");
-    /* NEW: glUniform3fv and glUniform4fv */
     C89GL_LOAD_FUNC(C89GL_glUniform3fv, "glUniform3fv");
     C89GL_LOAD_FUNC(C89GL_glUniform4fv, "glUniform4fv");
     C89GL_LOAD_FUNC(C89GL_glUniform1i, "glUniform1i");
@@ -887,6 +892,9 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glBeginTransformFeedback, "glBeginTransformFeedback");
     C89GL_LOAD_FUNC(C89GL_glEndTransformFeedback, "glEndTransformFeedback");
     C89GL_LOAD_FUNC(C89GL_glTransformFeedbackVaryings, "glTransformFeedbackVaryings");
+
+    /* ---- UBO (new) ---- */
+    C89GL_LOAD_FUNC(C89GL_glBindBufferBase, "glBindBufferBase");
 
     return 1;
 }

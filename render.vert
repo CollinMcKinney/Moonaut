@@ -6,50 +6,60 @@ layout(location = 2) in vec3 aLocalPos;
 
 uniform mat4 uViewProj;
 
-/* Lighting uniforms */
+/* Lighting uniforms (still individual) */
 uniform vec3 uLightDir;
 uniform vec3 uLightCol;
 uniform vec3 uAmbientCol;
 uniform vec3 uCamEye;
 uniform float uTime;
 
-/* Material uniforms (all declared, some may be unused in a given variant) */
-uniform vec3  uMatColor;
-uniform vec3  uMatTint;
-uniform float uMatAlpha;
-uniform vec3  uMatEmissiveColor;
-uniform float uMatEmissivePulseAmplitude;
-uniform float uMatEmissivePulseFrequency;
-uniform float uMatEmissivePulsePhase;
-uniform float uMatSpecularExponent;
-uniform vec3  uMatSpecularColor;
-uniform float uMatSpecularThreshold;
-uniform vec3  uMatRimColor;
-uniform float uMatRimExponent;
-uniform vec3  uMatFresnelColor;
-uniform float uMatFresnelExponent;
-uniform vec3  uMatGoochCool;
-uniform vec3  uMatGoochWarm;
-uniform float uMatAmbientLightFactor;
-uniform float uMatOrenNayarSigma;
-uniform float uMatMinnaertK;
-uniform float uMatSaturation;
-uniform float uMatIridescenceStrength;
-uniform vec3  uMatBackGlowColor;
-uniform float uMatBumpAmplitude;
-uniform float uMatBumpFrequency;
-uniform float uMatBumpSpeed;
-uniform float uMatRoughness;
-uniform float uMatFringeIntensity;
-uniform int   uMatCelBands;
-uniform float uMatGlitchIntensity;
-uniform int   uMatPosterizeLevels;
-uniform vec3  uMatStrobeColor;
-uniform float uMatStrobeFrequency;
-uniform float uMatStrobePhase;
+/* Fog (still individual) */
 uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
+
+/* ---- Material uniform buffer object ---- */
+layout(std140) uniform MaterialUniforms {
+    vec3  uMatColor;
+    vec3  uMatTint;
+    float uMatAlpha;
+
+    vec3  uMatEmissiveColor;
+    float uMatEmissivePulseAmplitude;
+    float uMatEmissivePulseFrequency;
+    float uMatEmissivePulsePhase;
+
+    float uMatSpecularExponent;
+    vec3  uMatSpecularColor;
+    float uMatSpecularThreshold;
+
+    vec3  uMatRimColor;
+    float uMatRimExponent;
+    vec3  uMatFresnelColor;
+    float uMatFresnelExponent;
+
+    vec3  uMatGoochCool;
+    vec3  uMatGoochWarm;
+    float uMatAmbientLightFactor;
+    float uMatOrenNayarSigma;
+    float uMatMinnaertK;
+    float uMatSaturation;
+    float uMatIridescenceStrength;
+
+    vec3  uMatBackGlowColor;
+    float uMatBumpAmplitude;
+    float uMatBumpFrequency;
+    float uMatBumpSpeed;
+    float uMatRoughness;
+    float uMatFringeIntensity;
+    int   uMatCelBands;
+    float uMatGlitchIntensity;
+    int   uMatPosterizeLevels;
+
+    vec3  uMatStrobeColor;
+    float uMatStrobeFrequency;
+    float uMatStrobePhase;
+};
 
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -69,7 +79,7 @@ float hash_float(vec3 p) {
     return float(h) / 4294967296.0;
 }
 
-/* ---- Lighting function – effects are compiled in/out via #ifdef ---- */
+/* ---- Lighting function – effects compiled in/out via #ifdef ---- */
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     N = normalize(N);
     vec3 L = normalize(uLightDir);
@@ -284,7 +294,6 @@ void main() {
     vLocalPos = aLocalPos;
     gl_Position = uViewProj * vec4(aPos, 1.0);
 
-    /* Pre‑compute Gouraud colour only if mode is GOURAUD */
 #ifdef MODE_GOURAUD
     vVertexColor = shade_surface(normalize(aNormal), aPos, aLocalPos);
 #else
