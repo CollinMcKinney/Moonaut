@@ -2241,6 +2241,26 @@ static INLINE mat4 mat4_identity(void)
     return identity;
 }
 
+/* Create a translation matrix from a vec3. */
+static INLINE mat4 mat4_translation(vec3 t)
+{
+    mat4 m = mat4_identity();
+    m.transpose[0][3] = t.position.x;
+    m.transpose[1][3] = t.position.y;
+    m.transpose[2][3] = t.position.z;
+    return m;
+}
+
+/* Create a scale matrix from a vec3. */
+static INLINE mat4 mat4_scale(vec3 s)
+{
+    mat4 m = mat4_identity();
+    m.transpose[0][0] = s.position.x;
+    m.transpose[1][1] = s.position.y;
+    m.transpose[2][2] = s.position.z;
+    return m;
+}
+
 /* Multiply two mat4 matrices. */
 static INLINE mat4 mat4_mul(mat4 src0, mat4 src1)
 {
@@ -2266,6 +2286,14 @@ static INLINE vec4 mat4_mul_vec4(mat4 m, vec4 v)
     result.position.z = m.transpose[2][0] * v.position.x + m.transpose[2][1] * v.position.y + m.transpose[2][2] * v.position.z + m.transpose[2][3] * v.rotation.w;
     result.rotation.w = m.transpose[3][0] * v.position.x + m.transpose[3][1] * v.position.y + m.transpose[3][2] * v.position.z + m.transpose[3][3] * v.rotation.w;
     return result;
+}
+
+/* Multiply a 4×4 matrix by a 3‑component vector (treats w=1). */
+static INLINE vec3 mat4_mul_vec3(mat4 m, vec3 v)
+{
+    vec4 v4 = vec4_init_from_4(v.position.x, v.position.y, v.position.z, 1.0f);
+    vec4 r = mat4_mul_vec4(m, v4);
+    return vec3_init_from_3(r.position.x, r.position.y, r.position.z);
 }
 
 /* Create a perspective projection mat4. */
@@ -2326,6 +2354,45 @@ static INLINE mat4 mat4_lookat(vec3 eye, vec3 center, vec3 up) {
     r.transpose[3][3] = 1.0f;
 
     return r;
+}
+
+/* Convert a quaternion to a 4×4 rotation matrix (no translation). */
+static INLINE mat4 quat_to_mat4(vec4 q)
+{
+    mat4 m = mat4_identity();
+    real x2 = q.rotation.i + q.rotation.i;
+    real y2 = q.rotation.j + q.rotation.j;
+    real z2 = q.rotation.k + q.rotation.k;
+    real xx = q.rotation.i * x2;
+    real yy = q.rotation.j * y2;
+    real zz = q.rotation.k * z2;
+    real xy = q.rotation.i * y2;
+    real xz = q.rotation.i * z2;
+    real yz = q.rotation.j * z2;
+    real wx = q.rotation.w * x2;
+    real wy = q.rotation.w * y2;
+    real wz = q.rotation.w * z2;
+
+    m.transpose[0][0] = 1.0f - (yy + zz);
+    m.transpose[0][1] = xy + wz;
+    m.transpose[0][2] = xz - wy;
+    m.transpose[0][3] = 0.0f;
+
+    m.transpose[1][0] = xy - wz;
+    m.transpose[1][1] = 1.0f - (xx + zz);
+    m.transpose[1][2] = yz + wx;
+    m.transpose[1][3] = 0.0f;
+
+    m.transpose[2][0] = xz + wy;
+    m.transpose[2][1] = yz - wx;
+    m.transpose[2][2] = 1.0f - (xx + yy);
+    m.transpose[2][3] = 0.0f;
+
+    m.transpose[3][0] = 0.0f;
+    m.transpose[3][1] = 0.0f;
+    m.transpose[3][2] = 0.0f;
+    m.transpose[3][3] = 1.0f;
+    return m;
 }
 
 /* Identity quaternion representing no rotation. */

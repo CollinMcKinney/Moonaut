@@ -1,24 +1,22 @@
 #version 330 core
 
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aNormal;
-layout(location = 2) in vec3 aLocalPos;
+layout(location = 0) in vec3 aPos;          // local position
+layout(location = 1) in vec3 aNormal;       // local normal
+layout(location = 2) in vec3 aLocalPos;     // local position (for effects)
+layout(location = 3) in float aModelIndex;  // index into ModelMatrices UBO
 
+/* ---- Standard uniforms (non‑UBO) ---- */
 uniform mat4 uViewProj;
-
-/* Lighting uniforms (still individual) */
 uniform vec3 uLightDir;
 uniform vec3 uLightCol;
 uniform vec3 uAmbientCol;
 uniform vec3 uCamEye;
 uniform float uTime;
-
-/* Fog (still individual) */
 uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
 
-/* ---- Material uniform buffer object ---- */
+/* ---- Material uniform buffer (std140) ---- */
 layout(std140) uniform MaterialUniforms {
     vec3  uMatColor;
     vec3  uMatTint;
@@ -61,6 +59,12 @@ layout(std140) uniform MaterialUniforms {
     float uMatStrobePhase;
 };
 
+/* ---- Model matrices UBO (up to 1024 models) ---- */
+layout(std140, row_major) uniform ModelMatrices {
+    mat4 uModels[1024];
+};
+
+/* ---- Utility functions ---- */
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
 uint hash(uint x) {
@@ -79,7 +83,7 @@ float hash_float(vec3 p) {
     return float(h) / 4294967296.0;
 }
 
-/* ---- Lighting function – effects compiled in/out via #ifdef ---- */
+/* ---- Lighting function (identical to before, but now works in world space) ---- */
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     N = normalize(N);
     vec3 L = normalize(uLightDir);
@@ -289,13 +293,18 @@ out vec3 vLocalPos;
 out vec3 vVertexColor;   /* for Gouraud shading */
 
 void main() {
-    vWorldPos = aPos;
-    vNormal = aNormal;
+    /* Select the model matrix using the per‑vertex index */
+    mat4 model = uModels[int(aModelIndex)];
+    vec4 worldPos = model * vec4(aPos, 1.0);
+
+    vWorldPos = worldPos.xyz;
+    vNormal   = normalize(mat3(model) * aNormal);
     vLocalPos = aLocalPos;
-    gl_Position = uViewProj * vec4(aPos, 1.0);
+
+    gl_Position = uViewProj * worldPos;
 
 #ifdef MODE_GOURAUD
-    vVertexColor = shade_surface(normalize(aNormal), aPos, aLocalPos);
+    vVertexColor = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
 #else
     vVertexColor = vec3(0.0);
 #endif

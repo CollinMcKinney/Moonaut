@@ -40,6 +40,9 @@ extern "C" {
 #endif
 
 /* ---------- Basic OpenGL types ---------- */
+#ifndef GLushort
+typedef unsigned short GLushort;
+#endif
 #ifndef GLuint
 typedef unsigned int GLuint;
 #endif

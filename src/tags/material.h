@@ -450,7 +450,7 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
 };
 
 const struct material_definition DEFAULT_MATERIAL_WATER = {
-    /*.render_method          =*/ MODE_GOURAUD | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+    /*.render_method          =*/ MODE_FLAT | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA | EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR | EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
     /*.color                  =*/ {0.10f, 0.35f, 0.65f},
     /*.ambient_light_factor   =*/ 0.80f,
     /*.alpha                  =*/ 0.70f,
