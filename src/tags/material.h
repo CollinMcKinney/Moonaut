@@ -104,7 +104,7 @@ static INLINE u32 render_method_get_effects(render_method key) {
  * Material definition
  * ========================================================================= */
 typedef struct material_definition {
-    render_method render_method;   /* unified key – type and field name match */
+    u32          render_method;   /* unified key – type and field name match */
 
     /* Base appearance */
     vec3         color;

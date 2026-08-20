@@ -20,7 +20,7 @@
 #include <string.h>
 
 /* --- jobgraph include --- */
-#include "libs/jobgraph/jobgraph.h"
+#include "../libs/jobgraph/jobgraph.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -171,35 +171,35 @@ typedef struct {
 /*  Global State                                                              */
 /* ---------------------------------------------------------------------------*/
 
-static tile_bin *tile_bins = NULL;
-static i32 num_tiles_x = 0;
-static i32 num_tiles_y = 0;
-static i32 total_tiles = 0;
+static tile_bin *sw_tile_bins = NULL;
+static i32 sw_num_tiles_x = 0;
+static i32 sw_num_tiles_y = 0;
+static i32 sw_total_tiles = 0;
 
-static tile_job *job_pool = NULL;
-static i32 job_pool_size = 0;
-static upscale_job *upscale_jobs = NULL;
-static i32 upscale_job_count = 0;
-static clear_job *clear_jobs = NULL;
-static i32 clear_job_count = 0;
+static tile_job *sw_job_pool = NULL;
+static i32 sw_job_pool_size = 0;
+static upscale_job *sw_upscale_jobs = NULL;
+static i32 sw_upscale_job_count = 0;
+static clear_job *sw_clear_jobs = NULL;
+static i32 sw_clear_job_count = 0;
 
-static u32 *fb_front = NULL, *fb_back = NULL, *fb = NULL;
-static real *zbuf_front = NULL, *zbuf_back = NULL, *zbuf = NULL;
-static i32 fw = 0, fh = 0, fb_pitch = 0;
-static u32 *fb_render = NULL;
-static real *zbuf_render = NULL;
-static i32 internal_pitch = 0;
+static u32 *sw_fb_front = NULL, *sw_fb_back = NULL, *sw_fb = NULL;
+static real *sw_zbuf_front = NULL, *sw_zbuf_back = NULL, *sw_zbuf = NULL;
+static i32 sw_fw = 0, sw_fh = 0, sw_fb_pitch = 0;
+static u32 *sw_fb_render = NULL;
+static real *sw_zbuf_render = NULL;
+static i32 sw_internal_pitch = 0;
 
-static real scale_x = 1.0f, scale_y = 1.0f;
-static mat4 vp;
-static vec3 light_dir, light_col, ambient_col;
-static vec3 cam_eye;
-static vec3 fog_color;
-static real fog_start, fog_end;
-static tile_bounds screen_bounds;
+static real sw_scale_x = 1.0f, sw_scale_y = 1.0f;
+static mat4 sw_vp;
+static vec3 sw_light_dir, sw_light_col, sw_ambient_col;
+static vec3 sw_cam_eye;
+static vec3 sw_fog_color;
+static real sw_fog_start, sw_fog_end;
+static tile_bounds sw_screen_bounds;
 
-static frustum_plane frustum[6];
-static real render_time = 0.0f;
+static frustum_plane sw_frustum[6];
+static real sw_render_time = 0.0f;
 
 /* ---- Forward declarations for static functions ---- */
 static void tile_bin_triangle(
@@ -296,7 +296,7 @@ static INLINE i32 clip_code(i32 x, i32 y, const tile_bounds *b) {
 }
 
 static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
-    vec4 c = mat4_mul_vec4(vp, vec4_init_from_4(
+    vec4 c = mat4_mul_vec4(sw_vp, vec4_init_from_4(
         w.position.x, w.position.y, w.position.z, 1.0f));
     if (c.rotation.w <= 1e-6f) {
         *sx = -1;
@@ -316,47 +316,47 @@ static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
 /* ---------------------------------------------------------------------------*/
 
 static void extract_frustum_planes(void) {
-    vec4 c0 = vp.columns[0];
-    vec4 c1 = vp.columns[1];
-    vec4 c2 = vp.columns[2];
-    vec4 c3 = vp.columns[3];
+    vec4 c0 = sw_vp.columns[0];
+    vec4 c1 = sw_vp.columns[1];
+    vec4 c2 = sw_vp.columns[2];
+    vec4 c3 = sw_vp.columns[3];
     i32 i;
 
-    frustum[0].normal = vec3_add(
+    sw_frustum[0].normal = vec3_add(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
-    frustum[0].d = c3.components[3] + c0.components[3];
+    sw_frustum[0].d = c3.components[3] + c0.components[3];
 
-    frustum[1].normal = vec3_sub(
+    sw_frustum[1].normal = vec3_sub(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
-    frustum[1].d = c3.components[3] - c0.components[3];
+    sw_frustum[1].d = c3.components[3] - c0.components[3];
 
-    frustum[2].normal = vec3_add(
+    sw_frustum[2].normal = vec3_add(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c1.components[0], c1.components[1], c1.components[2]));
-    frustum[2].d = c3.components[3] + c1.components[3];
+    sw_frustum[2].d = c3.components[3] + c1.components[3];
 
-    frustum[3].normal = vec3_sub(
+    sw_frustum[3].normal = vec3_sub(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c1.components[0], c1.components[1], c1.components[2]));
-    frustum[3].d = c3.components[3] - c1.components[3];
+    sw_frustum[3].d = c3.components[3] - c1.components[3];
 
-    frustum[4].normal = vec3_add(
+    sw_frustum[4].normal = vec3_add(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c2.components[0], c2.components[1], c2.components[2]));
-    frustum[4].d = c3.components[3] + c2.components[3];
+    sw_frustum[4].d = c3.components[3] + c2.components[3];
 
-    frustum[5].normal = vec3_sub(
+    sw_frustum[5].normal = vec3_sub(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c2.components[0], c2.components[1], c2.components[2]));
-    frustum[5].d = c3.components[3] - c2.components[3];
+    sw_frustum[5].d = c3.components[3] - c2.components[3];
 
     for (i = 0; i < 6; i++) {
-        real len = vec3_magnitude(frustum[i].normal);
+        real len = vec3_magnitude(sw_frustum[i].normal);
         if (len > 0.0f) {
-            frustum[i].normal = vec3_div_scalar(frustum[i].normal, len);
-            frustum[i].d /= len;
+            sw_frustum[i].normal = vec3_div_scalar(sw_frustum[i].normal, len);
+            sw_frustum[i].d /= len;
         }
     }
 }
@@ -364,9 +364,9 @@ static void extract_frustum_planes(void) {
 static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
     i32 i;
     for (i = 0; i < 6; i++) {
-        i32 o0 = (vec3_dot(frustum[i].normal, v0) + frustum[i].d) < 0.0f;
-        i32 o1 = (vec3_dot(frustum[i].normal, v1) + frustum[i].d) < 0.0f;
-        i32 o2 = (vec3_dot(frustum[i].normal, v2) + frustum[i].d) < 0.0f;
+        i32 o0 = (vec3_dot(sw_frustum[i].normal, v0) + sw_frustum[i].d) < 0.0f;
+        i32 o1 = (vec3_dot(sw_frustum[i].normal, v1) + sw_frustum[i].d) < 0.0f;
+        i32 o2 = (vec3_dot(sw_frustum[i].normal, v2) + sw_frustum[i].d) < 0.0f;
         if (o0 && o1 && o2) return 1;
     }
     return 0;
@@ -440,12 +440,12 @@ static INLINE i32 clip_triangle_full(
         if (in_count < 3) return 0;
         all_in = 1;
         for (k = 0; k < in_count; k++) {
-            real d = vec3_dot(frustum[i].normal, in[k].v) + frustum[i].d;
+            real d = vec3_dot(sw_frustum[i].normal, in[k].v) + sw_frustum[i].d;
             if (d < 0.0f) all_in = 0;
         }
         if (all_in) continue;
         out_count = clip_triangle_plane(in, in_count, out,
-            frustum[i].normal, frustum[i].d);
+            sw_frustum[i].normal, sw_frustum[i].d);
         if (out_count < 3) return 0;
         for (j = 0; j < out_count; j++) in[j] = out[j];
         in_count = out_count;
@@ -499,19 +499,19 @@ static INLINE vec3 shade_surface(
         real fx = world_pos.position.x * mat->bump_frequency;
         real fy = world_pos.position.y * mat->bump_frequency;
         real fz = world_pos.position.z * mat->bump_frequency;
-        real t = render_time * mat->bump_speed;
+        real t = sw_render_time * mat->bump_speed;
         N.position.x += real_sin(fy + fz + t) * mat->bump_amplitude;
         N.position.y += real_sin(fz + fx + t) * mat->bump_amplitude;
         N.position.z += real_sin(fx + fy + t) * mat->bump_amplitude;
         N = vec3_normalize(N);
     }
 
-    ndotl = saturate(vec3_dot(N, light_dir));
+    ndotl = saturate(vec3_dot(N, sw_light_dir));
 
     if (mat->render_method & (EFFECT_MINNAERT | EFFECT_OREN_NAYAR | EFFECT_RIM |
                    EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE |
                    EFFECT_FRINGE)) {
-        V = vec3_normalize(vec3_sub(cam_eye, world_pos));
+        V = vec3_normalize(vec3_sub(sw_cam_eye, world_pos));
         ndotv = saturate(vec3_dot(N, V));
     }
 
@@ -543,7 +543,7 @@ static INLINE vec3 shade_surface(
         real tan_beta = 0.0f;
 
         if (ndotl > 0.0f && ndotv > 0.0f) {
-            vec3 Lproj = vec3_sub(light_dir, vec3_mul_scalar(N, ndotl));
+            vec3 Lproj = vec3_sub(sw_light_dir, vec3_mul_scalar(N, ndotl));
             vec3 Vproj = vec3_sub(V, vec3_mul_scalar(N, ndotv));
             real lenL = vec3_magnitude(Lproj);
             real lenV = vec3_magnitude(Vproj);
@@ -571,7 +571,7 @@ static INLINE vec3 shade_surface(
     }
 
     if (mat->render_method & EFFECT_AMBIENT_LIGHT) {
-        color = vec3_add(ambient_col, vec3_mul_scalar(light_col, diffuse_term));
+        color = vec3_add(sw_ambient_col, vec3_mul_scalar(sw_light_col, diffuse_term));
         color = vec3_mul_scalar(color, mat->ambient_light_factor);
     }
 
@@ -586,7 +586,7 @@ static INLINE vec3 shade_surface(
     }
 
     if (mat->render_method & EFFECT_BACK_GLOW) {
-        vec3 ln = vec3_mul_scalar(light_dir, -1.0f);
+        vec3 ln = vec3_mul_scalar(sw_light_dir, -1.0f);
         real ndotl_neg = vec3_dot(N, ln);
         color = vec3_add(color, vec3_mul_scalar(mat->back_glow_color,
             ndotl_neg < 0.0f ? 0.0f : ndotl_neg));
@@ -608,7 +608,7 @@ static INLINE vec3 shade_surface(
         vec3 emissive = mat->emissive_color;
         if (mat->render_method & EFFECT_EMISSIVE_PULSE) {
             real pulse = 1.0f + mat->emissive_pulse_amplitude *
-                real_sin(render_time * mat->emissive_pulse_frequency +
+                real_sin(sw_render_time * mat->emissive_pulse_frequency +
                          mat->emissive_pulse_phase);
             emissive = vec3_mul_scalar(emissive, pulse);
         }
@@ -616,13 +616,13 @@ static INLINE vec3 shade_surface(
     }
 
     if (mat->render_method & EFFECT_STROBE) {
-        real s = real_sin(render_time * mat->strobe_frequency + mat->strobe_phase);
+        real s = real_sin(sw_render_time * mat->strobe_frequency + mat->strobe_phase);
         s = s * 0.5f + 0.5f;
         color = vec3_add(color, vec3_mul_scalar(mat->strobe_color, s));
     }
 
     if (mat->render_method & EFFECT_SPECULAR) {
-        vec3 H = vec3_normalize(vec3_add(light_dir, V));
+        vec3 H = vec3_normalize(vec3_add(sw_light_dir, V));
         real nh = vec3_dot(N, H);
         real spec = real_pow(nh < 0.0f ? 0.0f : nh, mat->specular_exponent);
         if (mat->render_method & EFFECT_SPECULAR_THRESH) {
@@ -667,7 +667,7 @@ static INLINE vec3 shade_surface(
     color = vec3_mul(color, mat->tint);
 
     if (mat->render_method & EFFECT_GLITCH) {
-        u32 x = (u32)(render_time * 60.0f);
+        u32 x = (u32)(sw_render_time * 60.0f);
         vec3 wp_q = vec3_floor(vec3_mul_scalar(world_pos, 4096.0f));
         x ^= (u32)wp_q.components[0];
         x = x * 1664525u + 1013904223u;
@@ -710,13 +710,13 @@ static INLINE vec3 shade_surface(
         color.color.b = real_floor(color.color.b * levels + 0.5f) / levels;
     }
 
-    if ((mat->render_method & EFFECT_FOG) && fog_end > fog_start) {
-        real dist = vec3_magnitude(vec3_sub(world_pos, cam_eye));
-        real t = (dist - fog_start) / (fog_end - fog_start);
+    if ((mat->render_method & EFFECT_FOG) && sw_fog_end > sw_fog_start) {
+        real dist = vec3_magnitude(vec3_sub(world_pos, sw_cam_eye));
+        real t = (dist - sw_fog_start) / (sw_fog_end - sw_fog_start);
         t = saturate(t);
         color = vec3_add(
             vec3_mul_scalar(color, 1.0f - t),
-            vec3_mul_scalar(fog_color, t));
+            vec3_mul_scalar(sw_fog_color, t));
     }
 
     color.color.r = saturate(color.color.r);
@@ -742,7 +742,7 @@ static INLINE void write_scaled_transparent_pixel(
     if (iw <= 0.0f) return;
 
     ridx = ry * RENDER_WIDTH + rx;
-    dst = fb_render[ridx];
+    dst = sw_fb_render[ridx];
     dr = (u8)((dst >> 16) & 0xFF);
     dg = (u8)((dst >> 8) & 0xFF);
     db = (u8)(dst & 0xFF);
@@ -754,7 +754,7 @@ static INLINE void write_scaled_transparent_pixel(
     result = ((u32)((sr * ia + dr * (255 - ia)) / 255) << 16) |
              ((u32)((sg * ia + dg * (255 - ia)) / 255) << 8) |
              ((u32)((sb * ia + db * (255 - ia)) / 255));
-    fb_render[ridx] = result;
+    sw_fb_render[ridx] = result;
 }
 
 /* ---------------------------------------------------------------------------*/
@@ -850,9 +850,9 @@ static void draw_line_z(
                 i32 ridx = y0 * RENDER_WIDTH + x0;
                 if (x0 >= 0 && x0 < RENDER_WIDTH &&
                     y0 >= 0 && y0 < RENDER_HEIGHT &&
-                    iw > zbuf_render[ridx]) {
-                    zbuf_render[ridx] = iw;
-                    fb_render[ridx] = pack_color_real(color.color.r,
+                    iw > sw_zbuf_render[ridx]) {
+                    sw_zbuf_render[ridx] = iw;
+                    sw_fb_render[ridx] = pack_color_real(color.color.r,
                         color.color.g, color.color.b);
                 }
                 if (x0 == x1 && y0 == y1) break;
@@ -863,9 +863,9 @@ static void draw_line_z(
         } else {
             while (1) {
                 i32 ridx = y0 * RENDER_WIDTH + x0;
-                if (iw > zbuf_render[ridx]) {
+                if (iw > sw_zbuf_render[ridx]) {
                     write_scaled_transparent_pixel(x0, y0, iw, color, alpha, effects);
-                    zbuf_render[ridx] = iw;
+                    sw_zbuf_render[ridx] = iw;
                 }
                 if (x0 == x1 && y0 == y1) break;
                 i32 e2 = 2 * err;
@@ -958,9 +958,9 @@ static void raster_triangle_flat(
                     i32 x;
                     for (x = sx; x < ex; x++) {
                         i32 ridx = y * RENDER_WIDTH + x;
-                        if (iw > zbuf_render[ridx]) {
-                            zbuf_render[ridx] = iw;
-                            fb_render[ridx] = col;
+                        if (iw > sw_zbuf_render[ridx]) {
+                            sw_zbuf_render[ridx] = iw;
+                            sw_fb_render[ridx] = col;
                         }
                         iw += iw_step;
                     }
@@ -969,10 +969,10 @@ static void raster_triangle_flat(
                     i32 x;
                     for (x = sx; x < ex; x++) {
                         i32 ridx = y * RENDER_WIDTH + x;
-                        if (iw > zbuf_render[ridx]) {
+                        if (iw > sw_zbuf_render[ridx]) {
                             write_scaled_transparent_pixel(x, y, iw, color,
                                 mat->alpha, effects);
-                            zbuf_render[ridx] = iw;
+                            sw_zbuf_render[ridx] = iw;
                         }
                         iw += iw_step;
                     }
@@ -1086,9 +1086,9 @@ static void raster_triangle_gouraud(
                     i32 x;
                     for (x = sx; x < ex; x++) {
                         i32 ridx = y*RENDER_WIDTH+x;
-                        if (iw > zbuf_render[ridx]) {
-                            zbuf_render[ridx] = iw;
-                            fb_render[ridx] = pack_color_real(col.color.r,
+                        if (iw > sw_zbuf_render[ridx]) {
+                            sw_zbuf_render[ridx] = iw;
+                            sw_fb_render[ridx] = pack_color_real(col.color.r,
                                 col.color.g, col.color.b);
                         }
                         iw += iw_step;
@@ -1102,10 +1102,10 @@ static void raster_triangle_gouraud(
                     i32 x;
                     for (x = sx; x < ex; x++) {
                         i32 ridx = y*RENDER_WIDTH+x;
-                        if (iw > zbuf_render[ridx]) {
+                        if (iw > sw_zbuf_render[ridx]) {
                             write_scaled_transparent_pixel(x, y, iw, col,
                                 mat->alpha, effects);
-                            zbuf_render[ridx] = iw;
+                            sw_zbuf_render[ridx] = iw;
                         }
                         iw += iw_step;
                         col.color.r += dc_step.color.r;
@@ -1326,7 +1326,7 @@ static void raster_triangle_phong(
                                 real iw = siw;
                                 i32 x;
                                 for (x = sx; x < ex; x++) {
-                                    if (iw > zbuf_render[y*RENDER_WIDTH+x]) {
+                                    if (iw > sw_zbuf_render[y*RENDER_WIDTH+x]) {
                                         real inv_w = 1.0f/iw;
                                         vec3 normal, world_pos, local_pos;
                                         normal.position.x = nw_val_x * inv_w;
@@ -1340,8 +1340,8 @@ static void raster_triangle_phong(
                                         local_pos.position.z = lp_val_z * inv_w;
                                         {
                                             vec3 color = shade_surface(normal, world_pos, local_pos, mat);
-                                            zbuf_render[y*RENDER_WIDTH+x] = iw;
-                                            fb_render[y*RENDER_WIDTH+x] = pack_color_real(
+                                            sw_zbuf_render[y*RENDER_WIDTH+x] = iw;
+                                            sw_fb_render[y*RENDER_WIDTH+x] = pack_color_real(
                                                 color.color.r, color.color.g, color.color.b);
                                         }
                                     }
@@ -1361,7 +1361,7 @@ static void raster_triangle_phong(
                                 i32 x;
                                 for (x = sx; x < ex; x++) {
                                     i32 ridx = y*RENDER_WIDTH+x;
-                                    if (iw > zbuf_render[ridx]) {
+                                    if (iw > sw_zbuf_render[ridx]) {
                                         real inv_w = 1.0f/iw;
                                         vec3 color = shade_surface(
                                             vec3_init_from_3(nw_val_x * inv_w,
@@ -1373,7 +1373,7 @@ static void raster_triangle_phong(
                                             mat);
                                         write_scaled_transparent_pixel(x, y, iw, color,
                                             mat->alpha, effects);
-                                        zbuf_render[ridx] = iw;
+                                        sw_zbuf_render[ridx] = iw;
                                     }
                                     iw += iw_step;
                                     nw_val_x += dnw_step_x;
@@ -1569,9 +1569,9 @@ static void raster_triangle_quadratic(
 
                                     {
                                         i32 ridx = y*RENDER_WIDTH + x;
-                                        if (iw > zbuf_render[ridx]) {
-                                            zbuf_render[ridx] = iw;
-                                            fb_render[ridx] = pack_color_real(fc.color.r,
+                                        if (iw > sw_zbuf_render[ridx]) {
+                                            sw_zbuf_render[ridx] = iw;
+                                            sw_fb_render[ridx] = pack_color_real(fc.color.r,
                                                 fc.color.g, fc.color.b);
                                         }
                                     }
@@ -1630,10 +1630,10 @@ static void raster_triangle_quadratic(
 
                                     {
                                         i32 ridx = y*RENDER_WIDTH + x;
-                                        if (iw > zbuf_render[ridx]) {
+                                        if (iw > sw_zbuf_render[ridx]) {
                                             write_scaled_transparent_pixel(x, y, iw, fc,
                                                 mat->alpha, effects);
-                                            zbuf_render[ridx] = iw;
+                                            sw_zbuf_render[ridx] = iw;
                                         }
                                     }
                                 }
@@ -1861,9 +1861,9 @@ static void raster_triangle_cubic(
 
                                     {
                                         i32 ridx=y*RENDER_WIDTH+x;
-                                        if (iw>zbuf_render[ridx]) {
-                                            zbuf_render[ridx]=iw;
-                                            fb_render[ridx]=pack_color_real(fc.color.r,
+                                        if (iw>sw_zbuf_render[ridx]) {
+                                            sw_zbuf_render[ridx]=iw;
+                                            sw_fb_render[ridx]=pack_color_real(fc.color.r,
                                                 fc.color.g, fc.color.b);
                                         }
                                     }
@@ -1931,10 +1931,10 @@ static void raster_triangle_cubic(
 
                                     {
                                         i32 ridx=y*RENDER_WIDTH+x;
-                                        if (iw>zbuf_render[ridx]) {
+                                        if (iw>sw_zbuf_render[ridx]) {
                                             write_scaled_transparent_pixel(x, y, iw, fc,
                                                 mat->alpha, effects);
-                                            zbuf_render[ridx]=iw;
+                                            sw_zbuf_render[ridx]=iw;
                                         }
                                     }
                                 }
@@ -2051,7 +2051,7 @@ void draw_triangle_shaded(
             vec3_sub(v1, v0), vec3_sub(v2, v0)));
         vec3 fcen = vec3_mul_scalar(
             vec3_add(vec3_add(v0, v1), v2), 1.0f/3.0f);
-        vec3 vd = vec3_sub(cam_eye, fcen);
+        vec3 vd = vec3_sub(sw_cam_eye, fcen);
         if (vec3_dot(fn, vd) <= 0.0f) return;
     }
 
@@ -2074,9 +2074,9 @@ void draw_triangle_shaded(
 
         {
             i32 needs_clip = 0;
-            real d0 = vec3_dot(vec3_sub(v0, cam_eye), vec3_sub(v0, cam_eye));
-            real d1 = vec3_dot(vec3_sub(v1, cam_eye), vec3_sub(v1, cam_eye));
-            real d2 = vec3_dot(vec3_sub(v2, cam_eye), vec3_sub(v2, cam_eye));
+            real d0 = vec3_dot(vec3_sub(v0, sw_cam_eye), vec3_sub(v0, sw_cam_eye));
+            real d1 = vec3_dot(vec3_sub(v1, sw_cam_eye), vec3_sub(v1, sw_cam_eye));
+            real d2 = vec3_dot(vec3_sub(v2, sw_cam_eye), vec3_sub(v2, sw_cam_eye));
             if (d0 < 10000.0f || d1 < 10000.0f || d2 < 10000.0f) needs_clip = 1;
 
             if (needs_clip) {
@@ -2123,7 +2123,7 @@ void draw_triangle_shaded(
                                     cn0, cn1, cn2, cl0, cl1, cl2,
                                     cc0, cc1, cc2, b0, b1, b2,
                                     v0, v1, v2, l0, l1, l2, n0, n1, n2,
-                                    mat, &screen_bounds, 1);
+                                    mat, &sw_screen_bounds, 1);
                             } else {
                                 tile_bin_triangle(cv0, cv1, cv2,
                                     cn0, cn1, cn2, cl0, cl1, cl2,
@@ -2153,7 +2153,7 @@ void draw_triangle_shaded(
                     draw_triangle_internal(v0, v1, v2, n0, n1, n2, l0, l1, l2,
                         orig_c0, orig_c1, orig_c2, zb, zb, zb,
                         v0, v1, v2, l0, l1, l2, n0, n1, n2,
-                        mat, &screen_bounds, 0);
+                        mat, &sw_screen_bounds, 0);
                 } else {
                     tile_bin_triangle(v0, v1, v2, n0, n1, n2, l0, l1, l2,
                         orig_c0, orig_c1, orig_c2,
@@ -2206,11 +2206,11 @@ static void tile_bin_triangle(
             i32 ty, tx;
 
             for (ty = tmy; ty <= tMy; ty++) {
-                i32 bi = ty * num_tiles_x;
+                i32 bi = ty * sw_num_tiles_x;
                 for (tx = tmx; tx <= tMx; tx++) {
                     i32 idx = bi + tx;
-                    if (idx >= total_tiles) continue;
-                    tile_bin *bn = &tile_bins[idx];
+                    if (idx >= sw_total_tiles) continue;
+                    tile_bin *bn = &sw_tile_bins[idx];
                     if (bn->tri_count >= MAX_TRIS_PER_TILE) continue;
                     tile_tri *tr = &bn->tris[bn->tri_count++];
                     tr->v0 = v0; tr->v1 = v1; tr->v2 = v2;
@@ -2286,11 +2286,11 @@ static void tile_bin_transparent_triangle(
     i32 ty, tx;
 
     for (ty = tmy; ty <= tMy; ty++) {
-        i32 bi = ty * num_tiles_x;
+        i32 bi = ty * sw_num_tiles_x;
         for (tx = tmx; tx <= tMx; tx++) {
             i32 idx = bi + tx;
-            if (idx >= total_tiles) continue;
-            tile_bin *bn = &tile_bins[idx];
+            if (idx >= sw_total_tiles) continue;
+            tile_bin *bn = &sw_tile_bins[idx];
             if (bn->transparent_count >= MAX_TRIS_PER_TILE) continue;
             tile_transparent_tri *tt = &bn->transparent_tris[bn->transparent_count++];
             tt->v0 = v0; tt->v1 = v1; tt->v2 = v2;
@@ -2321,20 +2321,20 @@ static void tile_render_all(void)
 {
     i32 at = 0;
     i32 i;
-    for (i = 0; i < total_tiles; i++) {
-        if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) at++;
+    for (i = 0; i < sw_total_tiles; i++) {
+        if (sw_tile_bins[i].tri_count > 0 || sw_tile_bins[i].transparent_count > 0) at++;
     }
 
     if (at < MIN_TILES_PER_THREAD * g_thread_count) {
-        for (i = 0; i < total_tiles; i++) {
-            if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) {
+        for (i = 0; i < sw_total_tiles; i++) {
+            if (sw_tile_bins[i].tri_count > 0 || sw_tile_bins[i].transparent_count > 0) {
                 tile_job jb;
                 jb.tile_idx = i;
-                jb.tile_x = (i % num_tiles_x) * TILE_SIZE;
-                jb.tile_y = (i / num_tiles_x) * TILE_SIZE;
-                jb.tile_w = ((i % num_tiles_x) == num_tiles_x - 1) ?
+                jb.tile_x = (i % sw_num_tiles_x) * TILE_SIZE;
+                jb.tile_y = (i / sw_num_tiles_x) * TILE_SIZE;
+                jb.tile_w = ((i % sw_num_tiles_x) == sw_num_tiles_x - 1) ?
                             (RENDER_WIDTH - jb.tile_x) : TILE_SIZE;
-                jb.tile_h = ((i / num_tiles_x) == num_tiles_y - 1) ?
+                jb.tile_h = ((i / sw_num_tiles_x) == sw_num_tiles_y - 1) ?
                             (RENDER_HEIGHT - jb.tile_y) : TILE_SIZE;
                 render_tile(&jb);
             }
@@ -2342,10 +2342,10 @@ static void tile_render_all(void)
         return;
     }
 
-    if (job_pool_size < total_tiles) {
-        if (job_pool) free(job_pool);
-        job_pool = (tile_job*)malloc(total_tiles * sizeof(tile_job));
-        job_pool_size = total_tiles;
+    if (sw_job_pool_size < sw_total_tiles) {
+        if (sw_job_pool) free(sw_job_pool);
+        sw_job_pool = (tile_job*)malloc(sw_total_tiles * sizeof(tile_job));
+        sw_job_pool_size = sw_total_tiles;
     }
 
     {
@@ -2353,17 +2353,17 @@ static void tile_render_all(void)
         jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
         joblink_t  *link  = jobchain_add_link(chain);
 
-        for (i = 0; i < total_tiles; i++) {
-            if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) {
-                i32 ty = i / num_tiles_x;
-                i32 tx = i % num_tiles_x;
-                tile_job *jb = &job_pool[jc++];
+        for (i = 0; i < sw_total_tiles; i++) {
+            if (sw_tile_bins[i].tri_count > 0 || sw_tile_bins[i].transparent_count > 0) {
+                i32 ty = i / sw_num_tiles_x;
+                i32 tx = i % sw_num_tiles_x;
+                tile_job *jb = &sw_job_pool[jc++];
                 jb->tile_idx = i;
                 jb->tile_x = tx * TILE_SIZE;
                 jb->tile_y = ty * TILE_SIZE;
-                jb->tile_w = (tx == num_tiles_x - 1) ?
+                jb->tile_w = (tx == sw_num_tiles_x - 1) ?
                              (RENDER_WIDTH - jb->tile_x) : TILE_SIZE;
-                jb->tile_h = (ty == num_tiles_y - 1) ?
+                jb->tile_h = (ty == sw_num_tiles_y - 1) ?
                              (RENDER_HEIGHT - jb->tile_y) : TILE_SIZE;
                 job_t *job = job_create(g_jobgraph, render_tile, jb);
                 joblink_add_job(link, job);
@@ -2379,12 +2379,12 @@ static void tile_render_all(void)
 static void tile_clear_bins(void)
 {
     if (g_thread_count > 1 &&
-        total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
+        sw_total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
         clear_range_job js[32];
         i32 mt = g_thread_count;
         i32 j, bpj;
         if (mt > 32) mt = 32;
-        bpj = (total_tiles + mt - 1) / mt;
+        bpj = (sw_total_tiles + mt - 1) / mt;
 
         {
             jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
@@ -2393,7 +2393,7 @@ static void tile_clear_bins(void)
             for (j = 0; j < mt; j++) {
                 js[j].start_idx = j * bpj;
                 js[j].end_idx = (j + 1) * bpj;
-                if (js[j].end_idx > total_tiles) js[j].end_idx = total_tiles;
+                if (js[j].end_idx > sw_total_tiles) js[j].end_idx = sw_total_tiles;
                 job_t *job = job_create(g_jobgraph, tile_clear_bins_range, &js[j]);
                 joblink_add_job(link, job);
             }
@@ -2404,9 +2404,9 @@ static void tile_clear_bins(void)
         }
     } else {
         i32 i;
-        for (i = 0; i < total_tiles; i++) {
-            tile_bins[i].tri_count = 0;
-            tile_bins[i].transparent_count = 0;
+        for (i = 0; i < sw_total_tiles; i++) {
+            sw_tile_bins[i].tri_count = 0;
+            sw_tile_bins[i].transparent_count = 0;
         }
     }
 }
@@ -2416,9 +2416,9 @@ static job_t* tile_clear_bins_range(void *arg)
     clear_range_job *j = (clear_range_job*)arg;
     i32 i;
     for (i = j->start_idx; i < j->end_idx; i++) {
-        if (i < total_tiles) {
-            tile_bins[i].tri_count = 0;
-            tile_bins[i].transparent_count = 0;
+        if (i < sw_total_tiles) {
+            sw_tile_bins[i].tri_count = 0;
+            sw_tile_bins[i].transparent_count = 0;
         }
     }
     return NULL;
@@ -2427,19 +2427,19 @@ static job_t* tile_clear_bins_range(void *arg)
 static job_t* clear_tile_range(void *arg)
 {
     clear_job *j = (clear_job*)arg;
-    u32 *fb32 = (u32*)fb_render;
-    real *zbr = (real*)zbuf_render;
+    u32 *fb32 = (u32*)sw_fb_render;
+    real *zbr = (real*)sw_zbuf_render;
     u32 col = j->color;
     i32 ti, ty, tx, tlx, tly, tw, th, y, x, ro;
 
     ti = j->tile_idx;
-    ty = ti / num_tiles_x;
-    tx = ti % num_tiles_x;
+    ty = ti / sw_num_tiles_x;
+    tx = ti % sw_num_tiles_x;
     tlx = tx * TILE_SIZE;
     tly = ty * TILE_SIZE;
 
-    tw = (tx == num_tiles_x - 1) ? (RENDER_WIDTH - tlx) : TILE_SIZE;
-    th = (ty == num_tiles_y - 1) ? (RENDER_HEIGHT - tly) : TILE_SIZE;
+    tw = (tx == sw_num_tiles_x - 1) ? (RENDER_WIDTH - tlx) : TILE_SIZE;
+    th = (ty == sw_num_tiles_y - 1) ? (RENDER_HEIGHT - tly) : TILE_SIZE;
 
     for (y = 0; y < th; y++) {
         ro = (tly + y) * RENDER_WIDTH + tlx;
@@ -2466,7 +2466,7 @@ static job_t* clear_tile_range(void *arg)
 static job_t* render_tile(void *arg)
 {
     tile_job *j = (tile_job*)arg;
-    tile_bin *b = &tile_bins[j->tile_idx];
+    tile_bin *b = &sw_tile_bins[j->tile_idx];
 
     tile_bounds bnd;
     bnd.x0 = j->tile_x;
@@ -2599,72 +2599,72 @@ static job_t* render_tile(void *arg)
 /* ---------------------------------------------------------------------------*/
 
 int render_init(i32 window_width, i32 window_height) {
-    fw = window_width;
-    fh = window_height;
-    fb_pitch = (fw + 3) & ~3;
+    sw_fw = window_width;
+    sw_fh = window_height;
+    sw_fb_pitch = (sw_fw + 3) & ~3;
 
-    fb_front = (u32*)malloc(fb_pitch * fh * sizeof(u32));
-    zbuf_front = (real*)malloc(fb_pitch * fh * sizeof(real));
-    fb_back = (u32*)malloc(fb_pitch * fh * sizeof(u32));
-    zbuf_back = (real*)malloc(fb_pitch * fh * sizeof(real));
+    sw_fb_front = (u32*)malloc(sw_fb_pitch * sw_fh * sizeof(u32));
+    sw_zbuf_front = (real*)malloc(sw_fb_pitch * sw_fh * sizeof(real));
+    sw_fb_back = (u32*)malloc(sw_fb_pitch * sw_fh * sizeof(u32));
+    sw_zbuf_back = (real*)malloc(sw_fb_pitch * sw_fh * sizeof(real));
 
-    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
-        free(fb_front); free(zbuf_front); free(fb_back); free(zbuf_back);
-        fb_front = fb_back = fb = NULL;
-        zbuf_front = zbuf_back = zbuf = NULL;
+    if (!sw_fb_front || !sw_zbuf_front || !sw_fb_back || !sw_zbuf_back) {
+        free(sw_fb_front); free(sw_zbuf_front); free(sw_fb_back); free(sw_zbuf_back);
+        sw_fb_front = sw_fb_back = sw_fb = NULL;
+        sw_zbuf_front = sw_zbuf_back = sw_zbuf = NULL;
         return 0;
     }
 
-    internal_pitch = (RENDER_WIDTH + 3) & ~3;
-    fb_render = (u32*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(u32));
-    zbuf_render = (real*)malloc(internal_pitch * RENDER_HEIGHT * sizeof(real));
+    sw_internal_pitch = (RENDER_WIDTH + 3) & ~3;
+    sw_fb_render = (u32*)malloc(sw_internal_pitch * RENDER_HEIGHT * sizeof(u32));
+    sw_zbuf_render = (real*)malloc(sw_internal_pitch * RENDER_HEIGHT * sizeof(real));
 
-    if (!fb_render || !zbuf_render) {
-        free(fb_render); free(zbuf_render);
-        fb_render = NULL; zbuf_render = NULL;
+    if (!sw_fb_render || !sw_zbuf_render) {
+        free(sw_fb_render); free(sw_zbuf_render);
+        sw_fb_render = NULL; sw_zbuf_render = NULL;
         return 0;
     }
 
-    fb = fb_back;
-    zbuf = zbuf_back;
-    scale_x = (real)fw / (real)RENDER_WIDTH;
-    scale_y = (real)fh / (real)RENDER_HEIGHT;
-    tile_init(fw, fh);
+    sw_fb = sw_fb_back;
+    sw_zbuf = sw_zbuf_back;
+    sw_scale_x = (real)sw_fw / (real)RENDER_WIDTH;
+    sw_scale_y = (real)sw_fh / (real)RENDER_HEIGHT;
+    tile_init(sw_fw, sw_fh);
     return 1;
 }
 
 void render_shutdown(void) {
-    free(fb_front); free(zbuf_front);
-    free(fb_back); free(zbuf_back);
-    fb_front = fb_back = fb = NULL;
-    zbuf_front = zbuf_back = zbuf = NULL;
-    free(fb_render); free(zbuf_render);
-    fb_render = NULL; zbuf_render = NULL;
+    free(sw_fb_front); free(sw_zbuf_front);
+    free(sw_fb_back); free(sw_zbuf_back);
+    sw_fb_front = sw_fb_back = sw_fb = NULL;
+    sw_zbuf_front = sw_zbuf_back = sw_zbuf = NULL;
+    free(sw_fb_render); free(sw_zbuf_render);
+    sw_fb_render = NULL; sw_zbuf_render = NULL;
     tile_shutdown();
 }
 
 void render_set_light(vec3 dir, vec3 col, vec3 amb) {
-    light_dir = vec3_normalize(dir);
-    light_col = col;
-    ambient_col = amb;
+    sw_light_dir = vec3_normalize(dir);
+    sw_light_col = col;
+    sw_ambient_col = amb;
 }
 
 void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
     mat4 proj = mat4_perspective(fov, aspect, 0.05f, 1000.0f);
     mat4 view = mat4_lookat(eye, center, up);
-    vp = mat4_mul(proj, view);
-    cam_eye = eye;
+    sw_vp = mat4_mul(proj, view);
+    sw_cam_eye = eye;
     extract_frustum_planes();
 }
 
 void render_set_fog(vec3 color, real start, real end) {
-    fog_color = color;
-    fog_start = start;
-    fog_end = end;
+    sw_fog_color = color;
+    sw_fog_start = start;
+    sw_fog_end = end;
 }
 
 void render_set_time(real t) {
-    render_time = t;
+    sw_render_time = t;
 }
 
 void render_clear(u8 r, u8 g, u8 b) {
@@ -2675,12 +2675,12 @@ void render_clear_color(real r, real g, real b) {
     u32 col = pack_color(color_to_u8(r), color_to_u8(g), color_to_u8(b));
     i32 i, j;
 
-    if (!fb_render || !zbuf_render) return;
+    if (!sw_fb_render || !sw_zbuf_render) return;
 
     if (g_thread_count <= 1) {
-        u32 *fb32 = (u32*)fb_render;
-        real *zb = (real*)zbuf_render;
-        i32 n = internal_pitch * RENDER_HEIGHT;
+        u32 *fb32 = (u32*)sw_fb_render;
+        real *zb = (real*)sw_zbuf_render;
+        i32 n = sw_internal_pitch * RENDER_HEIGHT;
 
         for (i = 0; i + 3 < n; i += 4) {
             fb32[i] = col;
@@ -2695,21 +2695,21 @@ void render_clear_color(real r, real g, real b) {
         return;
     }
 
-    if (total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
-        if (clear_job_count < total_tiles) {
-            if (clear_jobs) free(clear_jobs);
-            clear_jobs = (clear_job*)malloc(total_tiles * sizeof(clear_job));
-            clear_job_count = total_tiles;
+    if (sw_total_tiles >= MIN_TILES_PER_THREAD * g_thread_count) {
+        if (sw_clear_job_count < sw_total_tiles) {
+            if (sw_clear_jobs) free(sw_clear_jobs);
+            sw_clear_jobs = (clear_job*)malloc(sw_total_tiles * sizeof(clear_job));
+            sw_clear_job_count = sw_total_tiles;
         }
 
         {
             jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
             joblink_t  *link  = jobchain_add_link(chain);
 
-            for (j = 0; j < total_tiles; j++) {
-                clear_jobs[j].tile_idx = j;
-                clear_jobs[j].color = col;
-                job_t *job = job_create(g_jobgraph, clear_tile_range, &clear_jobs[j]);
+            for (j = 0; j < sw_total_tiles; j++) {
+                sw_clear_jobs[j].tile_idx = j;
+                sw_clear_jobs[j].color = col;
+                job_t *job = job_create(g_jobgraph, clear_tile_range, &sw_clear_jobs[j]);
                 joblink_add_job(link, job);
             }
 
@@ -2719,9 +2719,9 @@ void render_clear_color(real r, real g, real b) {
         }
     }
     else {
-        u32 *fb32 = (u32*)fb_render;
-        real *zb = (real*)zbuf_render;
-        i32 n = internal_pitch * RENDER_HEIGHT;
+        u32 *fb32 = (u32*)sw_fb_render;
+        real *zb = (real*)sw_zbuf_render;
+        i32 n = sw_internal_pitch * RENDER_HEIGHT;
 
         for (i = 0; i + 3 < n; i += 4) {
             fb32[i] = col;
@@ -2737,36 +2737,36 @@ void render_clear_color(real r, real g, real b) {
 }
 
 const u32* render_get_fb(void) {
-    return fb_front;
+    return sw_fb_front;
 }
 
 int render_resize(i32 new_w, i32 new_h) {
-    if (new_w == fw && new_h == fh) return 0;
+    if (new_w == sw_fw && new_h == sw_fh) return 0;
 
-    free(fb_front); free(zbuf_front);
-    free(fb_back); free(zbuf_back);
+    free(sw_fb_front); free(sw_zbuf_front);
+    free(sw_fb_back); free(sw_zbuf_back);
 
-    fw = new_w;
-    fh = new_h;
-    fb_pitch = (new_w + 3) & ~3;
+    sw_fw = new_w;
+    sw_fh = new_h;
+    sw_fb_pitch = (new_w + 3) & ~3;
 
-    fb_front = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
-    zbuf_front = (real*)malloc(fb_pitch * new_h * sizeof(real));
-    fb_back = (u32*)malloc(fb_pitch * new_h * sizeof(u32));
-    zbuf_back = (real*)malloc(fb_pitch * new_h * sizeof(real));
+    sw_fb_front = (u32*)malloc(sw_fb_pitch * new_h * sizeof(u32));
+    sw_zbuf_front = (real*)malloc(sw_fb_pitch * new_h * sizeof(real));
+    sw_fb_back = (u32*)malloc(sw_fb_pitch * new_h * sizeof(u32));
+    sw_zbuf_back = (real*)malloc(sw_fb_pitch * new_h * sizeof(real));
 
-    if (!fb_front || !zbuf_front || !fb_back || !zbuf_back) {
-        free(fb_front); free(zbuf_front);
-        free(fb_back); free(zbuf_back);
-        fb_front = fb_back = fb = NULL;
-        zbuf_front = zbuf_back = zbuf = NULL;
+    if (!sw_fb_front || !sw_zbuf_front || !sw_fb_back || !sw_zbuf_back) {
+        free(sw_fb_front); free(sw_zbuf_front);
+        free(sw_fb_back); free(sw_zbuf_back);
+        sw_fb_front = sw_fb_back = sw_fb = NULL;
+        sw_zbuf_front = sw_zbuf_back = sw_zbuf = NULL;
         return -1;
     }
 
-    fb = fb_back;
-    zbuf = zbuf_back;
-    scale_x = (real)new_w / (real)RENDER_WIDTH;
-    scale_y = (real)new_h / (real)RENDER_HEIGHT;
+    sw_fb = sw_fb_back;
+    sw_zbuf = sw_zbuf_back;
+    sw_scale_x = (real)new_w / (real)RENDER_WIDTH;
+    sw_scale_y = (real)new_h / (real)RENDER_HEIGHT;
     return 0;
 }
 
@@ -2838,15 +2838,15 @@ void render_draw_entities(struct entity_definition **entities, int count) {
 void render_finish(void) {
     if (g_thread_count <= 1) {
         i32 i;
-        for (i = 0; i < total_tiles; i++) {
-            if (tile_bins[i].tri_count > 0 || tile_bins[i].transparent_count > 0) {
+        for (i = 0; i < sw_total_tiles; i++) {
+            if (sw_tile_bins[i].tri_count > 0 || sw_tile_bins[i].transparent_count > 0) {
                 tile_job jb;
                 jb.tile_idx = i;
-                jb.tile_x = (i % num_tiles_x) * TILE_SIZE;
-                jb.tile_y = (i / num_tiles_x) * TILE_SIZE;
-                jb.tile_w = ((i % num_tiles_x) == num_tiles_x - 1) ?
+                jb.tile_x = (i % sw_num_tiles_x) * TILE_SIZE;
+                jb.tile_y = (i / sw_num_tiles_x) * TILE_SIZE;
+                jb.tile_w = ((i % sw_num_tiles_x) == sw_num_tiles_x - 1) ?
                             (RENDER_WIDTH - jb.tile_x) : TILE_SIZE;
-                jb.tile_h = ((i / num_tiles_x) == num_tiles_y - 1) ?
+                jb.tile_h = ((i / sw_num_tiles_x) == sw_num_tiles_y - 1) ?
                             (RENDER_HEIGHT - jb.tile_y) : TILE_SIZE;
                 render_tile(&jb);
             }
@@ -2857,18 +2857,18 @@ void render_finish(void) {
         tile_clear_bins();
     }
 
-    if (fw == RENDER_WIDTH && fh == RENDER_HEIGHT) {
-        memcpy(fb, fb_render, RENDER_WIDTH * RENDER_HEIGHT * sizeof(u32));
+    if (sw_fw == RENDER_WIDTH && sw_fh == RENDER_HEIGHT) {
+        memcpy(sw_fb, sw_fb_render, RENDER_WIDTH * RENDER_HEIGHT * sizeof(u32));
     }
     else if (g_thread_count > 1) {
-        i32 utx = (fw + TILE_SIZE - 1) / TILE_SIZE;
-        i32 uty = (fh + TILE_SIZE - 1) / TILE_SIZE;
+        i32 utx = (sw_fw + TILE_SIZE - 1) / TILE_SIZE;
+        i32 uty = (sw_fh + TILE_SIZE - 1) / TILE_SIZE;
         i32 nj = utx * uty;
 
-        if (upscale_job_count < nj) {
-            if (upscale_jobs) free(upscale_jobs);
-            upscale_jobs = (upscale_job*)malloc(nj * sizeof(upscale_job));
-            upscale_job_count = nj;
+        if (sw_upscale_job_count < nj) {
+            if (sw_upscale_jobs) free(sw_upscale_jobs);
+            sw_upscale_jobs = (upscale_job*)malloc(nj * sizeof(upscale_job));
+            sw_upscale_job_count = nj;
         }
 
         {
@@ -2877,26 +2877,26 @@ void render_finish(void) {
             jobchain_t *chain = jobgraph_add_chain(g_jobgraph);
             joblink_t  *link  = jobchain_add_link(chain);
 
-            for (ty = 0; ty < fh; ty += TILE_SIZE) {
+            for (ty = 0; ty < sw_fh; ty += TILE_SIZE) {
                 i32 ety = ty + TILE_SIZE;
-                if (ety > fh) ety = fh;
+                if (ety > sw_fh) ety = sw_fh;
 
-                for (tx = 0; tx < fw; tx += TILE_SIZE) {
+                for (tx = 0; tx < sw_fw; tx += TILE_SIZE) {
                     i32 etx = tx + TILE_SIZE;
-                    if (etx > fw) etx = fw;
+                    if (etx > sw_fw) etx = sw_fw;
 
-                    upscale_jobs[ji].y_start = ty;
-                    upscale_jobs[ji].y_end = ety;
-                    upscale_jobs[ji].x_start = tx;
-                    upscale_jobs[ji].x_end = etx;
-                    upscale_jobs[ji].fb_dst = fb;
-                    upscale_jobs[ji].fb_src = fb_render;
-                    upscale_jobs[ji].dst_width = fw;
-                    upscale_jobs[ji].dst_height = fh;
-                    upscale_jobs[ji].src_width = RENDER_WIDTH;
-                    upscale_jobs[ji].src_height = RENDER_HEIGHT;
+                    sw_upscale_jobs[ji].y_start = ty;
+                    sw_upscale_jobs[ji].y_end = ety;
+                    sw_upscale_jobs[ji].x_start = tx;
+                    sw_upscale_jobs[ji].x_end = etx;
+                    sw_upscale_jobs[ji].fb_dst = sw_fb;
+                    sw_upscale_jobs[ji].fb_src = sw_fb_render;
+                    sw_upscale_jobs[ji].dst_width = sw_fw;
+                    sw_upscale_jobs[ji].dst_height = sw_fh;
+                    sw_upscale_jobs[ji].src_width = RENDER_WIDTH;
+                    sw_upscale_jobs[ji].src_height = RENDER_HEIGHT;
 
-                    job_t *job = job_create(g_jobgraph, upscale_tile, &upscale_jobs[ji]);
+                    job_t *job = job_create(g_jobgraph, upscale_tile, &sw_upscale_jobs[ji]);
                     joblink_add_job(link, job);
                     ji++;
                 }
@@ -2909,27 +2909,27 @@ void render_finish(void) {
     }
     else {
         i32 y, x;
-        for (y = 0; y < fh; y++) {
-            i32 ry = (y * RENDER_HEIGHT) / fh;
-            i32 rb = y * fw;
+        for (y = 0; y < sw_fh; y++) {
+            i32 ry = (y * RENDER_HEIGHT) / sw_fh;
+            i32 rb = y * sw_fw;
             i32 sb = ry * RENDER_WIDTH;
 
-            for (x = 0; x < fw; x++) {
-                i32 rx = (x * RENDER_WIDTH) / fw;
-                fb[rb + x] = fb_render[sb + rx];
+            for (x = 0; x < sw_fw; x++) {
+                i32 rx = (x * RENDER_WIDTH) / sw_fw;
+                sw_fb[rb + x] = sw_fb_render[sb + rx];
             }
         }
     }
 
-    if (fb_front && fb_back) {
-        u32 *tf = fb_front;
-        real *tz = zbuf_front;
-        fb_front = fb_back;
-        zbuf_front = zbuf_back;
-        fb_back = tf;
-        zbuf_back = tz;
-        fb = fb_back;
-        zbuf = zbuf_back;
+    if (sw_fb_front && sw_fb_back) {
+        u32 *tf = sw_fb_front;
+        real *tz = sw_zbuf_front;
+        sw_fb_front = sw_fb_back;
+        sw_zbuf_front = sw_zbuf_back;
+        sw_fb_back = tf;
+        sw_zbuf_back = tz;
+        sw_fb = sw_fb_back;
+        sw_zbuf = sw_zbuf_back;
     }
 }
 
@@ -2940,30 +2940,30 @@ void render_finish(void) {
 static void tile_init(i32 w, i32 h) {
     (void)w;
     (void)h;
-    screen_bounds.x0 = 0;
-    screen_bounds.y0 = 0;
-    screen_bounds.x1 = RENDER_WIDTH;
-    screen_bounds.y1 = RENDER_HEIGHT;
+    sw_screen_bounds.x0 = 0;
+    sw_screen_bounds.y0 = 0;
+    sw_screen_bounds.x1 = RENDER_WIDTH;
+    sw_screen_bounds.y1 = RENDER_HEIGHT;
 
-    num_tiles_x = (RENDER_WIDTH + TILE_SIZE - 1) / TILE_SIZE;
-    num_tiles_y = (RENDER_HEIGHT + TILE_SIZE - 1) / TILE_SIZE;
-    total_tiles = num_tiles_x * num_tiles_y;
+    sw_num_tiles_x = (RENDER_WIDTH + TILE_SIZE - 1) / TILE_SIZE;
+    sw_num_tiles_y = (RENDER_HEIGHT + TILE_SIZE - 1) / TILE_SIZE;
+    sw_total_tiles = sw_num_tiles_x * sw_num_tiles_y;
 
-    tile_bins = (tile_bin*)malloc(total_tiles * sizeof(tile_bin));
-    if (tile_bins) {
+    sw_tile_bins = (tile_bin*)malloc(sw_total_tiles * sizeof(tile_bin));
+    if (sw_tile_bins) {
         i32 i;
-        for (i = 0; i < total_tiles; i++) {
-            tile_bins[i].tri_count = 0;
-            tile_bins[i].transparent_count = 0;
+        for (i = 0; i < sw_total_tiles; i++) {
+            sw_tile_bins[i].tri_count = 0;
+            sw_tile_bins[i].transparent_count = 0;
         }
     }
 }
 
 static void tile_shutdown(void) {
-    if (tile_bins) { free(tile_bins); tile_bins = NULL; }
-    if (job_pool) { free(job_pool); job_pool = NULL; job_pool_size = 0; }
-    if (upscale_jobs) { free(upscale_jobs); upscale_jobs = NULL; upscale_job_count = 0; }
-    if (clear_jobs) { free(clear_jobs); clear_jobs = NULL; clear_job_count = 0; }
+    if (sw_tile_bins) { free(sw_tile_bins); sw_tile_bins = NULL; }
+    if (sw_job_pool) { free(sw_job_pool); sw_job_pool = NULL; sw_job_pool_size = 0; }
+    if (sw_upscale_jobs) { free(sw_upscale_jobs); sw_upscale_jobs = NULL; sw_upscale_job_count = 0; }
+    if (sw_clear_jobs) { free(sw_clear_jobs); sw_clear_jobs = NULL; sw_clear_job_count = 0; }
 }
 
 static job_t* upscale_tile(void *arg) {

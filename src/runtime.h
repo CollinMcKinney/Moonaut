@@ -79,6 +79,10 @@ static real sc_fixed_dt = 1.0f / 60.0f;
 static int g_printed_materials[256];
 static int g_print_material_count = 0;
 
+/* FIX: Window resize tracking */
+static int g_last_width = 0;
+static int g_last_height = 0;
+
 /* ------------------------------------------------------------------------
    Lua helper – return the internal physics_body for a given entity index,
    or NULL if it isn't dynamic.
@@ -1008,7 +1012,7 @@ static void runtime_reconfigure_thread_count(i32 new_thread_count)
 
     if (g_jobgraph) {
         jobgraph_destroy(g_jobgraph);
-        g_jobgraph = ((void*)0);
+        g_jobgraph = ((jobgraph_t*)0);
     }
 
     g_thread_count = new_thread_count;
@@ -1019,7 +1023,7 @@ static void runtime_shutdown(void) {
     scripts_shutdown();
     if (g_jobgraph) {
         jobgraph_destroy(g_jobgraph);
-        g_jobgraph = ((void*)0);
+        g_jobgraph = ((jobgraph_t*)0);
     }
     render_shutdown();
     window_shutdown();
@@ -1058,6 +1062,13 @@ static void runtime_start(void)
     double last_time = clock_monotonic();
     double accumulator = 0.0;
 
+    /* FIX: Initialize last known window size */
+    C89FW_window_t* win = window_get();
+    if (win) {
+        g_last_width = win->width;
+        g_last_height = win->height;
+    }
+
     while (is_running()) {
         real fixed_dt;
         double now;
@@ -1065,6 +1076,14 @@ static void runtime_start(void)
         i32 step_count;
 
         input_process_events(window_get());
+
+        /* FIX: Handle window resize */
+        win = window_get();
+        if (win && (win->width != g_last_width || win->height != g_last_height)) {
+            g_last_width = win->width;
+            g_last_height = win->height;
+            render_resize(g_last_width, g_last_height);
+        }
 
         now = clock_monotonic();
         frame_time = now - last_time;
