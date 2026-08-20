@@ -13,6 +13,8 @@
  *   - **Batching** – one draw call per material, not per triangle.
  *   - **No geometry shader** – uses dFdx/dFdy for flat shading.
  *   - **Entity‑level sorting** for transparent objects – eliminates flicker.
+ *   - **Shader variants** – compiles specialised shaders per material key.
+ *   - **Hash table cache** – O(1) average lookup for thousands of variants.
  *
  * Shaders are loaded from external files:
  *   - render.vert  (vertex shader)
@@ -111,8 +113,64 @@ static i32 g_win_height = 0;
 static i32 g_render_width  = 0;
 static i32 g_render_height = 0;
 
-/* ---- GL program and shader handles ---- */
-static GLuint g_program = 0;
+/* ---- Shader variant cache (hash table) ---- */
+typedef struct {
+    render_method key;
+    GLuint program;
+    int hit_logged;                 /* for first‑hit logging only */
+    /* Uniform locations – store per program to avoid re‑querying */
+    GLint u_view_proj;
+    GLint u_light_dir;
+    GLint u_light_col;
+    GLint u_ambient_col;
+    GLint u_cam_eye;
+    GLint u_time;
+    GLint u_fog_color;
+    GLint u_fog_start;
+    GLint u_fog_end;
+    GLint u_mat_color;
+    GLint u_mat_tint;
+    GLint u_mat_alpha;
+    GLint u_mat_emissive_color;
+    GLint u_mat_emissive_pulse_amp;
+    GLint u_mat_emissive_pulse_freq;
+    GLint u_mat_emissive_pulse_phase;
+    GLint u_mat_specular_exponent;
+    GLint u_mat_specular_color;
+    GLint u_mat_specular_threshold;
+    GLint u_mat_rim_color;
+    GLint u_mat_rim_exponent;
+    GLint u_mat_fresnel_color;
+    GLint u_mat_fresnel_exponent;
+    GLint u_mat_gooch_cool;
+    GLint u_mat_gooch_warm;
+    GLint u_mat_ambient_light_factor;
+    GLint u_mat_oren_nayar_sigma;
+    GLint u_mat_minnaert_k;
+    GLint u_mat_saturation;
+    GLint u_mat_iridescence_strength;
+    GLint u_mat_back_glow_color;
+    GLint u_mat_bump_amplitude;
+    GLint u_mat_bump_frequency;
+    GLint u_mat_bump_speed;
+    GLint u_mat_roughness;
+    GLint u_mat_fringe_intensity;
+    GLint u_mat_cel_bands;
+    GLint u_mat_glitch_intensity;
+    GLint u_mat_posterize_levels;
+    GLint u_mat_strobe_color;
+    GLint u_mat_strobe_frequency;
+    GLint u_mat_strobe_phase;
+} shader_variant_t;
+
+/* Hash table parameters */
+#define SHADER_CACHE_INITIAL_SIZE 64
+#define SHADER_CACHE_MAX_LOAD_FACTOR 0.7f
+
+static shader_variant_t *g_shader_cache = NULL;
+static int g_shader_cache_size = 0;
+static int g_shader_cache_count = 0;
+static int g_shader_compilations = 0;        /* counter for logging */
 
 /* ---- Frustum culling state ---- */
 #define FRUSTUM_PLANES 6
@@ -125,52 +183,14 @@ static frustum_plane_t g_frustum[FRUSTUM_PLANES];
 static mat4 g_view, g_proj, g_view_proj;
 static vec3 g_cam_eye;
 
-/* ---- Uniform locations ---- */
-static GLint u_view_proj   = -1;
-static GLint u_light_dir   = -1;
-static GLint u_light_col   = -1;
-static GLint u_ambient_col = -1;
-static GLint u_cam_eye     = -1;
-static GLint u_time        = -1;
-static GLint u_fog_color   = -1;
-static GLint u_fog_start   = -1;
-static GLint u_fog_end     = -1;
-
-static GLint u_mat_color          = -1;
-static GLint u_mat_tint           = -1;
-static GLint u_mat_alpha          = -1;
-static GLint u_mat_mode           = -1;
-static GLint u_mat_effects        = -1;
-static GLint u_mat_emissive_color = -1;
-static GLint u_mat_emissive_pulse_amp   = -1;
-static GLint u_mat_emissive_pulse_freq  = -1;
-static GLint u_mat_emissive_pulse_phase = -1;
-static GLint u_mat_specular_exponent    = -1;
-static GLint u_mat_specular_color       = -1;
-static GLint u_mat_specular_threshold   = -1;
-static GLint u_mat_rim_color       = -1;
-static GLint u_mat_rim_exponent    = -1;
-static GLint u_mat_fresnel_color   = -1;
-static GLint u_mat_fresnel_exponent= -1;
-static GLint u_mat_gooch_cool      = -1;
-static GLint u_mat_gooch_warm      = -1;
-static GLint u_mat_ambient_light_factor = -1;
-static GLint u_mat_oren_nayar_sigma     = -1;
-static GLint u_mat_minnaert_k           = -1;
-static GLint u_mat_saturation           = -1;
-static GLint u_mat_iridescence_strength = -1;
-static GLint u_mat_back_glow_color      = -1;
-static GLint u_mat_bump_amplitude       = -1;
-static GLint u_mat_bump_frequency       = -1;
-static GLint u_mat_bump_speed           = -1;
-static GLint u_mat_roughness            = -1;
-static GLint u_mat_fringe_intensity     = -1;
-static GLint u_mat_cel_bands            = -1;
-static GLint u_mat_glitch_intensity     = -1;
-static GLint u_mat_posterize_levels     = -1;
-static GLint u_mat_strobe_color         = -1;
-static GLint u_mat_strobe_frequency     = -1;
-static GLint u_mat_strobe_phase         = -1;
+/* ---- Lighting and environment globals (set by render_set_* and used later) ---- */
+static vec3 g_light_dir;
+static vec3 g_light_col;
+static vec3 g_ambient_col;
+static vec3 g_fog_color;
+static real g_fog_start;
+static real g_fog_end;
+static real g_time;
 
 /* ---- VAO / VBO (batch VBO) ---- */
 static GLuint g_vao = 0;
@@ -202,7 +222,7 @@ typedef struct {
     const struct material_definition *mat;
     size_t vertex_offset;   /* offset into g_vertex_pool (in floats) */
     int    vertex_count;
-    int    mode;            /* SHADE_WIREFRAME, FLAT, GOURAUD, PHONG */
+    int    mode;            /* MODE_* (from render_method) */
     int    is_transparent;
 } batch_t;
 
@@ -314,68 +334,334 @@ static char* read_file(const char* filename) {
     return data;
 }
 
-/* ---- Helper: compile shader (unchanged) ---- */
-static GLuint compile_shader_file(GLenum type, const char* filename) {
-    printf("Compiling shader: %s\n", filename);
+/* ---- Helper: compile shader with prepended defines ---- */
+static GLuint compile_shader_with_defines(GLenum type, const char* filename, const char* defines) {
     char* source = read_file(filename);
-    if (!source) {
-        printf("ERROR: Shader file %s not found or empty\n", filename);
-        return 0;
+    if (!source) return 0;
+
+    /* The defines already contain the #version directive, so we remove it from the source */
+    char* source_without_version = source;
+    if (strncmp(source, "#version", 8) == 0) {
+        /* Find the first newline after #version and skip it */
+        char* p = strchr(source, '\n');
+        if (p) {
+            source_without_version = p + 1;
+        }
     }
-    GLuint shader = C89GL_glCreateShader(type);
-    C89GL_glShaderSource(shader, 1, (const char**)&source, NULL);
-    C89GL_glCompileShader(shader);
+
+    /* Combine defines + source */
+    size_t def_len = strlen(defines);
+    size_t src_len = strlen(source_without_version);
+    char* combined = (char*)malloc(def_len + src_len + 1);
+    if (!combined) { free(source); return 0; }
+    strcpy(combined, defines);
+    strcat(combined, source_without_version);
     free(source);
+
+    GLuint shader = C89GL_glCreateShader(type);
+    C89GL_glShaderSource(shader, 1, (const char**)&combined, NULL);
+    C89GL_glCompileShader(shader);
+    free(combined);
+
     GLint status;
     C89GL_glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
     if (!status) {
         char log[512];
         C89GL_glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-        printf("Shader %s compilation error:\n%s\n", filename, log);
+        printf("Shader %s compilation error with defines:\n%s\n", filename, log);
         C89GL_glDeleteShader(shader);
         return 0;
     }
-    printf("Shader %s compiled successfully (status=%d)\n", filename, status);
     return shader;
 }
 
-/* ---- Helper: set material uniforms (refactored) ---- */
-static void set_material_uniforms(const struct material_definition *mat) {
-    C89GL_glUniform3fv(u_mat_color, 1, (float*)&mat->color);
-    C89GL_glUniform3fv(u_mat_tint, 1, (float*)&mat->tint);
-    C89GL_glUniform1f(u_mat_alpha, mat->alpha);
-    C89GL_glUniform1i(u_mat_mode, mat->mode);
-    C89GL_glUniform1i(u_mat_effects, mat->effects);
-    C89GL_glUniform3fv(u_mat_emissive_color, 1, (float*)&mat->emissive_color);
-    C89GL_glUniform1f(u_mat_emissive_pulse_amp, mat->emissive_pulse_amplitude);
-    C89GL_glUniform1f(u_mat_emissive_pulse_freq, mat->emissive_pulse_frequency);
-    C89GL_glUniform1f(u_mat_emissive_pulse_phase, mat->emissive_pulse_phase);
-    C89GL_glUniform1f(u_mat_specular_exponent, mat->specular_exponent);
-    C89GL_glUniform3fv(u_mat_specular_color, 1, (float*)&mat->specular_color);
-    C89GL_glUniform1f(u_mat_specular_threshold, mat->specular_threshold);
-    C89GL_glUniform3fv(u_mat_rim_color, 1, (float*)&mat->rim_color);
-    C89GL_glUniform1f(u_mat_rim_exponent, mat->rim_exponent);
-    C89GL_glUniform3fv(u_mat_fresnel_color, 1, (float*)&mat->fresnel_color);
-    C89GL_glUniform1f(u_mat_fresnel_exponent, mat->fresnel_exponent);
-    C89GL_glUniform3fv(u_mat_gooch_cool, 1, (float*)&mat->gooch_cool);
-    C89GL_glUniform3fv(u_mat_gooch_warm, 1, (float*)&mat->gooch_warm);
-    C89GL_glUniform1f(u_mat_ambient_light_factor, mat->ambient_light_factor);
-    C89GL_glUniform1f(u_mat_oren_nayar_sigma, mat->oren_nayar_sigma);
-    C89GL_glUniform1f(u_mat_minnaert_k, mat->minnaert_k);
-    C89GL_glUniform1f(u_mat_saturation, mat->saturation);
-    C89GL_glUniform1f(u_mat_iridescence_strength, mat->iridescence_strength);
-    C89GL_glUniform3fv(u_mat_back_glow_color, 1, (float*)&mat->back_glow_color);
-    C89GL_glUniform1f(u_mat_bump_amplitude, mat->bump_amplitude);
-    C89GL_glUniform1f(u_mat_bump_frequency, mat->bump_frequency);
-    C89GL_glUniform1f(u_mat_bump_speed, mat->bump_speed);
-    C89GL_glUniform1f(u_mat_roughness, mat->roughness);
-    C89GL_glUniform1f(u_mat_fringe_intensity, mat->fringe_intensity);
-    C89GL_glUniform1i(u_mat_cel_bands, mat->cel_bands);
-    C89GL_glUniform1f(u_mat_glitch_intensity, mat->glitch_intensity);
-    C89GL_glUniform1i(u_mat_posterize_levels, mat->posterize_levels);
-    C89GL_glUniform3fv(u_mat_strobe_color, 1, (float*)&mat->strobe_color);
-    C89GL_glUniform1f(u_mat_strobe_frequency, mat->strobe_frequency);
-    C89GL_glUniform1f(u_mat_strobe_phase, mat->strobe_phase);
+/* ---- Helper: generate preprocessor defines from render_method ---- */
+static void generate_defines(render_method key, char* out, size_t out_size) {
+    char* p = out;
+    size_t remaining = out_size;
+    int n;
+
+    /* #version must be first – we put it in the define string */
+    n = snprintf(p, remaining, "#version 330 core\n");
+    p += n; remaining -= n;
+
+    /* Mode define */
+    u32 mode = (u32)key & 0x7;
+    switch (mode) {
+        case MODE_WIREFRAME: n = snprintf(p, remaining, "#define MODE_WIREFRAME\n"); break;
+        case MODE_FLAT:      n = snprintf(p, remaining, "#define MODE_FLAT\n"); break;
+        case MODE_GOURAUD:   n = snprintf(p, remaining, "#define MODE_GOURAUD\n"); break;
+        case MODE_QUADRATIC: n = snprintf(p, remaining, "#define MODE_QUADRATIC\n"); break;
+        case MODE_CUBIC:     n = snprintf(p, remaining, "#define MODE_CUBIC\n"); break;
+        case MODE_PHONG:     n = snprintf(p, remaining, "#define MODE_PHONG\n"); break;
+        default:             n = snprintf(p, remaining, "#define MODE_PHONG\n"); break;
+    }
+    p += n; remaining -= n;
+
+    /* Effects: we define macros for each effect that is set */
+    u32 effects = (u32)key & ~0x7;  /* clear mode bits */
+    if (effects & EFFECT_BUMP)            { n = snprintf(p, remaining, "#define EFFECT_BUMP\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_DIFFUSE_WRAP)    { n = snprintf(p, remaining, "#define EFFECT_DIFFUSE_WRAP\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_CEL_SHADING)     { n = snprintf(p, remaining, "#define EFFECT_CEL_SHADING\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_MINNAERT)        { n = snprintf(p, remaining, "#define EFFECT_MINNAERT\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_OREN_NAYAR)      { n = snprintf(p, remaining, "#define EFFECT_OREN_NAYAR\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_AMBIENT_LIGHT)   { n = snprintf(p, remaining, "#define EFFECT_AMBIENT_LIGHT\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_GOOCH)           { n = snprintf(p, remaining, "#define EFFECT_GOOCH\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_BACK_GLOW)       { n = snprintf(p, remaining, "#define EFFECT_BACK_GLOW\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_RIM)             { n = snprintf(p, remaining, "#define EFFECT_RIM\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_FRESNEL)         { n = snprintf(p, remaining, "#define EFFECT_FRESNEL\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_EMISSIVE)        { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_EMISSIVE_PULSE)  { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE_PULSE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_STROBE)          { n = snprintf(p, remaining, "#define EFFECT_STROBE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_SPECULAR)        { n = snprintf(p, remaining, "#define EFFECT_SPECULAR\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_SPECULAR_THRESH) { n = snprintf(p, remaining, "#define EFFECT_SPECULAR_THRESH\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_SATURATION)      { n = snprintf(p, remaining, "#define EFFECT_SATURATION\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_IRIDESCENCE)     { n = snprintf(p, remaining, "#define EFFECT_IRIDESCENCE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_GLITCH)          { n = snprintf(p, remaining, "#define EFFECT_GLITCH\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_ROUGHNESS)       { n = snprintf(p, remaining, "#define EFFECT_ROUGHNESS\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_FRINGE)          { n = snprintf(p, remaining, "#define EFFECT_FRINGE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
+}
+
+/* ---- Helper: resize the hash table ---- */
+static void shader_cache_resize(int new_size) {
+    shader_variant_t *old_cache = g_shader_cache;
+    int old_size = g_shader_cache_size;
+    int i;
+
+    g_shader_cache = (shader_variant_t*)calloc(new_size, sizeof(shader_variant_t));
+    g_shader_cache_size = new_size;
+    g_shader_cache_count = 0;
+
+    for (i = 0; i < old_size; i++) {
+        if (old_cache[i].program != 0) {
+            /* Rehash into new table */
+            int index = (unsigned)old_cache[i].key % new_size;
+            while (g_shader_cache[index].program != 0) {
+                index = (index + 1) % new_size;
+            }
+            g_shader_cache[index] = old_cache[i];
+            g_shader_cache_count++;
+        }
+    }
+    free(old_cache);
+}
+
+/* ---- Helper: get or compile shader variant (hash table lookup) ---- */
+static shader_variant_t* get_program_for_method(render_method key) {
+    /* Initialise cache if not yet created */
+    if (!g_shader_cache) {
+        g_shader_cache_size = SHADER_CACHE_INITIAL_SIZE;
+        g_shader_cache = (shader_variant_t*)calloc(g_shader_cache_size, sizeof(shader_variant_t));
+        g_shader_cache_count = 0;
+    }
+
+    /* Hash lookup */
+    int index = (unsigned)key % g_shader_cache_size;
+    while (g_shader_cache[index].program != 0) {
+        if (g_shader_cache[index].key == key) {
+            /* Hit – log only once */
+            if (!g_shader_cache[index].hit_logged) {
+                printf("[SHADER CACHE] Hit for key 0x%x (program %u)\n", (unsigned)key, g_shader_cache[index].program);
+                g_shader_cache[index].hit_logged = 1;
+            }
+            return &g_shader_cache[index];
+        }
+        index = (index + 1) % g_shader_cache_size;
+    }
+
+    /* Miss – compile new variant */
+    printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
+    char defines[4096];
+    generate_defines(key, defines, sizeof(defines));
+
+    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "render.vert", defines);
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "render.frag", defines);
+    if (!vs || !fs) {
+        if (vs) C89GL_glDeleteShader(vs);
+        if (fs) C89GL_glDeleteShader(fs);
+        printf("[SHADER CACHE] ERROR: Failed to compile shaders for key 0x%x\n", (unsigned)key);
+        return NULL;
+    }
+
+    GLuint prog = C89GL_glCreateProgram();
+    C89GL_glAttachShader(prog, vs);
+    C89GL_glAttachShader(prog, fs);
+    C89GL_glLinkProgram(prog);
+
+    GLint link_status;
+    C89GL_glGetProgramiv(prog, GL_LINK_STATUS, &link_status);
+    if (!link_status) {
+        char log[512];
+        C89GL_glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+        printf("[SHADER CACHE] ERROR: Program link failed for key 0x%x:\n%s\n", (unsigned)key, log);
+        C89GL_glDeleteProgram(prog);
+        C89GL_glDeleteShader(vs);
+        C89GL_glDeleteShader(fs);
+        return NULL;
+    }
+
+    C89GL_glDeleteShader(vs);
+    C89GL_glDeleteShader(fs);
+
+    /* Resize if load factor exceeds threshold */
+    if ((float)(g_shader_cache_count + 1) / g_shader_cache_size > SHADER_CACHE_MAX_LOAD_FACTOR) {
+        shader_cache_resize(g_shader_cache_size * 2);
+        /* Recompute insertion index after resize */
+        index = (unsigned)key % g_shader_cache_size;
+        while (g_shader_cache[index].program != 0) {
+            index = (index + 1) % g_shader_cache_size;
+        }
+    }
+
+    /* Insert into the empty slot at `index` */
+    shader_variant_t *entry = &g_shader_cache[index];
+    entry->key = key;
+    entry->program = prog;
+    entry->hit_logged = 0;
+
+    /* Query all uniform locations */
+    entry->u_view_proj = C89GL_glGetUniformLocation(prog, "uViewProj");
+    entry->u_light_dir = C89GL_glGetUniformLocation(prog, "uLightDir");
+    entry->u_light_col = C89GL_glGetUniformLocation(prog, "uLightCol");
+    entry->u_ambient_col = C89GL_glGetUniformLocation(prog, "uAmbientCol");
+    entry->u_cam_eye = C89GL_glGetUniformLocation(prog, "uCamEye");
+    entry->u_time = C89GL_glGetUniformLocation(prog, "uTime");
+    entry->u_fog_color = C89GL_glGetUniformLocation(prog, "uFogColor");
+    entry->u_fog_start = C89GL_glGetUniformLocation(prog, "uFogStart");
+    entry->u_fog_end = C89GL_glGetUniformLocation(prog, "uFogEnd");
+    entry->u_mat_color = C89GL_glGetUniformLocation(prog, "uMatColor");
+    entry->u_mat_tint = C89GL_glGetUniformLocation(prog, "uMatTint");
+    entry->u_mat_alpha = C89GL_glGetUniformLocation(prog, "uMatAlpha");
+    entry->u_mat_emissive_color = C89GL_glGetUniformLocation(prog, "uMatEmissiveColor");
+    entry->u_mat_emissive_pulse_amp = C89GL_glGetUniformLocation(prog, "uMatEmissivePulseAmplitude");
+    entry->u_mat_emissive_pulse_freq = C89GL_glGetUniformLocation(prog, "uMatEmissivePulseFrequency");
+    entry->u_mat_emissive_pulse_phase = C89GL_glGetUniformLocation(prog, "uMatEmissivePulsePhase");
+    entry->u_mat_specular_exponent = C89GL_glGetUniformLocation(prog, "uMatSpecularExponent");
+    entry->u_mat_specular_color = C89GL_glGetUniformLocation(prog, "uMatSpecularColor");
+    entry->u_mat_specular_threshold = C89GL_glGetUniformLocation(prog, "uMatSpecularThreshold");
+    entry->u_mat_rim_color = C89GL_glGetUniformLocation(prog, "uMatRimColor");
+    entry->u_mat_rim_exponent = C89GL_glGetUniformLocation(prog, "uMatRimExponent");
+    entry->u_mat_fresnel_color = C89GL_glGetUniformLocation(prog, "uMatFresnelColor");
+    entry->u_mat_fresnel_exponent = C89GL_glGetUniformLocation(prog, "uMatFresnelExponent");
+    entry->u_mat_gooch_cool = C89GL_glGetUniformLocation(prog, "uMatGoochCool");
+    entry->u_mat_gooch_warm = C89GL_glGetUniformLocation(prog, "uMatGoochWarm");
+    entry->u_mat_ambient_light_factor = C89GL_glGetUniformLocation(prog, "uMatAmbientLightFactor");
+    entry->u_mat_oren_nayar_sigma = C89GL_glGetUniformLocation(prog, "uMatOrenNayarSigma");
+    entry->u_mat_minnaert_k = C89GL_glGetUniformLocation(prog, "uMatMinnaertK");
+    entry->u_mat_saturation = C89GL_glGetUniformLocation(prog, "uMatSaturation");
+    entry->u_mat_iridescence_strength = C89GL_glGetUniformLocation(prog, "uMatIridescenceStrength");
+    entry->u_mat_back_glow_color = C89GL_glGetUniformLocation(prog, "uMatBackGlowColor");
+    entry->u_mat_bump_amplitude = C89GL_glGetUniformLocation(prog, "uMatBumpAmplitude");
+    entry->u_mat_bump_frequency = C89GL_glGetUniformLocation(prog, "uMatBumpFrequency");
+    entry->u_mat_bump_speed = C89GL_glGetUniformLocation(prog, "uMatBumpSpeed");
+    entry->u_mat_roughness = C89GL_glGetUniformLocation(prog, "uMatRoughness");
+    entry->u_mat_fringe_intensity = C89GL_glGetUniformLocation(prog, "uMatFringeIntensity");
+    entry->u_mat_cel_bands = C89GL_glGetUniformLocation(prog, "uMatCelBands");
+    entry->u_mat_glitch_intensity = C89GL_glGetUniformLocation(prog, "uMatGlitchIntensity");
+    entry->u_mat_posterize_levels = C89GL_glGetUniformLocation(prog, "uMatPosterizeLevels");
+    entry->u_mat_strobe_color = C89GL_glGetUniformLocation(prog, "uMatStrobeColor");
+    entry->u_mat_strobe_frequency = C89GL_glGetUniformLocation(prog, "uMatStrobeFrequency");
+    entry->u_mat_strobe_phase = C89GL_glGetUniformLocation(prog, "uMatStrobePhase");
+
+    g_shader_cache_count++;
+    g_shader_compilations++;
+    printf("[SHADER CACHE] Compiled new variant #%d for key 0x%x (program %u)\n",
+           g_shader_compilations, (unsigned)key, prog);
+
+    return entry;
+}
+
+/* ---- Helper: set uniform values for a given variant ---- */
+static void set_uniforms_for_variant(shader_variant_t* variant, const material_definition* mat) {
+    if (variant->u_view_proj != -1)
+        C89GL_glUniformMatrix4fv(variant->u_view_proj, 1, GL_TRUE, (float*)&g_view_proj);
+    if (variant->u_light_dir != -1)
+        C89GL_glUniform3fv(variant->u_light_dir, 1, (float*)&g_light_dir);
+    if (variant->u_light_col != -1)
+        C89GL_glUniform3fv(variant->u_light_col, 1, (float*)&g_light_col);
+    if (variant->u_ambient_col != -1)
+        C89GL_glUniform3fv(variant->u_ambient_col, 1, (float*)&g_ambient_col);
+    if (variant->u_cam_eye != -1)
+        C89GL_glUniform3fv(variant->u_cam_eye, 1, (float*)&g_cam_eye);
+    if (variant->u_time != -1)
+        C89GL_glUniform1f(variant->u_time, g_time);
+    if (variant->u_fog_color != -1)
+        C89GL_glUniform3fv(variant->u_fog_color, 1, (float*)&g_fog_color);
+    if (variant->u_fog_start != -1)
+        C89GL_glUniform1f(variant->u_fog_start, g_fog_start);
+    if (variant->u_fog_end != -1)
+        C89GL_glUniform1f(variant->u_fog_end, g_fog_end);
+
+    /* Material uniforms – always set (even if not used, it's safe) */
+    if (variant->u_mat_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_color, 1, (float*)&mat->color);
+    if (variant->u_mat_tint != -1)
+        C89GL_glUniform3fv(variant->u_mat_tint, 1, (float*)&mat->tint);
+    if (variant->u_mat_alpha != -1)
+        C89GL_glUniform1f(variant->u_mat_alpha, mat->alpha);
+    if (variant->u_mat_emissive_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_emissive_color, 1, (float*)&mat->emissive_color);
+    if (variant->u_mat_emissive_pulse_amp != -1)
+        C89GL_glUniform1f(variant->u_mat_emissive_pulse_amp, mat->emissive_pulse_amplitude);
+    if (variant->u_mat_emissive_pulse_freq != -1)
+        C89GL_glUniform1f(variant->u_mat_emissive_pulse_freq, mat->emissive_pulse_frequency);
+    if (variant->u_mat_emissive_pulse_phase != -1)
+        C89GL_glUniform1f(variant->u_mat_emissive_pulse_phase, mat->emissive_pulse_phase);
+    if (variant->u_mat_specular_exponent != -1)
+        C89GL_glUniform1f(variant->u_mat_specular_exponent, mat->specular_exponent);
+    if (variant->u_mat_specular_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_specular_color, 1, (float*)&mat->specular_color);
+    if (variant->u_mat_specular_threshold != -1)
+        C89GL_glUniform1f(variant->u_mat_specular_threshold, mat->specular_threshold);
+    if (variant->u_mat_rim_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_rim_color, 1, (float*)&mat->rim_color);
+    if (variant->u_mat_rim_exponent != -1)
+        C89GL_glUniform1f(variant->u_mat_rim_exponent, mat->rim_exponent);
+    if (variant->u_mat_fresnel_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_fresnel_color, 1, (float*)&mat->fresnel_color);
+    if (variant->u_mat_fresnel_exponent != -1)
+        C89GL_glUniform1f(variant->u_mat_fresnel_exponent, mat->fresnel_exponent);
+    if (variant->u_mat_gooch_cool != -1)
+        C89GL_glUniform3fv(variant->u_mat_gooch_cool, 1, (float*)&mat->gooch_cool);
+    if (variant->u_mat_gooch_warm != -1)
+        C89GL_glUniform3fv(variant->u_mat_gooch_warm, 1, (float*)&mat->gooch_warm);
+    if (variant->u_mat_ambient_light_factor != -1)
+        C89GL_glUniform1f(variant->u_mat_ambient_light_factor, mat->ambient_light_factor);
+    if (variant->u_mat_oren_nayar_sigma != -1)
+        C89GL_glUniform1f(variant->u_mat_oren_nayar_sigma, mat->oren_nayar_sigma);
+    if (variant->u_mat_minnaert_k != -1)
+        C89GL_glUniform1f(variant->u_mat_minnaert_k, mat->minnaert_k);
+    if (variant->u_mat_saturation != -1)
+        C89GL_glUniform1f(variant->u_mat_saturation, mat->saturation);
+    if (variant->u_mat_iridescence_strength != -1)
+        C89GL_glUniform1f(variant->u_mat_iridescence_strength, mat->iridescence_strength);
+    if (variant->u_mat_back_glow_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_back_glow_color, 1, (float*)&mat->back_glow_color);
+    if (variant->u_mat_bump_amplitude != -1)
+        C89GL_glUniform1f(variant->u_mat_bump_amplitude, mat->bump_amplitude);
+    if (variant->u_mat_bump_frequency != -1)
+        C89GL_glUniform1f(variant->u_mat_bump_frequency, mat->bump_frequency);
+    if (variant->u_mat_bump_speed != -1)
+        C89GL_glUniform1f(variant->u_mat_bump_speed, mat->bump_speed);
+    if (variant->u_mat_roughness != -1)
+        C89GL_glUniform1f(variant->u_mat_roughness, mat->roughness);
+    if (variant->u_mat_fringe_intensity != -1)
+        C89GL_glUniform1f(variant->u_mat_fringe_intensity, mat->fringe_intensity);
+    if (variant->u_mat_cel_bands != -1)
+        C89GL_glUniform1i(variant->u_mat_cel_bands, mat->cel_bands);
+    if (variant->u_mat_glitch_intensity != -1)
+        C89GL_glUniform1f(variant->u_mat_glitch_intensity, mat->glitch_intensity);
+    if (variant->u_mat_posterize_levels != -1)
+        C89GL_glUniform1i(variant->u_mat_posterize_levels, mat->posterize_levels);
+    if (variant->u_mat_strobe_color != -1)
+        C89GL_glUniform3fv(variant->u_mat_strobe_color, 1, (float*)&mat->strobe_color);
+    if (variant->u_mat_strobe_frequency != -1)
+        C89GL_glUniform1f(variant->u_mat_strobe_frequency, mat->strobe_frequency);
+    if (variant->u_mat_strobe_phase != -1)
+        C89GL_glUniform1f(variant->u_mat_strobe_phase, mat->strobe_phase);
 }
 
 /* ---- Transparent sort comparator (entity depth first, then triangle depth, then material, then ID) ---- */
@@ -413,7 +699,7 @@ static void flush_transparent_batches(void) {
                     batch_t *b = &g_batches[g_batch_count++];
                     int j;
                     b->mat = mat;
-                    b->mode = mat->mode;
+                    b->mode = (mat->render_method & 0x7); /* extract mode */
                     b->vertex_offset = g_pool_used_floats;
                     b->vertex_count = 0;
                     b->is_transparent = 1;
@@ -478,7 +764,7 @@ static void draw_triangle_internal(
     }
 
     /* Transparent: store for later sorting (using entity depth) */
-    if (mat->effects & EFFECT_ALPHA) {
+    if (mat->render_method & EFFECT_ALPHA) {
         if (g_transparent_count >= MAX_TRANSPARENT_TRIS) {
             flush_transparent_batches();
         }
@@ -509,8 +795,9 @@ static void draw_triangle_internal(
     {
         int batch_idx = -1;
         int i;
+        u32 mode = mat->render_method & 0x7;
         for (i = 0; i < g_batch_count; i++) {
-            if (g_batches[i].mat == mat && g_batches[i].mode == mat->mode) {
+            if (g_batches[i].mat == mat && g_batches[i].mode == mode) {
                 batch_idx = i;
                 break;
             }
@@ -522,7 +809,7 @@ static void draw_triangle_internal(
             }
             batch_idx = g_batch_count++;
             g_batches[batch_idx].mat = mat;
-            g_batches[batch_idx].mode = mat->mode;
+            g_batches[batch_idx].mode = mode;
             g_batches[batch_idx].vertex_offset = g_pool_used_floats;
             g_batches[batch_idx].vertex_count = 0;
             g_batches[batch_idx].is_transparent = 0;
@@ -568,10 +855,8 @@ static void draw_triangle_internal(
 
 int render_init(i32 window_width, i32 window_height) {
     printf("render_init: width=%d height=%d\n", window_width, window_height);
-    if (g_program) {
-        printf("render_init: g_program already exists, returning 1\n");
-        return 1;
-    }
+    /* If already initialized, just return */
+    if (g_vao) return 1;
 
     g_win_width = window_width;
     g_win_height = window_height;
@@ -580,6 +865,10 @@ int render_init(i32 window_width, i32 window_height) {
     g_transparent_count = 0;
     g_batch_count = 0;
     g_pool_used_floats = 0;
+    g_shader_compilations = 0;
+    g_shader_cache = NULL;
+    g_shader_cache_size = 0;
+    g_shader_cache_count = 0;
 
     /* ---- Create GL context from the window ---- */
     if (!C89GL_create_context(window_get(), &g_gl_ctx)) {
@@ -595,91 +884,6 @@ int render_init(i32 window_width, i32 window_height) {
     printf("OpenGL version: %s\n", C89GL_glGetString(GL_VERSION));
     printf("OpenGL vendor: %s\n", C89GL_glGetString(GL_VENDOR));
     printf("OpenGL renderer: %s\n", C89GL_glGetString(GL_RENDERER));
-
-    /* ---- Load shaders (vertex + fragment, no geometry) ---- */
-    {
-        GLuint vs, fs;
-        printf("Compiling vertex shader...\n");
-        vs = compile_shader_file(GL_VERTEX_SHADER, "render.vert");
-        printf("Compiling fragment shader...\n");
-        fs = compile_shader_file(GL_FRAGMENT_SHADER, "render.frag");
-        if (!vs || !fs) {
-            if (vs) C89GL_glDeleteShader(vs);
-            if (fs) C89GL_glDeleteShader(fs);
-            printf("ERROR: One or more shaders failed to compile\n");
-            return 0;
-        }
-
-        printf("Creating program...\n");
-        g_program = C89GL_glCreateProgram();
-        C89GL_glAttachShader(g_program, vs);
-        C89GL_glAttachShader(g_program, fs);
-        C89GL_glLinkProgram(g_program);
-
-        {
-            GLint link_status;
-            C89GL_glGetProgramiv(g_program, GL_LINK_STATUS, &link_status);
-            printf("Program link status: %d\n", link_status);
-            if (!link_status) {
-                char log[512];
-                C89GL_glGetProgramInfoLog(g_program, sizeof(log), NULL, log);
-                printf("Program link error:\n%s\n", log);
-                C89GL_glDeleteProgram(g_program);
-                g_program = 0;
-                return 0;
-            }
-        }
-
-        C89GL_glDeleteShader(vs);
-        C89GL_glDeleteShader(fs);
-    }
-
-    printf("Getting uniform locations...\n");
-    u_view_proj     = C89GL_glGetUniformLocation(g_program, "uViewProj");
-    u_light_dir     = C89GL_glGetUniformLocation(g_program, "uLightDir");
-    u_light_col     = C89GL_glGetUniformLocation(g_program, "uLightCol");
-    u_ambient_col   = C89GL_glGetUniformLocation(g_program, "uAmbientCol");
-    u_cam_eye       = C89GL_glGetUniformLocation(g_program, "uCamEye");
-    u_time          = C89GL_glGetUniformLocation(g_program, "uTime");
-    u_fog_color     = C89GL_glGetUniformLocation(g_program, "uFogColor");
-    u_fog_start     = C89GL_glGetUniformLocation(g_program, "uFogStart");
-    u_fog_end       = C89GL_glGetUniformLocation(g_program, "uFogEnd");
-
-    u_mat_color          = C89GL_glGetUniformLocation(g_program, "uMatColor");
-    u_mat_tint           = C89GL_glGetUniformLocation(g_program, "uMatTint");
-    u_mat_alpha          = C89GL_glGetUniformLocation(g_program, "uMatAlpha");
-    u_mat_mode           = C89GL_glGetUniformLocation(g_program, "uMatMode");
-    u_mat_effects        = C89GL_glGetUniformLocation(g_program, "uMatEffects");
-    u_mat_emissive_color = C89GL_glGetUniformLocation(g_program, "uMatEmissiveColor");
-    u_mat_emissive_pulse_amp   = C89GL_glGetUniformLocation(g_program, "uMatEmissivePulseAmplitude");
-    u_mat_emissive_pulse_freq  = C89GL_glGetUniformLocation(g_program, "uMatEmissivePulseFrequency");
-    u_mat_emissive_pulse_phase = C89GL_glGetUniformLocation(g_program, "uMatEmissivePulsePhase");
-    u_mat_specular_exponent    = C89GL_glGetUniformLocation(g_program, "uMatSpecularExponent");
-    u_mat_specular_color       = C89GL_glGetUniformLocation(g_program, "uMatSpecularColor");
-    u_mat_specular_threshold   = C89GL_glGetUniformLocation(g_program, "uMatSpecularThreshold");
-    u_mat_rim_color            = C89GL_glGetUniformLocation(g_program, "uMatRimColor");
-    u_mat_rim_exponent         = C89GL_glGetUniformLocation(g_program, "uMatRimExponent");
-    u_mat_fresnel_color        = C89GL_glGetUniformLocation(g_program, "uMatFresnelColor");
-    u_mat_fresnel_exponent     = C89GL_glGetUniformLocation(g_program, "uMatFresnelExponent");
-    u_mat_gooch_cool           = C89GL_glGetUniformLocation(g_program, "uMatGoochCool");
-    u_mat_gooch_warm           = C89GL_glGetUniformLocation(g_program, "uMatGoochWarm");
-    u_mat_ambient_light_factor = C89GL_glGetUniformLocation(g_program, "uMatAmbientLightFactor");
-    u_mat_oren_nayar_sigma     = C89GL_glGetUniformLocation(g_program, "uMatOrenNayarSigma");
-    u_mat_minnaert_k           = C89GL_glGetUniformLocation(g_program, "uMatMinnaertK");
-    u_mat_saturation           = C89GL_glGetUniformLocation(g_program, "uMatSaturation");
-    u_mat_iridescence_strength = C89GL_glGetUniformLocation(g_program, "uMatIridescenceStrength");
-    u_mat_back_glow_color      = C89GL_glGetUniformLocation(g_program, "uMatBackGlowColor");
-    u_mat_bump_amplitude       = C89GL_glGetUniformLocation(g_program, "uMatBumpAmplitude");
-    u_mat_bump_frequency       = C89GL_glGetUniformLocation(g_program, "uMatBumpFrequency");
-    u_mat_bump_speed           = C89GL_glGetUniformLocation(g_program, "uMatBumpSpeed");
-    u_mat_roughness            = C89GL_glGetUniformLocation(g_program, "uMatRoughness");
-    u_mat_fringe_intensity     = C89GL_glGetUniformLocation(g_program, "uMatFringeIntensity");
-    u_mat_cel_bands            = C89GL_glGetUniformLocation(g_program, "uMatCelBands");
-    u_mat_glitch_intensity     = C89GL_glGetUniformLocation(g_program, "uMatGlitchIntensity");
-    u_mat_posterize_levels     = C89GL_glGetUniformLocation(g_program, "uMatPosterizeLevels");
-    u_mat_strobe_color         = C89GL_glGetUniformLocation(g_program, "uMatStrobeColor");
-    u_mat_strobe_frequency     = C89GL_glGetUniformLocation(g_program, "uMatStrobeFrequency");
-    u_mat_strobe_phase         = C89GL_glGetUniformLocation(g_program, "uMatStrobePhase");
 
     /* ---- Create VAO and VBO (batch VBO) ---- */
     printf("Creating VAO/VBO...\n");
@@ -751,13 +955,25 @@ int render_init(i32 window_width, i32 window_height) {
 }
 
 void render_shutdown(void) {
-    if (g_program) { C89GL_glDeleteProgram(g_program); g_program = 0; }
     if (g_batch_vbo) { C89GL_glDeleteBuffers(1, &g_batch_vbo); g_batch_vbo = 0; }
     if (g_vao) { C89GL_glDeleteVertexArrays(1, &g_vao); g_vao = 0; }
     if (g_fbo) { C89GL_glDeleteFramebuffers(1, &g_fbo); g_fbo = 0; }
     if (g_color_tex) { C89GL_glDeleteTextures(1, &g_color_tex); g_color_tex = 0; }
     if (g_depth_rb) { C89GL_glDeleteRenderbuffers(1, &g_depth_rb); g_depth_rb = 0; }
     if (g_vertex_pool) { free(g_vertex_pool); g_vertex_pool = NULL; }
+    /* Free shader cache */
+    if (g_shader_cache) {
+        /* Delete all programs */
+        int i;
+        for (i = 0; i < g_shader_cache_size; i++) {
+            if (g_shader_cache[i].program)
+                C89GL_glDeleteProgram(g_shader_cache[i].program);
+        }
+        free(g_shader_cache);
+        g_shader_cache = NULL;
+        g_shader_cache_size = 0;
+        g_shader_cache_count = 0;
+    }
     if (g_gl_ctx.initialized) { C89GL_destroy_context(&g_gl_ctx); }
     g_transparent_count = 0;
     g_batch_count = 0;
@@ -765,37 +981,27 @@ void render_shutdown(void) {
 }
 
 void render_set_light(vec3 dir, vec3 col, vec3 amb) {
-    if (!g_program) return;
-    C89GL_glUseProgram(g_program);
-    C89GL_glUniform3fv(u_light_dir, 1, (float*)&dir);
-    C89GL_glUniform3fv(u_light_col, 1, (float*)&col);
-    C89GL_glUniform3fv(u_ambient_col, 1, (float*)&amb);
+    g_light_dir = dir;
+    g_light_col = col;
+    g_ambient_col = amb;
 }
 
 void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
-    if (!g_program) return;
     g_cam_eye = eye;
     g_view = mat4_lookat(eye, center, up);
     g_proj = mat4_perspective(fov, aspect, 0.05f, 1000.0f);
     g_view_proj = mat4_mul(g_proj, g_view);
     extract_frustum_planes();
-    C89GL_glUseProgram(g_program);
-    C89GL_glUniformMatrix4fv(u_view_proj, 1, GL_TRUE, (float*)&g_view_proj);
-    C89GL_glUniform3fv(u_cam_eye, 1, (float*)&eye);
 }
 
 void render_set_fog(vec3 color, real start, real end) {
-    if (!g_program) return;
-    C89GL_glUseProgram(g_program);
-    C89GL_glUniform3fv(u_fog_color, 1, (float*)&color);
-    C89GL_glUniform1f(u_fog_start, start);
-    C89GL_glUniform1f(u_fog_end, end);
+    g_fog_color = color;
+    g_fog_start = start;
+    g_fog_end = end;
 }
 
 void render_set_time(real t) {
-    if (!g_program) return;
-    C89GL_glUseProgram(g_program);
-    C89GL_glUniform1f(u_time, t);
+    g_time = t;
 }
 
 void render_clear(u8 r, u8 g, u8 b) {
@@ -816,7 +1022,7 @@ void draw_triangle_shaded(
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat)
 {
-    if (!g_program) return;
+    if (!mat) return;
     /* Compute centroid depth in view space */
     {
         vec3 center = vec3_div_scalar(vec3_add(vec3_add(v0, v1), v2), 3.0f);
@@ -828,7 +1034,7 @@ void draw_triangle_shaded(
 
 /* ---- Entity‑level draw (recommended for transparent objects) ---- */
 void render_draw_entity(const struct entity_definition *ent) {
-    if (!g_program || !ent) return;
+    if (!ent) return;
     if (ent->model.handle < 0) return;
 
     {
@@ -889,7 +1095,7 @@ void render_draw_entity(const struct entity_definition *ent) {
 
 /* ---- Batch draw – sorts entities by depth before drawing ---- */
 void render_draw_entities(struct entity_definition **entities, int count) {
-    if (!g_program || !entities || count <= 0) return;
+    if (!entities || count <= 0) return;
 
     {
         entity_sort_t *sorted = (entity_sort_t*)malloc(count * sizeof(entity_sort_t));
@@ -947,8 +1153,14 @@ void render_finish(void) {
             int i;
             for (i = 0; i < g_batch_count; i++) {
                 batch_t *b = &g_batches[i];
-                set_material_uniforms(b->mat);
-                if (b->mode == SHADE_WIREFRAME) {
+                /* Get shader variant for this material */
+                shader_variant_t *variant = get_program_for_method(b->mat->render_method);
+                if (!variant) continue; /* should not happen */
+
+                C89GL_glUseProgram(variant->program);
+                set_uniforms_for_variant(variant, b->mat);
+
+                if (b->mode == MODE_WIREFRAME) {
                     C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
                     C89GL_glDrawArrays(GL_TRIANGLES, (GLint)(b->vertex_offset / 10), b->vertex_count);
                     C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);

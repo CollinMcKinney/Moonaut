@@ -5,37 +5,35 @@ in vec3 vNormal;
 in vec3 vLocalPos;
 in vec3 vVertexColor;
 
-uniform int   uMatMode;
-uniform int   uMatEffects;
-uniform float uMatAlpha;
-uniform vec3  uMatColor;
-uniform vec3  uCamEye;
+uniform vec3 uCamEye;
 
-/* All uniforms needed for shade_surface() – copy from vertex shader */
+/* All material uniforms (same as vertex shader) */
 uniform vec3 uLightDir;
 uniform vec3 uLightCol;
 uniform vec3 uAmbientCol;
 uniform float uTime;
-uniform vec3  uMatTint;
-uniform vec3  uMatEmissiveColor;
+uniform vec3 uMatColor;
+uniform vec3 uMatTint;
+uniform float uMatAlpha;
+uniform vec3 uMatEmissiveColor;
 uniform float uMatEmissivePulseAmplitude;
 uniform float uMatEmissivePulseFrequency;
 uniform float uMatEmissivePulsePhase;
 uniform float uMatSpecularExponent;
-uniform vec3  uMatSpecularColor;
+uniform vec3 uMatSpecularColor;
 uniform float uMatSpecularThreshold;
-uniform vec3  uMatRimColor;
+uniform vec3 uMatRimColor;
 uniform float uMatRimExponent;
-uniform vec3  uMatFresnelColor;
+uniform vec3 uMatFresnelColor;
 uniform float uMatFresnelExponent;
-uniform vec3  uMatGoochCool;
-uniform vec3  uMatGoochWarm;
+uniform vec3 uMatGoochCool;
+uniform vec3 uMatGoochWarm;
 uniform float uMatAmbientLightFactor;
 uniform float uMatOrenNayarSigma;
 uniform float uMatMinnaertK;
 uniform float uMatSaturation;
 uniform float uMatIridescenceStrength;
-uniform vec3  uMatBackGlowColor;
+uniform vec3 uMatBackGlowColor;
 uniform float uMatBumpAmplitude;
 uniform float uMatBumpFrequency;
 uniform float uMatBumpSpeed;
@@ -50,30 +48,6 @@ uniform float uMatStrobePhase;
 uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
-
-#define EFFECT_BUMP                (1<<0)
-#define EFFECT_DIFFUSE_WRAP        (1<<1)
-#define EFFECT_CEL_SHADING         (1<<2)
-#define EFFECT_MINNAERT            (1<<3)
-#define EFFECT_OREN_NAYAR          (1<<4)
-#define EFFECT_AMBIENT_LIGHT       (1<<5)
-#define EFFECT_GOOCH               (1<<6)
-#define EFFECT_BACK_GLOW           (1<<7)
-#define EFFECT_RIM                 (1<<8)
-#define EFFECT_FRESNEL             (1<<9)
-#define EFFECT_EMISSIVE            (1<<10)
-#define EFFECT_EMISSIVE_PULSE      (1<<11)
-#define EFFECT_STROBE              (1<<12)
-#define EFFECT_SPECULAR            (1<<13)
-#define EFFECT_SPECULAR_THRESH     (1<<14)
-#define EFFECT_SATURATION          (1<<15)
-#define EFFECT_IRIDESCENCE         (1<<16)
-#define EFFECT_GLITCH              (1<<17)
-#define EFFECT_ROUGHNESS           (1<<18)
-#define EFFECT_FRINGE              (1<<19)
-#define EFFECT_POSTERIZE           (1<<20)
-#define EFFECT_FOG                 (1<<21)
-#define EFFECT_ALPHA               (1<<22)
 
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -101,7 +75,8 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     float ndotl = saturate(dot(N, L));
     float ndotv = saturate(dot(N, V));
 
-    if ((uMatEffects & EFFECT_BUMP) != 0) {
+#ifdef EFFECT_BUMP
+    {
         float fx = worldPos.x * uMatBumpFrequency;
         float fy = worldPos.y * uMatBumpFrequency;
         float fz = worldPos.z * uMatBumpFrequency;
@@ -111,21 +86,29 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         ndotl = saturate(dot(N, L));
         ndotv = saturate(dot(N, V));
     }
+#endif
 
     float diffuse_term = ndotl;
 
-    if ((uMatEffects & EFFECT_DIFFUSE_WRAP) != 0) {
+#ifdef EFFECT_DIFFUSE_WRAP
+    {
         float t = ndotl;
         diffuse_term = t*t*(3.0-2.0*t);
     }
-    if ((uMatEffects & EFFECT_CEL_SHADING) != 0) {
+#endif
+#ifdef EFFECT_CEL_SHADING
+    {
         float inv = 1.0 / float(uMatCelBands);
         diffuse_term = min(1.0, floor(diffuse_term * float(uMatCelBands)) * inv);
     }
-    if ((uMatEffects & EFFECT_MINNAERT) != 0) {
+#endif
+#ifdef EFFECT_MINNAERT
+    {
         diffuse_term = pow(ndotl, uMatMinnaertK) * pow(ndotv, 1.0-uMatMinnaertK);
     }
-    if ((uMatEffects & EFFECT_OREN_NAYAR) != 0) {
+#endif
+#ifdef EFFECT_OREN_NAYAR
+    {
         float sigma = uMatOrenNayarSigma;
         float sigma_sq = sigma*sigma;
         float a = 1.0 - 0.5*sigma_sq/(sigma_sq+0.33);
@@ -143,61 +126,83 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         diffuse_term = ndotl * (a + b*cos_phi_diff*sin_alpha*tan_beta);
         diffuse_term = saturate(diffuse_term);
     }
+#endif
 
     vec3 color = (uAmbientCol + uLightCol * diffuse_term) * uMatAmbientLightFactor;
     color = color * uMatColor;
 
-    if ((uMatEffects & EFFECT_GOOCH) != 0) {
+#ifdef EFFECT_GOOCH
+    {
         float t = (ndotl+1.0)*0.5;
         vec3 gooch = mix(uMatGoochCool, uMatGoochWarm, t);
         color = color * gooch;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_BACK_GLOW) != 0) {
+#ifdef EFFECT_BACK_GLOW
+    {
         float ndotl_neg = dot(N, -L);
         color += uMatBackGlowColor * max(0.0, ndotl_neg);
     }
+#endif
 
-    if ((uMatEffects & EFFECT_RIM) != 0) {
+#ifdef EFFECT_RIM
+    {
         float rim = pow(1.0-ndotv, uMatRimExponent);
         color += uMatRimColor * rim;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_FRESNEL) != 0) {
+#ifdef EFFECT_FRESNEL
+    {
         float fresnel = pow(1.0-ndotv, uMatFresnelExponent);
         color = mix(color, uMatFresnelColor, fresnel);
     }
+#endif
 
-    if ((uMatEffects & EFFECT_EMISSIVE) != 0) {
+#ifdef EFFECT_EMISSIVE
+    {
         vec3 emissive = uMatEmissiveColor;
-        if ((uMatEffects & EFFECT_EMISSIVE_PULSE) != 0) {
+#ifdef EFFECT_EMISSIVE_PULSE
+        {
             float pulse = 1.0 + uMatEmissivePulseAmplitude * sin(uTime*uMatEmissivePulseFrequency + uMatEmissivePulsePhase);
             emissive *= pulse;
         }
+#endif
         color += emissive;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_STROBE) != 0) {
+#ifdef EFFECT_STROBE
+    {
         float s = sin(uTime*uMatStrobeFrequency + uMatStrobePhase)*0.5 + 0.5;
         color += uMatStrobeColor * s;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_SPECULAR) != 0) {
+#ifdef EFFECT_SPECULAR
+    {
         vec3 H = normalize(L+V);
         float nh = max(0.0, dot(N,H));
         float spec = pow(nh, uMatSpecularExponent);
-        if ((uMatEffects & EFFECT_SPECULAR_THRESH) != 0) {
+#ifdef EFFECT_SPECULAR_THRESH
+        {
             spec = (spec > uMatSpecularThreshold) ? 1.0 : 0.0;
         }
+#endif
         color += uMatSpecularColor * spec;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_SATURATION) != 0) {
+#ifdef EFFECT_SATURATION
+    {
         float luma = dot(color, vec3(0.299,0.587,0.114));
         color = mix(vec3(luma), color, uMatSaturation);
     }
+#endif
 
-    if ((uMatEffects & EFFECT_IRIDESCENCE) != 0) {
+#ifdef EFFECT_IRIDESCENCE
+    {
         float angle = ndotv * 2.0 * 3.14159265;
         float c = cos(angle);
         float s = sin(angle);
@@ -218,37 +223,48 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         color.g = g * strength + color.g * (1.0 - strength);
         color.b = b * strength + color.b * (1.0 - strength);
     }
+#endif
 
-    if ((uMatEffects & EFFECT_GLITCH) != 0) {
+#ifdef EFFECT_GLITCH
+    {
         vec3 q = floor(worldPos * 4096.0);
         float offset = (hash_float(q)-0.5) * uMatGlitchIntensity;
         color.r += offset;
         color.g += offset*0.7;
         color.b -= offset;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_ROUGHNESS) != 0) {
+#ifdef EFFECT_ROUGHNESS
+    {
         vec3 q = floor(localPos * 256.0);
         float offset = (hash_float(q)-0.5) * uMatRoughness;
         color += offset * 0.25;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_FRINGE) != 0) {
+#ifdef EFFECT_FRINGE
+    {
         float fringe = pow(1.0-ndotv, 3.0) * uMatFringeIntensity;
         color.r += fringe;
         color.b -= fringe;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_POSTERIZE) != 0) {
+#ifdef EFFECT_POSTERIZE
+    {
         float levels = float(uMatPosterizeLevels);
         color = floor(color*levels + 0.5) / levels;
     }
+#endif
 
-    if ((uMatEffects & EFFECT_FOG) != 0 && uFogEnd > uFogStart) {
+#ifdef EFFECT_FOG
+    if (uFogEnd > uFogStart) {
         float dist = length(worldPos - uCamEye);
         float t = clamp((dist-uFogStart)/(uFogEnd-uFogStart), 0.0, 1.0);
         color = mix(color, uFogColor, t);
     }
+#endif
 
     color *= uMatTint;
     return clamp(color, 0.0, 1.0);
@@ -258,24 +274,32 @@ out vec4 FragColor;
 
 void main() {
     vec3 color;
-    if (uMatMode == 0) { /* SHADE_WIREFRAME – use base colour */
-        color = uMatColor;
-    }
-    else if (uMatMode == 1) { /* SHADE_FLAT – compute face normal via derivatives */
-        vec3 dx = dFdx(vWorldPos);
-        vec3 dy = dFdy(vWorldPos);
-        vec3 N = normalize(cross(dx, dy));
-        vec3 V = normalize(uCamEye - vWorldPos);
-        if (dot(N, V) < 0.0) N = -N;
-        color = shade_surface(N, vWorldPos, vLocalPos);
-    }
-    else if (uMatMode == 2) { /* SHADE_GOURAUD – use interpolated vertex colour */
-        color = vVertexColor;
-    }
-    else { /* SHADE_PHONG (and fallback) */
-        color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
-    }
 
-    float alpha = (uMatEffects & EFFECT_ALPHA) != 0 ? uMatAlpha : 1.0f;
+#ifdef MODE_WIREFRAME
+    color = uMatColor;
+#elif defined(MODE_FLAT)
+    vec3 dx = dFdx(vWorldPos);
+    vec3 dy = dFdy(vWorldPos);
+    vec3 N = normalize(cross(dx, dy));
+    vec3 V = normalize(uCamEye - vWorldPos);
+    if (dot(N, V) < 0.0) N = -N;
+    color = shade_surface(N, vWorldPos, vLocalPos);
+#elif defined(MODE_GOURAUD)
+    color = vVertexColor;
+#elif defined(MODE_QUADRATIC)
+    /* Quadratic – fallback to Phong if not implemented */
+    color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
+#elif defined(MODE_CUBIC)
+    /* Cubic – fallback to Phong */
+    color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
+#else
+    /* Default: Phong */
+    color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
+#endif
+
+    float alpha = 1.0f;
+#ifdef EFFECT_ALPHA
+    alpha = uMatAlpha;
+#endif
     FragColor = vec4(color, alpha);
 }

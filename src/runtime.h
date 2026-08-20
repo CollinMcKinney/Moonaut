@@ -6,12 +6,12 @@
 #include "common.h"
 #include "physics.h"
 
-/* TODO: */
-#define RASTERIZER_SW_IMPLEMENTATION
-#include "rasterizer_SW.h"
-/*
+/* NOTE: comment/uncomment to swap between Software (SW) and OpenGL (GL) rendering. */
 #define RASTERIZER_GL_IMPLEMENTATION
 #include "rasterizer_GL.h"
+/*
+#define RASTERIZER_SW_IMPLEMENTATION
+#include "rasterizer_SW.h"
 */
 
 #include "scripts.h"
@@ -217,10 +217,10 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
         }
         if (!already_printed && g_print_material_count < 256) {
             g_printed_materials[g_print_material_count++] = resolved_mat_handle;
-            printf("Primitive material: handle=%d color=(%f,%f,%f) effects=0x%x ambient_factor=%f\n",
+            printf("Primitive material: handle=%d color=(%f,%f,%f) render_method=0x%x ambient_factor=%f\n",
                    resolved_mat_handle,
                    mat->color.color.r, mat->color.color.g, mat->color.color.b,
-                   mat->effects,
+                   mat->render_method,
                    mat->ambient_light_factor);
         }
     }
@@ -914,11 +914,11 @@ static void runtime_register_lua_functions(lua_state *state) {
      *  Constants 
      */
 
-    /* Shading modes. */
-    lua_set_global_integer(state, "SHADE_WIREFRAME",    SHADE_WIREFRAME);
-    lua_set_global_integer(state, "SHADE_FLAT",         SHADE_FLAT);
-    lua_set_global_integer(state, "SHADE_GOURAUD",      SHADE_GOURAUD);
-    lua_set_global_integer(state, "SHADE_PHONG",        SHADE_PHONG);
+    /* Rendering modes. */
+    lua_set_global_integer(state, "MODE_WIREFRAME",    MODE_WIREFRAME);
+    lua_set_global_integer(state, "MODE_FLAT",         MODE_FLAT);
+    lua_set_global_integer(state, "MODE_GOURAUD",      MODE_GOURAUD);
+    lua_set_global_integer(state, "MODE_PHONG",        MODE_PHONG);
 
     /* Tag groups. */
     lua_set_global_integer(state, "TAG_material",       TAG_material);

@@ -28,10 +28,9 @@ extern "C" {
 #define TAG_SYSTEM_NAME_LENGTH     128
 #endif
 #ifndef TAG_NULL
-#define TAG_NULL(type) ((type)-1) /* TODO make sure we're using this where necessary*/
+#define TAG_NULL(type) ((type)-1)
 #endif
 
-/* Converts a 32 bit unsigned integer to four characters on a Little Endian system. */
 #define TAG_MAGIC_UNPACK(group_tag) \
     ((char)(((u32)(group_tag) >> 24) & 0xFF)), \
     ((char)(((u32)(group_tag) >> 16) & 0xFF)), \
@@ -44,7 +43,6 @@ extern "C" {
     ((unsigned long)(unsigned char)(#magic)[2] <<  8) | \
     (unsigned long)(unsigned char)(#magic)[3])
 
-/* Memory allocators */
 #ifndef TAG_MALLOC
 #define TAG_MALLOC(sz)  malloc(sz)
 #endif
@@ -64,7 +62,7 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------------
- * Field types – covers every type defined in vectors.h
+ * Field types – includes both legacy ENUM/FLAGS and new BITFIELD32
  * ------------------------------------------------------------------------ */
 typedef enum tag_field_type {
     TAG_FIELD_TERMINATOR  = 0,
@@ -91,7 +89,8 @@ typedef enum tag_field_type {
     TAG_FIELD_STRING_ID,      /* string_id (index into string table) */
     TAG_FIELD_BLOCK,
     TAG_FIELD_REFERENCE,
-    TAG_FIELD_PAD
+    TAG_FIELD_PAD,
+    TAG_FIELD_BITFIELD32      /* new unified bitfield (enum + flags) */
 } tag_field_type;
 
 /* Forward declarations */
@@ -106,8 +105,8 @@ struct tag_enum_definition;
 typedef struct tag_field_definition {
     tag_field_type  type;
     char            name[TAG_SYSTEM_NAME_LENGTH];
-    u32             pad_data;       /* TAG_FIELD_PAD only */
-    const void     *extra;          /* pointer to block/ref/enum definition */
+    u32             pad_data;       /* For BITFIELD32: number of low bits used for enum part */
+    const void     *extra;          /* For BITFIELD32: pointer to tag_bitfield_definition */
 } tag_field_definition;
 
 /* ------------------------------------------------------------------------
@@ -156,7 +155,7 @@ typedef struct string_table_entry {
 } string_table_entry;
 
 /* ------------------------------------------------------------------------
- * Enum / Flags support
+ * Enum / Flags support – for both legacy and BITFIELD32
  * ------------------------------------------------------------------------ */
 typedef struct tag_enum_value {
     i32         value;
@@ -171,7 +170,15 @@ typedef struct tag_enum_definition {
 } tag_enum_definition;
 
 /* ------------------------------------------------------------------------
- * Field macros – one per type
+ * Bitfield definition – holds enum_bits and the combined enum definition
+ * ------------------------------------------------------------------------ */
+typedef struct tag_bitfield_definition {
+    u32                        enum_bits;   /* number of low bits reserved for enum */
+    const tag_enum_definition *def;        /* combined enum (low values + shifted flags) */
+} tag_bitfield_definition;
+
+/* ------------------------------------------------------------------------
+ * Field macros – both legacy and new
  * ------------------------------------------------------------------------ */
 #define FIELD_TERMINATOR    { TAG_FIELD_TERMINATOR,     "",    0, NULL }
 
@@ -186,8 +193,13 @@ typedef struct tag_enum_definition {
 #define FIELD_U64(desc)     { TAG_FIELD_U64,       (desc), 0, NULL }
 #define FIELD_REAL(desc)    { TAG_FIELD_REAL,      (desc), 0, NULL }
 
+/* Legacy field macros (kept for backward compatibility) */
 #define FIELD_ENUM(desc, name_)     { TAG_FIELD_ENUM,   (desc), 0, (const void*)&(name_##_def) }
 #define FIELD_FLAGS(desc, name_)    { TAG_FIELD_FLAGS,  (desc), 0, (const void*)&(name_##_def) }
+
+/* New BITFIELD32 field macro */
+#define FIELD_BITFIELD32(desc, bitfield_def, enum_bits_) \
+    { TAG_FIELD_BITFIELD32, (desc), (enum_bits_), (const void*)&(bitfield_def) }
 
 #define FIELD_VEC2(desc)    { TAG_FIELD_VEC2,      (desc), 0, NULL }
 #define FIELD_VEC3(desc)    { TAG_FIELD_VEC3,      (desc), 0, NULL }
@@ -206,10 +218,80 @@ typedef struct tag_enum_definition {
 
 #define FIELD_PAD(bytes)    { TAG_FIELD_PAD,            "",    (bytes), NULL }
 
+/* ---- TAG_REFERENCE macro – defines a tag_reference_definition variable ---- */
 #define TAG_REFERENCE(name_, allowed_tag_) static const tag_reference_definition name_ = { (allowed_tag_) };
 
 /* ------------------------------------------------------------------------
- * Block definition macros (embedded semicolon included)
+ * Bitfield definition macros – for defining tag_enum_definition and bitfield
+ * from a manually defined enum.
+ *
+ * Usage:
+ *   enum render_method { MODE_WIREFRAME = 0, ... EFFECT_BUMP = (1<<3), ... };
+ *
+ *   TAG_BITFIELD32_BEGIN(render_method, 3)
+ *       TAG_BITFIELD32_ENTRY(MODE_WIREFRAME, "Wireframe")
+ *       TAG_BITFIELD32_ENTRY(MODE_FLAT,      "Flat")
+ *       ...
+ *   TAG_BITFIELD32_END(render_method)
+ *
+ * This defines:
+ *   - render_method_values (array of tag_enum_value)
+ *   - render_method_def    (tag_enum_definition)
+ *   - render_method_bitfield (tag_bitfield_definition)
+ *   - render_method_ENUM_BITS (the enum_bits constant)
+ * ------------------------------------------------------------------------ */
+#define TAG_BITFIELD32_BEGIN(name_, enum_bits_) \
+    enum { name_##_ENUM_BITS = (enum_bits_) }; \
+    static const tag_enum_value name_##_values[] = {
+
+#define TAG_BITFIELD32_ENTRY(value_, name_str_) \
+    { (value_), (name_str_) },
+
+#define TAG_BITFIELD32_END(name_) \
+    }; \
+    static const tag_enum_definition name_##_def = { \
+        #name_, \
+        (u32)(sizeof(name_##_values) / sizeof(tag_enum_value)), \
+        name_##_values, \
+        0   /* not flags */ \
+    }; \
+    static const tag_bitfield_definition name_##_bitfield = { \
+        name_##_ENUM_BITS, &name_##_def \
+    };
+
+/* ------------------------------------------------------------------------
+ * Legacy enum/flags macros (kept for backward compatibility)
+ * ------------------------------------------------------------------------ */
+#define TAG_ENUM_BEGIN(name_) \
+    static const tag_enum_value name_##_values[] = {
+
+#define TAG_ENUM_ENTRY(value_, name_)   { (i32)(value_), name_ },
+
+#define TAG_ENUM_END(name_) \
+    }; \
+    static const tag_enum_definition name_##_def = { \
+        #name_, \
+        (u32)(sizeof(name_##_values) / sizeof(tag_enum_value)), \
+        name_##_values, \
+        0   /* not flags */ \
+    };
+
+#define TAG_FLAGS_BEGIN(name_) \
+    static const tag_enum_value name_##_values[] = {
+
+#define TAG_FLAGS_ENTRY(value_, name_)   { (i32)(value_), name_ },
+
+#define TAG_FLAGS_END(name_) \
+    }; \
+    static const tag_enum_definition name_##_def = { \
+        #name_, \
+        (u32)(sizeof(name_##_values) / sizeof(tag_enum_value)), \
+        name_##_values, \
+        1   /* is_flags */ \
+    };
+
+/* ------------------------------------------------------------------------
+ * Block definition macros
  * ------------------------------------------------------------------------ */
 #define TAG_BLOCK_BEGIN(name_, max_count, elem_size)                      \
     static const tag_field_definition name_##_fields[] = {
@@ -240,47 +322,10 @@ typedef struct tag_enum_definition {
     };
 
 /* ------------------------------------------------------------------------
- * Enum / Flags definition macros  (type name only, everything else automatic)
- * ------------------------------------------------------------------------ */
-#define TAG_ENUM_BEGIN(name_)                                           \
-    static const tag_enum_value name_##_values[] = {
-
-#define TAG_ENUM_ENTRY(value_, name_)   { (i32)(value_), name_ },
-
-#define TAG_ENUM_END(name_)                                              \
-    };                                                                    \
-    static const tag_enum_definition name_##_def = {                      \
-        #name_,                                                           \
-        (u32)(sizeof(name_##_values) / sizeof(tag_enum_value)),           \
-        name_##_values,                                                   \
-        0   /* not flags */                                               \
-    };
-
-/* ----- Flags version (bitfields) ----- */
-#define TAG_FLAGS_BEGIN(name_)                                          \
-    static const tag_enum_value name_##_values[] = {
-
-#define TAG_FLAGS_ENTRY(value_, name_)   { (i32)(value_), name_ },
-
-#define TAG_FLAGS_END(name_)                                             \
-    };                                                                    \
-    static const tag_enum_definition name_##_def = {                      \
-        #name_,                                                           \
-        (u32)(sizeof(name_##_values) / sizeof(tag_enum_value)),           \
-        name_##_values,                                                   \
-        1   /* is_flags */                                                \
-    };
-
-/* ------------------------------------------------------------------------
  * Access macro for elements inside a tag_block
  * ------------------------------------------------------------------------ */
 #define TAG_BLOCK_GET_ELEMENT(block_ptr, index, element_type)     \
     (((element_type*)((block_ptr)->address)) + (index))
-
-/* ------------------------------------------------------------------------
- * Four‑CC helper (only needed for the cache magic, not for tag groups)
- * ------------------------------------------------------------------------ */
-#define TAG_FROM_FOUR_CC(a,b,c,d) ((tag)(((u32)(a)<<24)|((u32)(b)<<16)|((u32)(c)<<8)|((u32)(d))))
 
 /* ------------------------------------------------------------------------
  * Public API
@@ -297,7 +342,7 @@ static void                        tag_poll_reloads(void);
 static i32                         tag_spawn_instance(i32 backup_index);
 static i32                         tag_kill_instance(i32 active_index);
 
-/* Enum helper */
+/* Enum helper (works for both legacy and BITFIELD32 definitions) */
 static const char *tag_enum_get_name(const tag_field_definition *field, i32 value);
 
 /* String table API */
@@ -333,16 +378,6 @@ typedef struct {
 /* ------------------------------------------------------------------------
  * Global state
  * ------------------------------------------------------------------------ */
-/* TODO: Consider keeping a second copy of tag_sys or the instances[] array
-so once we've loaded a tag we can modify it through other systems while still keeping
-a clean copy in memory. This way we can do something like reload a tag, or load multiple
-instances of the same tag. Maybe add a tag_sys_virgin. We basically need our physics engine,
-rendering engine, and scripting engine to all be able to access the tag_sys through a pointer
-and modify the data there so that updates through tag_set_field are automatically shared
-with other systems without needing to have unique functions for every single tag that passes
-the changes around. What we don;t have is the backup instances - once one of our systems has
-modified a tag, it becomes tricky to reload it it to the normal state or make duplicates
-without affecting the original. */
 static struct {
     i32                    initialized;
     tag_instance           instances[TAG_SYSTEM_MAX_TAGS];
@@ -445,12 +480,13 @@ static u32 tag_field_alignment(const tag_field_definition *def) {
         case TAG_FIELD_MAT4:
         case TAG_FIELD_STRING_ID:
         case TAG_FIELD_REFERENCE:
+        case TAG_FIELD_BITFIELD32:
             return 4;
         case TAG_FIELD_I64:
         case TAG_FIELD_U64:
             return 8;
         case TAG_FIELD_BLOCK:
-            return sizeof(void*); /* 4 on 32-bit, 8 on 64-bit */
+            return sizeof(void*);
         case TAG_FIELD_BOOL:
             return sizeof(bool);
         default:
@@ -477,6 +513,7 @@ static u32 tag_field_size(const tag_field_definition *def) {
         case TAG_FIELD_REAL:                 fsize = sizeof(real); break;
         case TAG_FIELD_ENUM:                 fsize = sizeof(i32); break;
         case TAG_FIELD_FLAGS:                fsize = sizeof(i32); break;
+        case TAG_FIELD_BITFIELD32:           fsize = sizeof(u32); break;
         case TAG_FIELD_VEC2:                 fsize = sizeof(vec2); break;
         case TAG_FIELD_VEC3:                 fsize = sizeof(vec3); break;
         case TAG_FIELD_VEC4:                 fsize = sizeof(vec4); break;
@@ -561,13 +598,11 @@ static string_id string_id_intern(const char *str) {
     if (!str || *str == '\0') return TAG_NULL(string_id);
     if (!g_string_table.initialized) string_table_init();
 
-    /* search for existing string */
     for (i = 0; i < g_string_table.count; i++) {
         if (strcmp(g_string_table.entries[i].string, str) == 0)
-            return (string_id)i;            /* index is the string_id */
+            return (string_id)i;
     }
 
-    /* not found – add new entry */
     if (g_string_table.count >= STRING_TABLE_MAX_ENTRIES)
         return TAG_NULL(string_id);
 
@@ -578,7 +613,6 @@ static string_id string_id_intern(const char *str) {
     memcpy(g_string_table.entries[g_string_table.count].string, str, len);
     g_string_table.entries[g_string_table.count].string[len] = '\0';
 
-    /* return current index, then increment */
     return (string_id)(g_string_table.count++);
 }
 
@@ -593,27 +627,36 @@ static u32 string_table_get_count(void) {
 }
 
 /* ------------------------------------------------------------------------
- * Enum value name lookup
+ * Enum value name lookup (works for legacy and BITFIELD32 definitions)
  * ------------------------------------------------------------------------ */
 static const char *tag_enum_get_name(const tag_field_definition *field, i32 value) {
     const tag_enum_definition *def;
     u32 i;
 
-    if (field->type != TAG_FIELD_ENUM && field->type != TAG_FIELD_FLAGS) return NULL;
-
-    def = (const tag_enum_definition*)field->extra;
-
-    if (def->is_flags) {
-        /* For flags, we could return a concatenated string; here we just
-           fall through to exact match. A real tool would loop over all
-           values and build a list. */
+    if (field->type == TAG_FIELD_ENUM || field->type == TAG_FIELD_FLAGS) {
+        def = (const tag_enum_definition*)field->extra;
+        if (!def) return NULL;
+        for (i = 0; i < def->value_count; ++i) {
+            if (def->values[i].value == value)
+                return def->values[i].name;
+        }
+        return NULL;
     }
 
-    for (i = 0; i < def->value_count; ++i) {
-        if (def->values[i].value == value)
-            return def->values[i].name;
+    if (field->type == TAG_FIELD_BITFIELD32) {
+        const tag_bitfield_definition *bf;
+        bf = (const tag_bitfield_definition*)field->extra;
+        if (!bf) return NULL;
+        def = bf->def;
+        if (!def) return NULL;
+        for (i = 0; i < def->value_count; ++i) {
+            if (def->values[i].value == value)
+                return def->values[i].name;
+        }
+        return NULL;
     }
-    return NULL;   /* unknown value */
+
+    return NULL;
 }
 
 /* ------------------------------------------------------------------------
@@ -638,7 +681,6 @@ static i32 tag_load_from(
     u32 offset;
     const tag_field_definition *f;
 
-    /* header */
     if (read_fn(&hdr, sizeof(hdr), read_ctx) != sizeof(hdr))
         return -1;
     if (hdr.fourcc != group_tag)
@@ -647,21 +689,18 @@ static i32 tag_load_from(
     group = tag_find_group_internal(group_tag);
     if (!group) return -1;
 
-    /* already loaded? */
     idx = tag_find_instance(source_name);
     if (idx >= 0) {
         tag_sys.instances[idx].ref_count++;
         return idx;
     }
 
-    /* new instance */
     idx = tag_alloc_instance(source_name, group);
     if (idx < 0) return -1;
     inst = &tag_sys.instances[idx];
 
     data = inst->backup_data;
 
-    /* Single sequential pass to read scalars, block counts, and reference paths */
     u32 off = 0;
     for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -674,8 +713,6 @@ static i32 tag_load_from(
             if (read_fn(&count, sizeof(count), read_ctx) != sizeof(count)) goto load_fail;
             blk->count = count;
         } else if (f->type == TAG_FIELD_REFERENCE) {
-            /* We read the path later or here? Let's read the handle placeholder */
-            /* File contains the path string; we consume it and load the tag */
             tag_reference *ref = (tag_reference*)((u8*)data + off);
             char path_buf[TAG_SYSTEM_MAX_PATH];
             i32 i = 0; char ch;
@@ -689,13 +726,11 @@ static i32 tag_load_from(
                 ref->handle = -1;
             }
         } else {
-            /* Ordinary scalar field */
             if (read_fn((u8*)data + off, fsize, read_ctx) != fsize) goto load_fail;
         }
         off += fsize;
     }
 
-    /* Second pass: Read block contents (located at end of struct data in file) */
     off = 0;
     for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -720,7 +755,6 @@ static i32 tag_load_from(
     inst->loaded = 1;
     memcpy(inst->active_data, inst->backup_data, group->total_size);
 
-    /* postprocess block elements */
     off = 0;
     for (f = group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
         u32 align = tag_field_alignment(f);
@@ -733,7 +767,6 @@ static i32 tag_load_from(
         off += tag_field_size(f);
     }
 
-    /* group postprocess */
     tag_postprocess_tag(idx);
     return idx;
 
@@ -768,15 +801,13 @@ static u32 mem_read_fn(void *dest, u32 size, void *ctx) {
  * ------------------------------------------------------------------------ */
 static i32 tag_copy_recursive(i32 source_idx, void *source_data) {
     tag_instance *source_inst = &tag_sys.instances[source_idx];
-    i32 new_idx = tag_alloc_instance("", source_inst->group);  /* no path for spawned */
+    i32 new_idx = tag_alloc_instance("", source_inst->group);
     if (new_idx < 0) return -1;
     tag_instance *new_inst = &tag_sys.instances[new_idx];
 
-    /* Copy data */
     memcpy(new_inst->backup_data, source_data, source_inst->group->total_size);
     memcpy(new_inst->active_data, source_data, source_inst->group->total_size);
 
-    /* Walk fields to handle references */
     u32 off = 0;
     const tag_field_definition *f;
     for (f = source_inst->group->fields; f->type != TAG_FIELD_TERMINATOR; ++f) {
@@ -785,7 +816,6 @@ static i32 tag_copy_recursive(i32 source_idx, void *source_data) {
         if (f->type == TAG_FIELD_REFERENCE) {
             tag_reference *ref = (tag_reference*)((u8*)new_inst->active_data + off);
             if (ref->handle >= 0) {
-                /* Recursively spawn the referenced instance */
                 tag_instance *ref_inst = &tag_sys.instances[ref->handle];
                 i32 new_ref_idx = tag_copy_recursive(ref->handle, ref_inst->active_data);
                 if (new_ref_idx < 0) {
@@ -796,13 +826,12 @@ static i32 tag_copy_recursive(i32 source_idx, void *source_data) {
                 ref->handle = new_ref_idx;
             }
         } else if (f->type == TAG_FIELD_BLOCK) {
-            /* TODO: Handle blocks with references inside, but for now assume no */
+            /* TODO: Handle blocks with references inside */
         }
         off += tag_field_size(f);
     }
 
     new_inst->loaded = 1;
-    /* No postprocess for spawned, assume already done */
     return new_idx;
 }
 
@@ -888,7 +917,6 @@ static i32 tag_reload(i32 tag_index) {
     inst = &tag_sys.instances[tag_index];
     if (!inst->loaded) return -1;
     memcpy(inst->active_data, inst->backup_data, inst->group->total_size);
-    /* TODO: Recursively reload references? For now, just copy */
     return 0;
 }
 
@@ -910,7 +938,6 @@ static i32 tag_kill_instance(i32 active_index) {
     inst = &tag_sys.instances[active_index];
     if (!inst->loaded) return -1;
     tag_free_instance_data(active_index);
-    /* Don't remove from array, just mark unloaded */
     return 0;
 }
 

@@ -103,7 +103,7 @@ typedef struct {
     real bary0[3], bary1[3], bary2[3];
     i32 is_clipped;
     const struct material_definition *mat;
-    enum32 mode;
+    u32 mode;                  /* MODE_* (from render_method) */
     real depth;
 } tile_tri;
 
@@ -117,7 +117,7 @@ typedef struct {
     real bary0[3], bary1[3], bary2[3];
     i32 is_clipped;
     const struct material_definition *mat;
-    enum32 mode;
+    u32 mode;                  /* MODE_* */
     real depth;
 } tile_transparent_tri;
 
@@ -494,9 +494,8 @@ static INLINE vec3 shade_surface(
     vec3 N = normal;
     real ndotl, ndotv = 0.0f;
     vec3 V;
-    enum32 effects = mat->effects;
-
-    if (effects & EFFECT_BUMP) {
+    
+    if (mat->render_method & EFFECT_BUMP) {
         real fx = world_pos.position.x * mat->bump_frequency;
         real fy = world_pos.position.y * mat->bump_frequency;
         real fz = world_pos.position.z * mat->bump_frequency;
@@ -509,7 +508,7 @@ static INLINE vec3 shade_surface(
 
     ndotl = saturate(vec3_dot(N, light_dir));
 
-    if (effects & (EFFECT_MINNAERT | EFFECT_OREN_NAYAR | EFFECT_RIM |
+    if (mat->render_method & (EFFECT_MINNAERT | EFFECT_OREN_NAYAR | EFFECT_RIM |
                    EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE |
                    EFFECT_FRINGE)) {
         V = vec3_normalize(vec3_sub(cam_eye, world_pos));
@@ -519,22 +518,22 @@ static INLINE vec3 shade_surface(
     real diffuse_term = ndotl;
     vec3 color = mat->color;
 
-    if (effects & EFFECT_DIFFUSE_WRAP) {
+    if (mat->render_method & EFFECT_DIFFUSE_WRAP) {
         real t = ndotl;
         ndotl = t * t * (3.0f - 2.0f * t);
     }
 
-    if (effects & EFFECT_CEL_SHADING) {
+    if (mat->render_method & EFFECT_CEL_SHADING) {
         real inv = 1.0f / (real)(mat->cel_bands - 1);
         ndotl = real_min(1.0f, real_floor(ndotl * mat->cel_bands) * inv);
     }
 
-    if (effects & EFFECT_MINNAERT) {
+    if (mat->render_method & EFFECT_MINNAERT) {
         diffuse_term = real_pow(ndotl, mat->minnaert_k) *
                        real_pow(ndotv, 1.0f - mat->minnaert_k);
     }
 
-    if (effects & EFFECT_OREN_NAYAR) {
+    if (mat->render_method & EFFECT_OREN_NAYAR) {
         real sigma = mat->oren_nayar_sigma;
         real sigma_sq = sigma * sigma;
         real a = 1.0f - 0.5f * sigma_sq / (sigma_sq + 0.33f);
@@ -571,12 +570,12 @@ static INLINE vec3 shade_surface(
         diffuse_term = saturate(diffuse_term);
     }
 
-    if (effects & EFFECT_AMBIENT_LIGHT) {
+    if (mat->render_method & EFFECT_AMBIENT_LIGHT) {
         color = vec3_add(ambient_col, vec3_mul_scalar(light_col, diffuse_term));
         color = vec3_mul_scalar(color, mat->ambient_light_factor);
     }
 
-    if (effects & EFFECT_GOOCH) {
+    if (mat->render_method & EFFECT_GOOCH) {
         real t = (ndotl + 1.0f) * 0.5f;
         vec3 gooch = vec3_add(
             vec3_mul_scalar(mat->gooch_cool, 1.0f - t),
@@ -586,28 +585,28 @@ static INLINE vec3 shade_surface(
         color = vec3_mul(color, mat->color);
     }
 
-    if (effects & EFFECT_BACK_GLOW) {
+    if (mat->render_method & EFFECT_BACK_GLOW) {
         vec3 ln = vec3_mul_scalar(light_dir, -1.0f);
         real ndotl_neg = vec3_dot(N, ln);
         color = vec3_add(color, vec3_mul_scalar(mat->back_glow_color,
             ndotl_neg < 0.0f ? 0.0f : ndotl_neg));
     }
 
-    if (effects & EFFECT_RIM) {
+    if (mat->render_method & EFFECT_RIM) {
         real rim = real_pow(1.0f - ndotv, mat->rim_exponent);
         color = vec3_add(color, vec3_mul_scalar(mat->rim_color, rim));
     }
 
-    if (effects & EFFECT_FRESNEL) {
+    if (mat->render_method & EFFECT_FRESNEL) {
         real fresnel = real_pow(1.0f - ndotv, mat->fresnel_exponent);
         color = vec3_add(
             vec3_mul_scalar(color, 1.0f - fresnel),
             vec3_mul_scalar(mat->fresnel_color, fresnel));
     }
 
-    if (effects & EFFECT_EMISSIVE) {
+    if (mat->render_method & EFFECT_EMISSIVE) {
         vec3 emissive = mat->emissive_color;
-        if (effects & EFFECT_EMISSIVE_PULSE) {
+        if (mat->render_method & EFFECT_EMISSIVE_PULSE) {
             real pulse = 1.0f + mat->emissive_pulse_amplitude *
                 real_sin(render_time * mat->emissive_pulse_frequency +
                          mat->emissive_pulse_phase);
@@ -616,23 +615,23 @@ static INLINE vec3 shade_surface(
         color = vec3_add(color, emissive);
     }
 
-    if (effects & EFFECT_STROBE) {
+    if (mat->render_method & EFFECT_STROBE) {
         real s = real_sin(render_time * mat->strobe_frequency + mat->strobe_phase);
         s = s * 0.5f + 0.5f;
         color = vec3_add(color, vec3_mul_scalar(mat->strobe_color, s));
     }
 
-    if (effects & EFFECT_SPECULAR) {
+    if (mat->render_method & EFFECT_SPECULAR) {
         vec3 H = vec3_normalize(vec3_add(light_dir, V));
         real nh = vec3_dot(N, H);
         real spec = real_pow(nh < 0.0f ? 0.0f : nh, mat->specular_exponent);
-        if (effects & EFFECT_SPECULAR_THRESH) {
+        if (mat->render_method & EFFECT_SPECULAR_THRESH) {
             spec = (spec > mat->specular_threshold) ? 1.0f : 0.0f;
         }
         color = vec3_add(color, vec3_mul_scalar(mat->specular_color, spec));
     }
 
-    if (effects & EFFECT_SATURATION) {
+    if (mat->render_method & EFFECT_SATURATION) {
         real luma = color.color.r * 0.299f +
                     color.color.g * 0.587f +
                     color.color.b * 0.114f;
@@ -641,7 +640,7 @@ static INLINE vec3 shade_surface(
         color.color.b = luma + (color.color.b - luma) * mat->saturation;
     }
 
-    if (effects & EFFECT_IRIDESCENCE) {
+    if (mat->render_method & EFFECT_IRIDESCENCE) {
         real angle = ndotv * 2.0f * VECTORS_PI;
         real c = real_cos(angle);
         real s = real_sin(angle);
@@ -667,7 +666,7 @@ static INLINE vec3 shade_surface(
 
     color = vec3_mul(color, mat->tint);
 
-    if (effects & EFFECT_GLITCH) {
+    if (mat->render_method & EFFECT_GLITCH) {
         u32 x = (u32)(render_time * 60.0f);
         vec3 wp_q = vec3_floor(vec3_mul_scalar(world_pos, 4096.0f));
         x ^= (u32)wp_q.components[0];
@@ -683,7 +682,7 @@ static INLINE vec3 shade_surface(
         color.color.b -= offset;
     }
 
-    if (effects & EFFECT_ROUGHNESS) {
+    if (mat->render_method & EFFECT_ROUGHNESS) {
         u32 x = 2166136261u;
         vec3 q = vec3_floor(vec3_mul_scalar(local_pos, 256.0f));
         x ^= (u32)q.components[0];
@@ -698,20 +697,20 @@ static INLINE vec3 shade_surface(
         color.color.b += offset * 0.25f;
     }
 
-    if (effects & EFFECT_FRINGE) {
+    if (mat->render_method & EFFECT_FRINGE) {
         real fringe = real_pow(1.0f - ndotv, 3.0f) * mat->fringe_intensity;
         color.color.r += fringe;
         color.color.b -= fringe;
     }
 
-    if (effects & EFFECT_POSTERIZE) {
+    if (mat->render_method & EFFECT_POSTERIZE) {
         real levels = (real)(mat->posterize_levels);
         color.color.r = real_floor(color.color.r * levels + 0.5f) / levels;
         color.color.g = real_floor(color.color.g * levels + 0.5f) / levels;
         color.color.b = real_floor(color.color.b * levels + 0.5f) / levels;
     }
 
-    if ((effects & EFFECT_FOG) && fog_end > fog_start) {
+    if ((mat->render_method & EFFECT_FOG) && fog_end > fog_start) {
         real dist = vec3_magnitude(vec3_sub(world_pos, cam_eye));
         real t = (dist - fog_start) / (fog_end - fog_start);
         t = saturate(t);
@@ -732,7 +731,7 @@ static INLINE vec3 shade_surface(
 
 static INLINE void write_scaled_transparent_pixel(
     i32 rx, i32 ry, real iw,
-    vec3 color, real alpha, i32 effects)
+    vec3 color, real alpha, u32 effects)
 {
     i32 ridx;
     u32 dst, result;
@@ -765,7 +764,7 @@ static INLINE void write_scaled_transparent_pixel(
 static void draw_line_z(
     i32 x0, i32 y0, real iw0,
     i32 x1, i32 y1, real iw1,
-    vec3 color, real alpha, enum32 effects,
+    vec3 color, real alpha, u32 effects,
     const tile_bounds *bounds)
 {
     i32 code0 = clip_code(x0, y0, bounds);
@@ -883,7 +882,7 @@ static void draw_line_z(
 
 static void raster_triangle_wireframe(
     vec3 v0, vec3 v1, vec3 v2,
-    vec3 edge_color, real alpha, enum32 effects,
+    vec3 edge_color, real alpha, u32 effects,
     const tile_bounds *bounds)
 {
     i32 x0, y0, x1, y1, x2, y2;
@@ -904,6 +903,8 @@ static void raster_triangle_flat(
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
+    u32 effects = render_method_get_effects(mat->render_method);
+
     project(v0, &x0, &y0, &iw0);
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
@@ -951,7 +952,7 @@ static void raster_triangle_flat(
                 if (ex > bounds->x1) ex = bounds->x1;
                 if (ex <= sx) continue;
 
-                if (!(mat->effects & EFFECT_ALPHA)) {
+                if (!(effects & EFFECT_ALPHA)) {
                     real iw = siw;
                     u32 col = pack_color_real(color.color.r, color.color.g, color.color.b);
                     i32 x;
@@ -970,7 +971,7 @@ static void raster_triangle_flat(
                         i32 ridx = y * RENDER_WIDTH + x;
                         if (iw > zbuf_render[ridx]) {
                             write_scaled_transparent_pixel(x, y, iw, color,
-                                mat->alpha, mat->effects);
+                                mat->alpha, effects);
                             zbuf_render[ridx] = iw;
                         }
                         iw += iw_step;
@@ -989,6 +990,8 @@ static void raster_triangle_gouraud(
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
+    u32 effects = render_method_get_effects(mat->render_method);
+
     project(v0, &x0, &y0, &iw0);
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
@@ -1077,7 +1080,7 @@ static void raster_triangle_gouraud(
                 if (ex > bounds->x1) ex = bounds->x1;
                 if (ex <= sx) continue;
 
-                if (!(mat->effects & EFFECT_ALPHA)) {
+                if (!(effects & EFFECT_ALPHA)) {
                     real iw = siw;
                     vec3 col = cs;
                     i32 x;
@@ -1101,7 +1104,7 @@ static void raster_triangle_gouraud(
                         i32 ridx = y*RENDER_WIDTH+x;
                         if (iw > zbuf_render[ridx]) {
                             write_scaled_transparent_pixel(x, y, iw, col,
-                                mat->alpha, mat->effects);
+                                mat->alpha, effects);
                             zbuf_render[ridx] = iw;
                         }
                         iw += iw_step;
@@ -1124,6 +1127,8 @@ static void raster_triangle_phong(
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
+    u32 effects = render_method_get_effects(mat->render_method);
+
     project(v0, &x0, &y0, &iw0);
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
@@ -1317,7 +1322,7 @@ static void raster_triangle_phong(
                             real wp_val_x = wps_x, wp_val_y = wps_y, wp_val_z = wps_z;
                             real lp_val_x = lps_x, lp_val_y = lps_y, lp_val_z = lps_z;
 
-                            if (!(mat->effects & EFFECT_ALPHA)) {
+                            if (!(effects & EFFECT_ALPHA)) {
                                 real iw = siw;
                                 i32 x;
                                 for (x = sx; x < ex; x++) {
@@ -1367,7 +1372,7 @@ static void raster_triangle_phong(
                                                 lp_val_y * inv_w, lp_val_z * inv_w),
                                             mat);
                                         write_scaled_transparent_pixel(x, y, iw, color,
-                                            mat->alpha, mat->effects);
+                                            mat->alpha, effects);
                                         zbuf_render[ridx] = iw;
                                     }
                                     iw += iw_step;
@@ -1409,6 +1414,8 @@ static void raster_triangle_quadratic(
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
+    u32 effects = render_method_get_effects(mat->render_method);
+
     project(v0, &x0, &y0, &iw0);
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
@@ -1511,7 +1518,7 @@ static void raster_triangle_quadratic(
                     if (ex > bounds->x1) ex = bounds->x1;
                     if (ex <= sx) continue;
 
-                    if (!(mat->effects & EFFECT_ALPHA)) {
+                    if (!(effects & EFFECT_ALPHA)) {
                         real iw = siw;
                         i32 x;
                         for (x = sx; x < ex; x++) {
@@ -1625,7 +1632,7 @@ static void raster_triangle_quadratic(
                                         i32 ridx = y*RENDER_WIDTH + x;
                                         if (iw > zbuf_render[ridx]) {
                                             write_scaled_transparent_pixel(x, y, iw, fc,
-                                                mat->alpha, mat->effects);
+                                                mat->alpha, effects);
                                             zbuf_render[ridx] = iw;
                                         }
                                     }
@@ -1659,6 +1666,8 @@ static void raster_triangle_cubic(
 {
     i32 x0, y0, x1, y1, x2, y2;
     real iw0, iw1, iw2;
+    u32 effects = render_method_get_effects(mat->render_method);
+
     project(v0, &x0, &y0, &iw0);
     project(v1, &x1, &y1, &iw1);
     project(v2, &x2, &y2, &iw2);
@@ -1792,7 +1801,7 @@ static void raster_triangle_cubic(
                     if (ex>bounds->x1) ex=bounds->x1;
                     if (ex<=sx) continue;
 
-                    if (!(mat->effects&EFFECT_ALPHA)) {
+                    if (!(effects & EFFECT_ALPHA)) {
                         real iw=siw;
                         i32 x;
                         for (x = sx; x<ex; x++) {
@@ -1924,7 +1933,7 @@ static void raster_triangle_cubic(
                                         i32 ridx=y*RENDER_WIDTH+x;
                                         if (iw>zbuf_render[ridx]) {
                                             write_scaled_transparent_pixel(x, y, iw, fc,
-                                                mat->alpha, mat->effects);
+                                                mat->alpha, effects);
                                             zbuf_render[ridx]=iw;
                                         }
                                     }
@@ -1957,19 +1966,21 @@ static void draw_triangle_internal(
     i32 is_clipped)
 {
     vec3 fn, fc, lc, color;
+    u32 mode = render_method_get_mode(mat->render_method);
+    u32 effects = render_method_get_effects(mat->render_method);
 
-    switch (mat->mode) {
-        case SHADE_WIREFRAME:
+    switch (mode) {
+        case MODE_WIREFRAME:
             fn = vec3_normalize(vec3_cross(
                 vec3_sub(v1, v0), vec3_sub(v2, v0)));
             fc = vec3_mul_scalar(vec3_add(vec3_add(v0, v1), v2), 1.0f/3.0f);
             lc = vec3_mul_scalar(vec3_add(vec3_add(l0, l1), l2), 1.0f/3.0f);
             color = shade_surface(fn, fc, lc, mat);
             raster_triangle_wireframe(v0, v1, v2, color,
-                mat->alpha, mat->effects, bounds);
+                mat->alpha, effects, bounds);
             return;
 
-        case SHADE_FLAT:
+        case MODE_FLAT:
             fn = vec3_normalize(vec3_cross(
                 vec3_sub(orig_v1, orig_v0), vec3_sub(orig_v2, orig_v0)));
             fc = vec3_mul_scalar(
@@ -1980,16 +1991,16 @@ static void draw_triangle_internal(
             raster_triangle_flat(v0, v1, v2, color, mat, bounds);
             return;
 
-        case SHADE_GOURAUD:
+        case MODE_GOURAUD:
             raster_triangle_gouraud(v0, v1, v2, c0, c1, c2, mat, bounds);
             return;
 
-        case SHADE_PHONG:
+        case MODE_PHONG:
             raster_triangle_phong(v0, v1, v2, n0, n1, n2,
                 l0, l1, l2, mat, bounds);
             return;
 
-        case SHADE_QUADRATIC:
+        case MODE_QUADRATIC:
             raster_triangle_quadratic(v0, v1, v2,
                 n0, n1, n2, l0, l1, l2, c0, c1, c2,
                 bary0, bary1, bary2,
@@ -1999,7 +2010,7 @@ static void draw_triangle_internal(
                 mat, bounds, is_clipped);
             return;
 
-        case SHADE_CUBIC:
+        case MODE_CUBIC:
             raster_triangle_cubic(v0, v1, v2,
                 n0, n1, n2, l0, l1, l2, c0, c1, c2,
                 bary0, bary1, bary2,
@@ -2032,6 +2043,9 @@ void draw_triangle_shaded(
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat)
 {
+    u32 mode = render_method_get_mode(mat->render_method);
+    u32 effects = render_method_get_effects(mat->render_method);
+
     if (!mat->double_sided) {
         vec3 fn = vec3_normalize(vec3_cross(
             vec3_sub(v1, v0), vec3_sub(v2, v0)));
@@ -2045,9 +2059,9 @@ void draw_triangle_shaded(
 
     {
         vec3 orig_c0, orig_c1, orig_c2;
-        i32 needs_vc = (mat->mode == SHADE_GOURAUD ||
-                        mat->mode == SHADE_QUADRATIC ||
-                        mat->mode == SHADE_CUBIC);
+        i32 needs_vc = (mode == MODE_GOURAUD ||
+                        mode == MODE_QUADRATIC ||
+                        mode == MODE_CUBIC);
         if (needs_vc) {
             orig_c0 = shade_surface(n0, v0, l0, mat);
             orig_c1 = shade_surface(n1, v1, l1, mat);
@@ -2098,7 +2112,7 @@ void draw_triangle_shaded(
                             cc2 = vec3_init_from_3(0, 0, 0);
                         }
 
-                        if ((mat->effects & EFFECT_ALPHA)) {
+                        if (effects & EFFECT_ALPHA) {
                             tile_bin_transparent_triangle(cv0, cv1, cv2,
                                 cn0, cn1, cn2, cl0, cl1, cl2,
                                 v0, v1, v2, n0, n1, n2, l0, l1, l2,
@@ -2124,7 +2138,7 @@ void draw_triangle_shaded(
             }
 
             /* No clipping needed */
-            if ((mat->effects & EFFECT_ALPHA)) {
+            if (effects & EFFECT_ALPHA) {
                 tile_bin_transparent_triangle(v0, v1, v2,
                     n0, n1, n2, l0, l1, l2,
                     v0, v1, v2, n0, n1, n2, l0, l1, l2,
@@ -2229,7 +2243,7 @@ static void tile_bin_triangle(
                     }
                     tr->is_clipped = ic;
                     tr->mat = mat;
-                    tr->mode = mat->mode;
+                    tr->mode = render_method_get_mode(mat->render_method);
                 }
             }
         }
@@ -2296,7 +2310,7 @@ static void tile_bin_transparent_triangle(
             }
             tt->is_clipped = is_clipped;
             tt->mat = mat;
-            tt->mode = mat->mode;
+            tt->mode = render_method_get_mode(mat->render_method);
             tt->depth = depth;
         }
     }
@@ -2469,7 +2483,7 @@ static job_t* render_tile(void *arg)
             tile_tri *tr = &b->tris[t];
 
             switch (tr->mode) {
-                case SHADE_WIREFRAME: {
+                case MODE_WIREFRAME: {
                     vec3 fn = vec3_normalize(vec3_cross(
                         vec3_sub(tr->v1, tr->v0), vec3_sub(tr->v2, tr->v0)));
                     vec3 fc = vec3_mul_scalar(
@@ -2477,11 +2491,12 @@ static job_t* render_tile(void *arg)
                     vec3 lc = vec3_mul_scalar(
                         vec3_add(vec3_add(tr->l0, tr->l1), tr->l2), 1.0f/3.0f);
                     vec3 col = shade_surface(fn, fc, lc, tr->mat);
+                    u32 effects = render_method_get_effects(tr->mat->render_method);
                     raster_triangle_wireframe(tr->v0, tr->v1, tr->v2, col,
-                        tr->mat->alpha, tr->mat->effects, &bnd);
+                        tr->mat->alpha, effects, &bnd);
                     break;
                 }
-                case SHADE_FLAT: {
+                case MODE_FLAT: {
                     vec3 fn = vec3_normalize(vec3_cross(
                         vec3_sub(tr->orig_v1, tr->orig_v0),
                         vec3_sub(tr->orig_v2, tr->orig_v0)));
@@ -2495,16 +2510,16 @@ static job_t* render_tile(void *arg)
                     raster_triangle_flat(tr->v0, tr->v1, tr->v2, col, tr->mat, &bnd);
                     break;
                 }
-                case SHADE_GOURAUD:
+                case MODE_GOURAUD:
                     raster_triangle_gouraud(tr->v0, tr->v1, tr->v2,
                         tr->c0, tr->c1, tr->c2, tr->mat, &bnd);
                     break;
-                case SHADE_PHONG:
+                case MODE_PHONG:
                     raster_triangle_phong(tr->v0, tr->v1, tr->v2,
                         tr->n0, tr->n1, tr->n2,
                         tr->l0, tr->l1, tr->l2, tr->mat, &bnd);
                     break;
-                case SHADE_QUADRATIC:
+                case MODE_QUADRATIC:
                     raster_triangle_quadratic(tr->v0, tr->v1, tr->v2,
                         tr->n0, tr->n1, tr->n2,
                         tr->l0, tr->l1, tr->l2,
@@ -2515,7 +2530,7 @@ static job_t* render_tile(void *arg)
                         tr->orig_n0, tr->orig_n1, tr->orig_n2,
                         tr->mat, &bnd, tr->is_clipped);
                     break;
-                case SHADE_CUBIC:
+                case MODE_CUBIC:
                     raster_triangle_cubic(tr->v0, tr->v1, tr->v2,
                         tr->n0, tr->n1, tr->n2,
                         tr->l0, tr->l1, tr->l2,
@@ -2550,9 +2565,10 @@ static job_t* render_tile(void *arg)
             for (ti = 0; ti < b->transparent_count; ti++) {
                 tile_transparent_tri *tt = &b->transparent_tris[ti];
                 vec3 tc0, tc1, tc2;
-                i32 nv = (tt->mode == SHADE_GOURAUD ||
-                          tt->mode == SHADE_QUADRATIC ||
-                          tt->mode == SHADE_CUBIC);
+                u32 mode = tt->mode;
+                i32 nv = (mode == MODE_GOURAUD ||
+                          mode == MODE_QUADRATIC ||
+                          mode == MODE_CUBIC);
                 if (nv) {
                     tc0 = shade_surface(tt->orig_n0, tt->orig_v0, tt->orig_l0, tt->mat);
                     tc1 = shade_surface(tt->orig_n1, tt->orig_v1, tt->orig_l1, tt->mat);
