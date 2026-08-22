@@ -6,13 +6,18 @@
 #include "common.h"
 #include "physics.h"
 
-/* NOTE: comment/uncomment to swap between Software (SW) and OpenGL (GL) rendering. */
+
+#define USE_DX11
+#if defined(USE_DX11)
+#define RASTERIZER_DX11_IMPLEMENTATION
+#include "rasterizer_DX11.h"
+#elif defined(USE_GL)
 #define RASTERIZER_GL_IMPLEMENTATION
 #include "rasterizer_GL.h"
-/*
+#else
 #define RASTERIZER_SW_IMPLEMENTATION
 #include "rasterizer_SW.h"
-*/
+#endif
 
 #include "scripts.h"
 #include "clock.h"
@@ -1112,10 +1117,8 @@ static void runtime_start(void)
         render_set_time((real)now);
         scenario_render();
 
-        {
-            const u32 *fb = render_get_fb();
-            present_frame((void*)fb);
-        }
+        const u32 *fb = render_get_fb();
+        present_frame((void*)fb);
 
         print_fps(now);
     }
