@@ -4,6 +4,8 @@ layout(location = 0) in vec3 aPos;          // local position
 layout(location = 1) in vec3 aNormal;       // local normal
 layout(location = 2) in vec3 aLocalPos;     // local position (for effects)
 layout(location = 3) in float aModelIndex;  // index into ModelMatrices UBO
+layout(location = 4) in vec3 aFaceNormal;   // per‑triangle face normal (world space)
+layout(location = 5) in vec3 aCentroid;     // per‑triangle centroid (world space)
 
 /* ---- Standard uniforms (non‑UBO) ---- */
 uniform mat4 uViewProj;
@@ -64,6 +66,14 @@ layout(std140, row_major) uniform ModelMatrices {
     mat4 uModels[1024];
 };
 
+/* ---- Outputs to fragment shader ---- */
+out vec3 vWorldPos;
+out vec3 vNormal;
+out vec3 vLocalPos;
+out vec3 vVertexColor;   /* for Gouraud shading */
+flat out vec3 vFaceNormal;
+flat out vec3 vCentroid;
+
 /* ---- Utility functions ---- */
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -83,7 +93,7 @@ float hash_float(vec3 p) {
     return float(h) / 4294967296.0;
 }
 
-/* ---- Lighting function (identical to before, but now works in world space) ---- */
+/* ---- Lighting function (identical to fragment) ---- */
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     N = normalize(N);
     vec3 L = normalize(uLightDir);
@@ -289,12 +299,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     return clamp(color, 0.0, 1.0);
 }
 
-/* ---- Outputs ---- */
-out vec3 vWorldPos;
-out vec3 vNormal;
-out vec3 vLocalPos;
-out vec3 vVertexColor;   /* for Gouraud shading */
-
 void main() {
     /* Select the model matrix using the per‑vertex index */
     mat4 model = uModels[int(aModelIndex)];
@@ -303,6 +307,8 @@ void main() {
     vWorldPos = worldPos.xyz;
     vNormal   = normalize(mat3(model) * aNormal);
     vLocalPos = aLocalPos;
+    vFaceNormal = normalize(aFaceNormal);
+    vCentroid = aCentroid;
 
     gl_Position = uViewProj * worldPos;
 

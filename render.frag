@@ -4,6 +4,8 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec3 vLocalPos;
 in vec3 vVertexColor;
+flat in vec3 vFaceNormal;
+flat in vec3 vCentroid;
 
 /* Lighting uniforms (still individual) */
 uniform vec3 uLightDir;
@@ -290,7 +292,8 @@ void main() {
     vec3 color;
 
 #ifdef MODE_WIREFRAME
-    color = uMatColor;
+    /* Use the pre‑computed face normal and centroid for wireframe shading */
+    color = shade_surface(normalize(vFaceNormal), vCentroid, vLocalPos);
 #elif defined(MODE_FLAT)
     vec3 dx = dFdx(vWorldPos);
     vec3 dy = dFdy(vWorldPos);

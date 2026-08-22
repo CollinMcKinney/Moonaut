@@ -97,6 +97,8 @@ static INLINE u8 color_to_u8(real x);
 #define MAX_TRANSPARENT_TRIS     8192
 #define MAX_VERTICES_PER_FRAME   (1024 * 1024)
 #define MAX_INDICES_PER_FRAME    (MAX_VERTICES_PER_FRAME * 3)
+#define VERTEX_STRIDE_FLOATS     16   /* pos(3) + normal(3) + localPos(3) + modelIndex(1) + faceNormal(3) + centroid(3) */
+#define VERTEX_STRIDE_BYTES      (VERTEX_STRIDE_FLOATS * sizeof(float))
 
 /* ---------------------------------------------------------------------------*/
 /*  Internal Types                                                             */
@@ -183,6 +185,8 @@ static ID3D11Buffer            *dx_model_cb          = NULL;
 
 static ID3D11RasterizerState   *dx_rast_cull_none    = NULL;
 static ID3D11RasterizerState   *dx_rast_cull_back    = NULL;
+static ID3D11RasterizerState   *dx_rast_wireframe_none = NULL;
+static ID3D11RasterizerState   *dx_rast_wireframe_back = NULL;
 static ID3D11DepthStencilState *dx_depth_opaque      = NULL;
 static ID3D11DepthStencilState *dx_depth_transparent = NULL;
 static ID3D11BlendState        *dx_blend_opaque      = NULL;
@@ -536,6 +540,8 @@ static void dx_release_com_objects(void) {
     if (dx_model_cb)       dx_model_cb->lpVtbl->Release(dx_model_cb);
     if (dx_rast_cull_none) dx_rast_cull_none->lpVtbl->Release(dx_rast_cull_none);
     if (dx_rast_cull_back) dx_rast_cull_back->lpVtbl->Release(dx_rast_cull_back);
+    if (dx_rast_wireframe_none) dx_rast_wireframe_none->lpVtbl->Release(dx_rast_wireframe_none);
+    if (dx_rast_wireframe_back) dx_rast_wireframe_back->lpVtbl->Release(dx_rast_wireframe_back);
     if (dx_depth_opaque)   dx_depth_opaque->lpVtbl->Release(dx_depth_opaque);
     if (dx_depth_transparent) dx_depth_transparent->lpVtbl->Release(dx_depth_transparent);
     if (dx_blend_opaque)   dx_blend_opaque->lpVtbl->Release(dx_blend_opaque);
@@ -691,6 +697,7 @@ static int dx_create_states(void) {
     D3D11_DEPTH_STENCIL_DESC depth_desc;
     D3D11_BLEND_DESC blend_desc;
 
+    /* Solid, cull none */
     memset(&rast_desc, 0, sizeof(rast_desc));
     rast_desc.FillMode              = D3D11_FILL_SOLID;
     rast_desc.CullMode              = D3D11_CULL_NONE;
@@ -700,9 +707,23 @@ static int dx_create_states(void) {
     hr = dx_device->lpVtbl->CreateRasterizerState(dx_device, &rast_desc, &dx_rast_cull_none);
     if (FAILED(hr)) return 0;
 
+    /* Solid, cull back */
     rast_desc.CullMode              = D3D11_CULL_BACK;
     rast_desc.FrontCounterClockwise = TRUE;
     hr = dx_device->lpVtbl->CreateRasterizerState(dx_device, &rast_desc, &dx_rast_cull_back);
+    if (FAILED(hr)) return 0;
+
+    /* Wireframe, cull none */
+    rast_desc.FillMode              = D3D11_FILL_WIREFRAME;
+    rast_desc.CullMode              = D3D11_CULL_NONE;
+    rast_desc.FrontCounterClockwise = FALSE;
+    hr = dx_device->lpVtbl->CreateRasterizerState(dx_device, &rast_desc, &dx_rast_wireframe_none);
+    if (FAILED(hr)) return 0;
+
+    /* Wireframe, cull back */
+    rast_desc.CullMode              = D3D11_CULL_BACK;
+    rast_desc.FrontCounterClockwise = TRUE;
+    hr = dx_device->lpVtbl->CreateRasterizerState(dx_device, &rast_desc, &dx_rast_wireframe_back);
     if (FAILED(hr)) return 0;
 
     memset(&depth_desc, 0, sizeof(depth_desc));
@@ -759,7 +780,7 @@ static int dx_create_buffers(void) {
     if (FAILED(hr)) return 0;
 
     memset(&vb_desc, 0, sizeof(vb_desc));
-    vb_desc.ByteWidth      = MAX_VERTICES_PER_FRAME * 40;
+    vb_desc.ByteWidth      = MAX_VERTICES_PER_FRAME * VERTEX_STRIDE_BYTES;
     vb_desc.Usage          = D3D11_USAGE_DYNAMIC;
     vb_desc.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
     vb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -951,34 +972,48 @@ static void dx_flush_transparent_batches(void) {
             dx_batch_t *b = &dx_batches[dx_batch_count++];
             b->mat = mat;
             b->mode = (mat->render_method & 0x7);
-            b->vertex_offset = dx_pool_used_floats / 10;
+            b->vertex_offset = dx_pool_used_floats / VERTEX_STRIDE_FLOATS;
             b->index_offset = dx_index_pool_used;
             b->vertex_count = 0;
             b->index_count = 0;
             b->is_transparent = 1;
 
-            int j;
-            for (j = start; j < i; j++) {
+            for (int j = start; j < i; j++) {
                 dx_transparent_tri_t *t = &dx_transparent_tris[j];
-                if (dx_pool_used_floats + 30 > dx_pool_capacity_floats ||
+                if (dx_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > dx_pool_capacity_floats ||
                     dx_index_pool_used + 3 > dx_index_pool_capacity) {
-                    continue;
+                    /* Resize pools */
+                    size_t new_cap = dx_pool_capacity_floats ? dx_pool_capacity_floats * 2 : 1024 * VERTEX_STRIDE_FLOATS;
+                    float *new_pool = (float*)realloc(dx_vertex_pool, new_cap * sizeof(float));
+                    if (!new_pool) return;
+                    dx_vertex_pool = new_pool;
+                    dx_pool_capacity_floats = new_cap;
+                    size_t new_idx_cap = dx_index_pool_capacity ? dx_index_pool_capacity * 2 : 1024 * 3;
+                    u16 *new_idx = (u16*)realloc(dx_index_pool, new_idx_cap * sizeof(u16));
+                    if (!new_idx) return;
+                    dx_index_pool = new_idx;
+                    dx_index_pool_capacity = new_idx_cap;
                 }
                 float *ptr = &dx_vertex_pool[dx_pool_used_floats];
-                #define PACK_V(v, n, mi) \
-                    *(ptr++) = (float)(v).position.x; *(ptr++) = (float)(v).position.y; *(ptr++) = (float)(v).position.z; \
-                    *(ptr++) = (float)(n).position.x; *(ptr++) = (float)(n).position.y; *(ptr++) = (float)(n).position.z; \
-                    *(ptr++) = (float)(v).position.x; *(ptr++) = (float)(v).position.y; *(ptr++) = (float)(v).position.z; \
-                    *(ptr++) = (float)(mi);
-                PACK_V(t->v0, t->n0, t->model_index);
-                PACK_V(t->v1, t->n1, t->model_index);
-                PACK_V(t->v2, t->n2, t->model_index);
+                /* For transparent, we compute faceNormal and centroid from the stored vertices */
+                vec3 faceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
+                vec3 centroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
+                #define PACK_V(v, n, l, fn, cen, mi) \
+                    *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
+                    *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
+                    *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
+                    *(ptr++) = (float)(mi); \
+                    *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
+                    *(ptr++) = (cen).position.x; *(ptr++) = (cen).position.y; *(ptr++) = (cen).position.z;
+                PACK_V(t->v0, t->n0, t->v0, faceNormal, centroid, t->model_index);
+                PACK_V(t->v1, t->n1, t->v1, faceNormal, centroid, t->model_index);
+                PACK_V(t->v2, t->n2, t->v2, faceNormal, centroid, t->model_index);
                 #undef PACK_V
-                u16 base = (u16)(dx_pool_used_floats / 10);
+                u16 base = (u16)(dx_pool_used_floats / VERTEX_STRIDE_FLOATS);
                 dx_index_pool[dx_index_pool_used++] = base;
                 dx_index_pool[dx_index_pool_used++] = base + 1;
                 dx_index_pool[dx_index_pool_used++] = base + 2;
-                dx_pool_used_floats += 30;
+                dx_pool_used_floats += 3 * VERTEX_STRIDE_FLOATS;
                 b->vertex_count += 3;
                 b->index_count += 3;
             }
@@ -1006,6 +1041,13 @@ static void dx_draw_triangle_indexed(
 
     if (dx_triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
 
+    /* Compute face normal and centroid only for wireframe mode */
+    vec3 faceNormal = {0,0,0}, centroid = {0,0,0};
+    if ((mat->render_method & 0x7) == MODE_WIREFRAME) {
+        faceNormal = vec3_normalize(vec3_cross(vec3_sub(world_v1, world_v0), vec3_sub(world_v2, world_v0)));
+        centroid = vec3_div_scalar(vec3_add(vec3_add(world_v0, world_v1), world_v2), 3.0f);
+    }
+
     if (mat->render_method & EFFECT_ALPHA) {
         if (dx_transparent_count >= MAX_TRANSPARENT_TRIS) {
             dx_flush_transparent_batches();
@@ -1027,8 +1069,7 @@ static void dx_draw_triangle_indexed(
 
     int batch_idx = -1;
     u32 mode = mat->render_method & 0x7;
-    int i;
-    for (i = 0; i < dx_batch_count; i++) {
+    for (int i = 0; i < dx_batch_count; i++) {
         if (dx_batches[i].mat == mat && dx_batches[i].mode == mode) {
             batch_idx = i;
             break;
@@ -1039,7 +1080,7 @@ static void dx_draw_triangle_indexed(
         batch_idx = dx_batch_count++;
         dx_batches[batch_idx].mat = mat;
         dx_batches[batch_idx].mode = mode;
-        dx_batches[batch_idx].vertex_offset = dx_pool_used_floats / 10;
+        dx_batches[batch_idx].vertex_offset = dx_pool_used_floats / VERTEX_STRIDE_FLOATS;
         dx_batches[batch_idx].index_offset = dx_index_pool_used;
         dx_batches[batch_idx].vertex_count = 0;
         dx_batches[batch_idx].index_count = 0;
@@ -1048,28 +1089,30 @@ static void dx_draw_triangle_indexed(
 
     dx_batch_t *b = &dx_batches[batch_idx];
 
-    if (dx_pool_used_floats + 30 > dx_pool_capacity_floats ||
+    if (dx_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > dx_pool_capacity_floats ||
         dx_index_pool_used + 3 > dx_index_pool_capacity) {
         return;
     }
 
     float *ptr = &dx_vertex_pool[dx_pool_used_floats];
-    #define PACK_V(v, n, mi) \
-        *(ptr++) = (float)(v).position.x; *(ptr++) = (float)(v).position.y; *(ptr++) = (float)(v).position.z; \
-        *(ptr++) = (float)(n).position.x; *(ptr++) = (float)(n).position.y; *(ptr++) = (float)(n).position.z; \
-        *(ptr++) = (float)(v).position.x; *(ptr++) = (float)(v).position.y; *(ptr++) = (float)(v).position.z; \
-        *(ptr++) = (float)(mi);
-    PACK_V(local_v0, local_n0, model_index);
-    PACK_V(local_v1, local_n1, model_index);
-    PACK_V(local_v2, local_n2, model_index);
+    #define PACK_V(v, n, l, fn, cen, mi) \
+        *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
+        *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
+        *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
+        *(ptr++) = (float)(mi); \
+        *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
+        *(ptr++) = (cen).position.x; *(ptr++) = (cen).position.y; *(ptr++) = (cen).position.z;
+    PACK_V(local_v0, local_n0, local_v0, faceNormal, centroid, model_index);
+    PACK_V(local_v1, local_n1, local_v1, faceNormal, centroid, model_index);
+    PACK_V(local_v2, local_n2, local_v2, faceNormal, centroid, model_index);
     #undef PACK_V
 
-    u16 base = (u16)(dx_pool_used_floats / 10);
+    u16 base = (u16)(dx_pool_used_floats / VERTEX_STRIDE_FLOATS);
     dx_index_pool[dx_index_pool_used++] = base;
     dx_index_pool[dx_index_pool_used++] = base + 1;
     dx_index_pool[dx_index_pool_used++] = base + 2;
 
-    dx_pool_used_floats += 30;
+    dx_pool_used_floats += 3 * VERTEX_STRIDE_FLOATS;
     b->vertex_count += 3;
     b->index_count += 3;
 }
@@ -1170,38 +1213,62 @@ int render_init(i32 window_width, i32 window_height) {
         return 0;
     }
 
-    D3D11_INPUT_ELEMENT_DESC layout_desc[4];
-    layout_desc[0].SemanticName         = "POSITION";
-    layout_desc[0].SemanticIndex        = 0;
-    layout_desc[0].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
-    layout_desc[0].InputSlot            = 0;
-    layout_desc[0].AlignedByteOffset    = 0;
-    layout_desc[0].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
-    layout_desc[0].InstanceDataStepRate = 0;
-
-    layout_desc[1].SemanticName         = "NORMAL";
-    layout_desc[1].SemanticIndex        = 0;
-    layout_desc[1].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
-    layout_desc[1].InputSlot            = 0;
-    layout_desc[1].AlignedByteOffset    = 12;
-    layout_desc[1].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
-    layout_desc[1].InstanceDataStepRate = 0;
-
-    layout_desc[2].SemanticName         = "TEXCOORD";
-    layout_desc[2].SemanticIndex        = 0;
-    layout_desc[2].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
-    layout_desc[2].InputSlot            = 0;
-    layout_desc[2].AlignedByteOffset    = 24;
-    layout_desc[2].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
-    layout_desc[2].InstanceDataStepRate = 0;
-
-    layout_desc[3].SemanticName         = "TEXCOORD";
-    layout_desc[3].SemanticIndex        = 1;
-    layout_desc[3].Format               = DXGI_FORMAT_R32_FLOAT;
-    layout_desc[3].InputSlot            = 0;
-    layout_desc[3].AlignedByteOffset    = 36;
-    layout_desc[3].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
-    layout_desc[3].InstanceDataStepRate = 0;
+    D3D11_INPUT_ELEMENT_DESC layout_desc[6];
+    int layout_index = 0;
+    /* POSITION */
+    layout_desc[layout_index].SemanticName         = "POSITION";
+    layout_desc[layout_index].SemanticIndex        = 0;
+    layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
+    layout_desc[layout_index].InputSlot            = 0;
+    layout_desc[layout_index].AlignedByteOffset    = 0;
+    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+    layout_desc[layout_index].InstanceDataStepRate = 0;
+    layout_index++;
+    /* NORMAL */
+    layout_desc[layout_index].SemanticName         = "NORMAL";
+    layout_desc[layout_index].SemanticIndex        = 0;
+    layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
+    layout_desc[layout_index].InputSlot            = 0;
+    layout_desc[layout_index].AlignedByteOffset    = 12;
+    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+    layout_desc[layout_index].InstanceDataStepRate = 0;
+    layout_index++;
+    /* TEXCOORD0 (local position) */
+    layout_desc[layout_index].SemanticName         = "TEXCOORD";
+    layout_desc[layout_index].SemanticIndex        = 0;
+    layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
+    layout_desc[layout_index].InputSlot            = 0;
+    layout_desc[layout_index].AlignedByteOffset    = 24;
+    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+    layout_desc[layout_index].InstanceDataStepRate = 0;
+    layout_index++;
+    /* TEXCOORD1 (model index) */
+    layout_desc[layout_index].SemanticName         = "TEXCOORD";
+    layout_desc[layout_index].SemanticIndex        = 1;
+    layout_desc[layout_index].Format               = DXGI_FORMAT_R32_FLOAT;
+    layout_desc[layout_index].InputSlot            = 0;
+    layout_desc[layout_index].AlignedByteOffset    = 36;
+    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+    layout_desc[layout_index].InstanceDataStepRate = 0;
+    layout_index++;
+    /* TEXCOORD2 (face normal) */
+    layout_desc[layout_index].SemanticName         = "TEXCOORD";
+    layout_desc[layout_index].SemanticIndex        = 2;
+    layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
+    layout_desc[layout_index].InputSlot            = 0;
+    layout_desc[layout_index].AlignedByteOffset    = 40;
+    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+    layout_desc[layout_index].InstanceDataStepRate = 0;
+    layout_index++;
+    /* TEXCOORD3 (centroid) */
+    layout_desc[layout_index].SemanticName         = "TEXCOORD";
+    layout_desc[layout_index].SemanticIndex        = 3;
+    layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
+    layout_desc[layout_index].InputSlot            = 0;
+    layout_desc[layout_index].AlignedByteOffset    = 52;
+    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+    layout_desc[layout_index].InstanceDataStepRate = 0;
+    layout_index++;
 
     char defines[] = "#define DUMMY\n";
     ID3DBlob *vs_blob = dx_compile_shader_with_defines("render_vs.hlsl", defines, "main", "vs_4_0");
@@ -1211,7 +1278,7 @@ int render_init(i32 window_width, i32 window_height) {
         return 0;
     }
 
-    hr = dx_device->lpVtbl->CreateInputLayout(dx_device, layout_desc, 4,
+    hr = dx_device->lpVtbl->CreateInputLayout(dx_device, layout_desc, layout_index,
                                               vs_blob->lpVtbl->GetBufferPointer(vs_blob),
                                               vs_blob->lpVtbl->GetBufferSize(vs_blob),
                                               &dx_input_layout);
@@ -1238,7 +1305,7 @@ int render_init(i32 window_width, i32 window_height) {
                                                   D3D11_CLEAR_DEPTH, 1.0f, 0);
     }
 
-    dx_pool_capacity_floats = MAX_VERTICES_PER_FRAME * 10;
+    dx_pool_capacity_floats = MAX_VERTICES_PER_FRAME * VERTEX_STRIDE_FLOATS;
     dx_vertex_pool = (float*)malloc(dx_pool_capacity_floats * sizeof(float));
     dx_index_pool_capacity = MAX_INDICES_PER_FRAME;
     dx_index_pool = (u16*)malloc(dx_index_pool_capacity * sizeof(u16));
@@ -1431,7 +1498,7 @@ void render_finish(void) {
         }
     }
 
-    UINT stride = 40;
+    UINT stride = VERTEX_STRIDE_BYTES;
     UINT offset = 0;
     dx_context->lpVtbl->IASetInputLayout(dx_context, dx_input_layout);
     dx_context->lpVtbl->IASetPrimitiveTopology(dx_context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1480,7 +1547,13 @@ void render_finish(void) {
                 dx_last_is_transparent = b->is_transparent;
             }
 
-            ID3D11RasterizerState *want_rs = b->mat->double_sided ? dx_rast_cull_none : dx_rast_cull_back;
+            /* Select rasterizer state based on mode and double_sided */
+            ID3D11RasterizerState *want_rs;
+            if (b->mode == MODE_WIREFRAME) {
+                want_rs = b->mat->double_sided ? dx_rast_wireframe_none : dx_rast_wireframe_back;
+            } else {
+                want_rs = b->mat->double_sided ? dx_rast_cull_none : dx_rast_cull_back;
+            }
             if (want_rs != dx_last_rasterizer) {
                 dx_context->lpVtbl->RSSetState(dx_context, want_rs);
                 dx_last_rasterizer = want_rs;

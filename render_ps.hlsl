@@ -55,6 +55,8 @@ struct PS_INPUT {
     float3 normal : TEXCOORD1;
     float3 localPos : TEXCOORD2;
     float3 vertexColor : TEXCOORD3;
+    nointerpolation float3 faceNormal : TEXCOORD4;
+    nointerpolation float3 centroidPos : TEXCOORD5;   /* renamed */
 };
 
 float saturate(float x) { return clamp(x, 0.0f, 1.0f); }
@@ -222,7 +224,8 @@ float4 main(PS_INPUT input) : SV_TARGET {
     float3 color;
 
 #ifdef MODE_WIREFRAME
-    color = uMatColor;
+    /* Use the pre‑computed face normal and centroid for wireframe shading */
+    color = shade_surface(normalize(input.faceNormal), input.centroidPos, input.localPos);
 #elif defined(MODE_FLAT)
     float3 dx = ddx(input.worldPos);
     float3 dy = ddy(input.worldPos);

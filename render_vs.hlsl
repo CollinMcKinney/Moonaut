@@ -58,6 +58,8 @@ struct VS_INPUT {
     float3 normal : NORMAL;
     float3 localPos : TEXCOORD0;
     float modelIndex : TEXCOORD1;
+    float3 faceNormal : TEXCOORD2;
+    float3 centroidPos : TEXCOORD3;   /* renamed to avoid keyword conflict */
 };
 
 struct VS_OUTPUT {
@@ -66,6 +68,8 @@ struct VS_OUTPUT {
     float3 normal : TEXCOORD1;
     float3 localPos : TEXCOORD2;
     float3 vertexColor : TEXCOORD3;
+    nointerpolation float3 faceNormal : TEXCOORD4;
+    nointerpolation float3 centroidPos : TEXCOORD5;
 };
 
 float saturate(float x) { return clamp(x, 0.0f, 1.0f); }
@@ -238,6 +242,8 @@ VS_OUTPUT main(VS_INPUT input) {
     output.normal = mul((float3x3)model, input.normal);
     output.localPos = input.localPos;
     output.vertexColor = float3(0.0f, 0.0f, 0.0f);
+    output.faceNormal = normalize(input.faceNormal);
+    output.centroidPos = input.centroidPos;
 
 #ifdef MODE_GOURAUD
     output.vertexColor = shade_surface(normalize(output.normal), output.worldPos, output.localPos);

@@ -234,6 +234,8 @@ static GLint gl_default_fbo = 0;
 #define MAX_TRANSPARENT_TRIS 8192
 #define MAX_VERTICES_PER_FRAME (1024 * 1024)
 #define MAX_INDICES_PER_FRAME  (MAX_VERTICES_PER_FRAME * 3)
+#define VERTEX_STRIDE_FLOATS 16   /* pos(3) + normal(3) + localPos(3) + modelIndex(1) + faceNormal(3) + centroid(3) */
+#define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
 
 /* Transparent triangle storage */
 typedef struct {
@@ -676,7 +678,7 @@ static void flush_transparent_batches(void) {
             batch_t *b = &gl_batches[gl_batch_count++];
             b->mat = mat;
             b->mode = (mat->render_method & 0x7);
-            b->vertex_offset = gl_pool_used_floats / 10;
+            b->vertex_offset = gl_pool_used_floats / VERTEX_STRIDE_FLOATS;
             b->index_offset = gl_index_pool_used;
             b->vertex_count = 0;
             b->index_count = 0;
@@ -684,34 +686,39 @@ static void flush_transparent_batches(void) {
 
             for (int j = start; j < i; j++) {
                 transparent_tri_t *t = &gl_transparent_tris[j];
-                if (gl_pool_used_floats + 30 > gl_pool_capacity_floats ||
+                if (gl_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > gl_pool_capacity_floats ||
                     gl_index_pool_used + 3 > gl_index_pool_capacity) {
-                    size_t new_cap = gl_pool_capacity_floats ? gl_pool_capacity_floats * 2 : 1024 * 10;
+                    size_t new_cap = gl_pool_capacity_floats ? gl_pool_capacity_floats * 2 : 1024 * VERTEX_STRIDE_FLOATS;
                     float *new_pool = (float*)realloc(gl_vertex_pool, new_cap * sizeof(float));
                     if (!new_pool) return;
                     gl_vertex_pool = new_pool;
                     gl_pool_capacity_floats = new_cap;
-                    size_t new_idx_cap = gl_index_pool_capacity ? gl_index_pool_capacity * 2 : 1024 * 10;
+                    size_t new_idx_cap = gl_index_pool_capacity ? gl_index_pool_capacity * 2 : 1024 * 3;
                     GLushort *new_idx = (GLushort*)realloc(gl_index_pool, new_idx_cap * sizeof(GLushort));
                     if (!new_idx) return;
                     gl_index_pool = new_idx;
                     gl_index_pool_capacity = new_idx_cap;
                 }
                 float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-                #define PACK_V(v, n, mi) \
+                /* For transparent, we still need faceNormal and centroid – compute them on the fly */
+                vec3 faceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
+                vec3 centroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
+                #define PACK_V(v, n, l, fn, cen, mi) \
                     *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
                     *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
-                    *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
-                    *(ptr++) = (float)(mi);
-                PACK_V(t->v0, t->n0, t->model_index);
-                PACK_V(t->v1, t->n1, t->model_index);
-                PACK_V(t->v2, t->n2, t->model_index);
+                    *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
+                    *(ptr++) = (float)(mi); \
+                    *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
+                    *(ptr++) = (cen).position.x; *(ptr++) = (cen).position.y; *(ptr++) = (cen).position.z;
+                PACK_V(t->v0, t->n0, t->v0, faceNormal, centroid, t->model_index);
+                PACK_V(t->v1, t->n1, t->v1, faceNormal, centroid, t->model_index);
+                PACK_V(t->v2, t->n2, t->v2, faceNormal, centroid, t->model_index);
                 #undef PACK_V
-                GLushort base = (GLushort)(gl_pool_used_floats / 10);
+                GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
                 gl_index_pool[gl_index_pool_used++] = base;
                 gl_index_pool[gl_index_pool_used++] = base + 1;
                 gl_index_pool[gl_index_pool_used++] = base + 2;
-                gl_pool_used_floats += 30;
+                gl_pool_used_floats += 3 * VERTEX_STRIDE_FLOATS;
                 b->vertex_count += 3;
                 b->index_count += 3;
             }
@@ -745,6 +752,13 @@ static void draw_triangle_indexed(
     
     /* Frustum culling only – backface culling is done on GPU via GL_CULL_FACE */
     if (triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
+
+    /* Compute face normal and centroid only if wireframe mode is active */
+    vec3 faceNormal = {0,0,0}, centroid = {0,0,0};
+    if ((mat->render_method & 0x7) == MODE_WIREFRAME) {
+        faceNormal = vec3_normalize(vec3_cross(vec3_sub(world_v1, world_v0), vec3_sub(world_v2, world_v0)));
+        centroid = vec3_div_scalar(vec3_add(vec3_add(world_v0, world_v1), world_v2), 3.0f);
+    }
 
     if (mat->render_method & EFFECT_ALPHA) {
         if (gl_transparent_count >= MAX_TRANSPARENT_TRIS) {
@@ -781,7 +795,7 @@ static void draw_triangle_indexed(
         batch_idx = gl_batch_count++;
         gl_batches[batch_idx].mat = mat;
         gl_batches[batch_idx].mode = mode;
-        gl_batches[batch_idx].vertex_offset = gl_pool_used_floats / 10;
+        gl_batches[batch_idx].vertex_offset = gl_pool_used_floats / VERTEX_STRIDE_FLOATS;
         gl_batches[batch_idx].index_offset = gl_index_pool_used;
         gl_batches[batch_idx].vertex_count = 0;
         gl_batches[batch_idx].index_count = 0;
@@ -790,14 +804,14 @@ static void draw_triangle_indexed(
 
     batch_t *b = &gl_batches[batch_idx];
 
-    if (gl_pool_used_floats + 30 > gl_pool_capacity_floats ||
+    if (gl_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > gl_pool_capacity_floats ||
         gl_index_pool_used + 3 > gl_index_pool_capacity) {
-        size_t new_cap = gl_pool_capacity_floats ? gl_pool_capacity_floats * 2 : 1024 * 10;
+        size_t new_cap = gl_pool_capacity_floats ? gl_pool_capacity_floats * 2 : 1024 * VERTEX_STRIDE_FLOATS;
         float *new_pool = (float*)realloc(gl_vertex_pool, new_cap * sizeof(float));
         if (!new_pool) { render_finish(); return; }
         gl_vertex_pool = new_pool;
         gl_pool_capacity_floats = new_cap;
-        size_t new_idx_cap = gl_index_pool_capacity ? gl_index_pool_capacity * 2 : 1024 * 10;
+        size_t new_idx_cap = gl_index_pool_capacity ? gl_index_pool_capacity * 2 : 1024 * 3;
         GLushort *new_idx = (GLushort*)realloc(gl_index_pool, new_idx_cap * sizeof(GLushort));
         if (!new_idx) { render_finish(); return; }
         gl_index_pool = new_idx;
@@ -805,22 +819,24 @@ static void draw_triangle_indexed(
     }
 
     float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-    #define PACK_V(v, n, mi) \
+    #define PACK_V(v, n, l, fn, cen, mi) \
         *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
         *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
-        *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
-        *(ptr++) = (float)(mi);
-    PACK_V(local_v0, local_n0, model_index);
-    PACK_V(local_v1, local_n1, model_index);
-    PACK_V(local_v2, local_n2, model_index);
+        *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
+        *(ptr++) = (float)(mi); \
+        *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
+        *(ptr++) = (cen).position.x; *(ptr++) = (cen).position.y; *(ptr++) = (cen).position.z;
+    PACK_V(local_v0, local_n0, local_v0, faceNormal, centroid, model_index);
+    PACK_V(local_v1, local_n1, local_v1, faceNormal, centroid, model_index);
+    PACK_V(local_v2, local_n2, local_v2, faceNormal, centroid, model_index);
     #undef PACK_V
 
-    GLushort base = (GLushort)(gl_pool_used_floats / 10);
+    GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
     gl_index_pool[gl_index_pool_used++] = base;
     gl_index_pool[gl_index_pool_used++] = base + 1;
     gl_index_pool[gl_index_pool_used++] = base + 2;
 
-    gl_pool_used_floats += 30;
+    gl_pool_used_floats += 3 * VERTEX_STRIDE_FLOATS;
     b->vertex_count += 3;
     b->index_count += 3;
 }
@@ -879,9 +895,11 @@ static void draw_triangle_internal_legacy(
     const struct material_definition *mat,
     float entity_depth)
 {
-    /* Original CPU‑transform code – not used in the new render_draw_entities path.
-       Kept for draw_triangle_shaded and render_draw_entity (legacy). */
-    /* (The old implementation would be copied here.) */
+    (void)v0; (void)v1; (void)v2;
+    (void)n0; (void)n1; (void)n2;
+    (void)l0; (void)l1; (void)l2;
+    (void)mat; (void)entity_depth;
+    /* Not used in the new GPU path */
 }
 
 /* ---- Public API ---- */
@@ -931,14 +949,19 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBufferData(GL_ELEMENT_ARRAY_BUFFER, 1, NULL, GL_STREAM_DRAW);
     gl_ibo_capacity_bytes = 0;
 
-    C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 10 * sizeof(float), (void*)0);
+    /* Vertex attributes: stride = VERTEX_STRIDE_BYTES */
+    C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)0);
     C89GL_glEnableVertexAttribArray(0);
-    C89GL_glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 10 * sizeof(float), (void*)(3 * sizeof(float)));
+    C89GL_glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(3 * sizeof(float)));
     C89GL_glEnableVertexAttribArray(1);
-    C89GL_glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 10 * sizeof(float), (void*)(6 * sizeof(float)));
+    C89GL_glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(6 * sizeof(float)));
     C89GL_glEnableVertexAttribArray(2);
-    C89GL_glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 10 * sizeof(float), (void*)(9 * sizeof(float)));
+    C89GL_glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(9 * sizeof(float)));
     C89GL_glEnableVertexAttribArray(3);
+    C89GL_glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(10 * sizeof(float)));
+    C89GL_glEnableVertexAttribArray(4);
+    C89GL_glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(13 * sizeof(float)));
+    C89GL_glEnableVertexAttribArray(5);
 
     C89GL_glBindVertexArray(0);
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1059,8 +1082,10 @@ void render_draw_entities(struct entity_definition **entities, int count) {
 
 /* ---- Legacy render_draw_entity (CPU transforms) ---- */
 void render_draw_entity(const struct entity_definition *ent) {
-    /* This is the old CPU‑transform path – kept for compatibility.
-       For completeness, you should copy the original implementation. */
+    /* Use the new GPU path by building a temporary entities array */
+    if (!ent) return;
+    struct entity_definition *ents[1] = { (struct entity_definition*)ent };
+    render_draw_entities(ents, 1);
 }
 
 /* ---- Legacy draw_triangle_shaded (CPU transforms) ---- */
@@ -1070,7 +1095,11 @@ void draw_triangle_shaded(
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat)
 {
-    /* Legacy – kept for backward compatibility. */
+    /* Not used in the new GPU path – kept for compatibility */
+    (void)v0; (void)v1; (void)v2;
+    (void)n0; (void)n1; (void)n2;
+    (void)l0; (void)l1; (void)l2;
+    (void)mat;
 }
 
 /* ---- Other API functions (unchanged) ---- */
@@ -1101,11 +1130,7 @@ int render_resize(i32 new_w, i32 new_h) {
     if (gl_win_width == new_w && gl_win_height == new_h) return 0;
     gl_win_width = new_w;
     gl_win_height = new_h;
-
-    /* Do NOT change gl_render_width / gl_render_height.
-       The internal resolution stays fixed – glBlitFramebuffer will stretch
-       the internal FBO to the new window size. */
-
+    /* Do NOT change gl_render_width / gl_render_height. */
     return 0;
 }
 
@@ -1127,13 +1152,10 @@ i32 render_get_render_height(void) { return gl_render_height; }
 static int batch_compare_mode(const void* a, const void* b) {
     const batch_t* ba = (const batch_t*)a;
     const batch_t* bb = (const batch_t*)b;
-    /* Opaque (0) before transparent (1) to ensure correct blending */
     if (ba->is_transparent != bb->is_transparent)
         return ba->is_transparent - bb->is_transparent;
-    /* Then sort by shader variant (mode) to reduce program switches */
     if (ba->mode < bb->mode) return -1;
     if (ba->mode > bb->mode) return 1;
-    /* Finally by material pointer (grouping) */
     if (ba->mat < bb->mat) return -1;
     if (ba->mat > bb->mat) return 1;
     return 0;
@@ -1189,15 +1211,12 @@ void render_finish(void) {
 
             /* ---- Depth & blend state ---- */
             if (b->is_transparent) {
-                /* Transparent: depth test remains on, but do NOT write depth */
                 C89GL_glDepthMask(GL_FALSE);
                 C89GL_glEnable(GL_BLEND);
             } else {
-                /* Opaque: write depth, blend off */
                 C89GL_glDepthMask(GL_TRUE);
                 C89GL_glDisable(GL_BLEND);
             }
-            /* Depth test is always enabled (set once at init) */
 
             update_material_ubo(b->mat);
             set_uniforms_for_variant(variant);
