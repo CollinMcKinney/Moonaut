@@ -56,7 +56,7 @@ struct PS_INPUT {
     float3 localPos : TEXCOORD2;
     float3 vertexColor : TEXCOORD3;
     nointerpolation float3 faceNormal : TEXCOORD4;
-    nointerpolation float3 centroidPos : TEXCOORD5;   /* renamed */
+    nointerpolation float3 worldCentroid : TEXCOORD5;
 };
 
 float saturate(float x) { return clamp(x, 0.0f, 1.0f); }
@@ -224,18 +224,15 @@ float4 main(PS_INPUT input) : SV_TARGET {
     float3 color;
 
 #ifdef MODE_WIREFRAME
-    /* Use the pre‑computed face normal and centroid for wireframe shading */
-    color = shade_surface(normalize(input.faceNormal), input.centroidPos, input.localPos);
-#elif defined(MODE_FLAT)
-    float3 dx = ddx(input.worldPos);
-    float3 dy = ddy(input.worldPos);
-    float3 N = normalize(cross(dx, dy));
-    float3 V = normalize(uCamEye.xyz - input.worldPos);
-    if (dot(N, V) < 0.0f) N = -N;
-    color = shade_surface(N, input.worldPos, input.localPos);
-#elif defined(MODE_GOURAUD)
+    /* Wireframe uses the face normal and world centroid (computed on CPU) */
+    color = shade_surface(normalize(input.faceNormal), input.worldCentroid, input.localPos);
+#elif defined(MODE_GOURAUD) || defined(MODE_FLAT)
     color = input.vertexColor;
-#else
+#elif defined(MODE_QUADRATIC)
+    color = shade_surface(normalize(input.normal), input.worldPos, input.localPos);
+#elif defined(MODE_CUBIC)
+    color = shade_surface(normalize(input.normal), input.worldPos, input.localPos);
+#else /* MODE_PHONG or default */
     color = shade_surface(normalize(input.normal), input.worldPos, input.localPos);
 #endif
 

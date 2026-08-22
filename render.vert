@@ -5,7 +5,8 @@ layout(location = 1) in vec3 aNormal;       // local normal
 layout(location = 2) in vec3 aLocalPos;     // local position (for effects)
 layout(location = 3) in float aModelIndex;  // index into ModelMatrices UBO
 layout(location = 4) in vec3 aFaceNormal;   // per‑triangle face normal (world space)
-layout(location = 5) in vec3 aCentroid;     // per‑triangle centroid (world space)
+layout(location = 5) in vec3 aWorldCentroid; // per‑triangle world centroid
+layout(location = 6) in vec3 aLocalCentroid; // per‑triangle local centroid
 
 /* ---- Standard uniforms (non‑UBO) ---- */
 uniform mat4 uViewProj;
@@ -70,7 +71,7 @@ layout(std140, row_major) uniform ModelMatrices {
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec3 vLocalPos;
-out vec3 vVertexColor;   /* for Gouraud shading */
+out vec3 vVertexColor;   /* for Gouraud and Flat shading */
 flat out vec3 vFaceNormal;
 flat out vec3 vCentroid;
 
@@ -308,12 +309,14 @@ void main() {
     vNormal   = normalize(mat3(model) * aNormal);
     vLocalPos = aLocalPos;
     vFaceNormal = normalize(aFaceNormal);
-    vCentroid = aCentroid;
+    vCentroid = aWorldCentroid;
 
     gl_Position = uViewProj * worldPos;
 
 #ifdef MODE_GOURAUD
     vVertexColor = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
+#elif defined(MODE_FLAT)
+    vVertexColor = shade_surface(normalize(vFaceNormal), vCentroid, aLocalCentroid);
 #else
     vVertexColor = vec3(0.0);
 #endif

@@ -294,20 +294,13 @@ void main() {
 #ifdef MODE_WIREFRAME
     /* Use the pre‑computed face normal and centroid for wireframe shading */
     color = shade_surface(normalize(vFaceNormal), vCentroid, vLocalPos);
-#elif defined(MODE_FLAT)
-    vec3 dx = dFdx(vWorldPos);
-    vec3 dy = dFdy(vWorldPos);
-    vec3 N = normalize(cross(dx, dy));
-    vec3 V = normalize(uCamEye - vWorldPos);
-    if (dot(N, V) < 0.0) N = -N;
-    color = shade_surface(N, vWorldPos, vLocalPos);
-#elif defined(MODE_GOURAUD)
+#elif defined(MODE_GOURAUD) || defined(MODE_FLAT)
     color = vVertexColor;
 #elif defined(MODE_QUADRATIC)
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
 #elif defined(MODE_CUBIC)
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
-#else
+#else /* MODE_PHONG or default */
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
 #endif
 

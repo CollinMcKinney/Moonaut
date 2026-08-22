@@ -234,7 +234,8 @@ static GLint gl_default_fbo = 0;
 #define MAX_TRANSPARENT_TRIS 8192
 #define MAX_VERTICES_PER_FRAME (1024 * 1024)
 #define MAX_INDICES_PER_FRAME  (MAX_VERTICES_PER_FRAME * 3)
-#define VERTEX_STRIDE_FLOATS 16   /* pos(3) + normal(3) + localPos(3) + modelIndex(1) + faceNormal(3) + centroid(3) */
+/* Vertex layout: pos(3) + normal(3) + localPos(3) + modelIndex(1) + faceNormal(3) + worldCentroid(3) + localCentroid(3) = 19 */
+#define VERTEX_STRIDE_FLOATS 19
 #define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
 
 /* Transparent triangle storage */
@@ -700,19 +701,22 @@ static void flush_transparent_batches(void) {
                     gl_index_pool_capacity = new_idx_cap;
                 }
                 float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-                /* For transparent, we still need faceNormal and centroid – compute them on the fly */
+                /* For transparent, compute face normal, world centroid, local centroid from stored vertices */
                 vec3 faceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
-                vec3 centroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
-                #define PACK_V(v, n, l, fn, cen, mi) \
+                vec3 worldCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
+                vec3 localCentroid = worldCentroid;  /* For transparent we don't have separate local, use worldCentroid as fallback, but better: we can store local? We don't have it. We'll just use worldCentroid. */
+                /* Actually we don't have local position for transparent storage, use worldCentroid as local (not ideal). But transparent are rare and usually alpha materials. We can just use worldCentroid as local. */
+                #define PACK_V(v, n, l, fn, wc, lc, mi) \
                     *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
                     *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
                     *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
                     *(ptr++) = (float)(mi); \
                     *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
-                    *(ptr++) = (cen).position.x; *(ptr++) = (cen).position.y; *(ptr++) = (cen).position.z;
-                PACK_V(t->v0, t->n0, t->v0, faceNormal, centroid, t->model_index);
-                PACK_V(t->v1, t->n1, t->v1, faceNormal, centroid, t->model_index);
-                PACK_V(t->v2, t->n2, t->v2, faceNormal, centroid, t->model_index);
+                    *(ptr++) = (wc).position.x; *(ptr++) = (wc).position.y; *(ptr++) = (wc).position.z; \
+                    *(ptr++) = (lc).position.x; *(ptr++) = (lc).position.y; *(ptr++) = (lc).position.z;
+                PACK_V(t->v0, t->n0, t->v0, faceNormal, worldCentroid, localCentroid, t->model_index);
+                PACK_V(t->v1, t->n1, t->v1, faceNormal, worldCentroid, localCentroid, t->model_index);
+                PACK_V(t->v2, t->n2, t->v2, faceNormal, worldCentroid, localCentroid, t->model_index);
                 #undef PACK_V
                 GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
                 gl_index_pool[gl_index_pool_used++] = base;
@@ -753,11 +757,13 @@ static void draw_triangle_indexed(
     /* Frustum culling only – backface culling is done on GPU via GL_CULL_FACE */
     if (triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
 
-    /* Compute face normal and centroid only if wireframe mode is active */
-    vec3 faceNormal = {0,0,0}, centroid = {0,0,0};
-    if ((mat->render_method & 0x7) == MODE_WIREFRAME) {
+    /* Compute face normal, world centroid, local centroid for FLAT and WIREFRAME modes */
+    vec3 faceNormal = {0,0,0}, worldCentroid = {0,0,0}, localCentroid = {0,0,0};
+    u32 mode = mat->render_method & 0x7;
+    if (mode == MODE_FLAT || mode == MODE_WIREFRAME) {
         faceNormal = vec3_normalize(vec3_cross(vec3_sub(world_v1, world_v0), vec3_sub(world_v2, world_v0)));
-        centroid = vec3_div_scalar(vec3_add(vec3_add(world_v0, world_v1), world_v2), 3.0f);
+        worldCentroid = vec3_div_scalar(vec3_add(vec3_add(world_v0, world_v1), world_v2), 3.0f);
+        localCentroid = vec3_div_scalar(vec3_add(vec3_add(local_v0, local_v1), local_v2), 3.0f);
     }
 
     if (mat->render_method & EFFECT_ALPHA) {
@@ -780,7 +786,6 @@ static void draw_triangle_indexed(
     }
 
     int batch_idx = -1;
-    u32 mode = mat->render_method & 0x7;
     for (int i = 0; i < gl_batch_count; i++) {
         if (gl_batches[i].mat == mat && gl_batches[i].mode == mode) {
             batch_idx = i;
@@ -819,16 +824,17 @@ static void draw_triangle_indexed(
     }
 
     float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-    #define PACK_V(v, n, l, fn, cen, mi) \
+    #define PACK_V(v, n, l, fn, wc, lc, mi) \
         *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
         *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
         *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
         *(ptr++) = (float)(mi); \
         *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
-        *(ptr++) = (cen).position.x; *(ptr++) = (cen).position.y; *(ptr++) = (cen).position.z;
-    PACK_V(local_v0, local_n0, local_v0, faceNormal, centroid, model_index);
-    PACK_V(local_v1, local_n1, local_v1, faceNormal, centroid, model_index);
-    PACK_V(local_v2, local_n2, local_v2, faceNormal, centroid, model_index);
+        *(ptr++) = (wc).position.x; *(ptr++) = (wc).position.y; *(ptr++) = (wc).position.z; \
+        *(ptr++) = (lc).position.x; *(ptr++) = (lc).position.y; *(ptr++) = (lc).position.z;
+    PACK_V(local_v0, local_n0, local_v0, faceNormal, worldCentroid, localCentroid, model_index);
+    PACK_V(local_v1, local_n1, local_v1, faceNormal, worldCentroid, localCentroid, model_index);
+    PACK_V(local_v2, local_n2, local_v2, faceNormal, worldCentroid, localCentroid, model_index);
     #undef PACK_V
 
     GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
@@ -962,6 +968,8 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glEnableVertexAttribArray(4);
     C89GL_glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(13 * sizeof(float)));
     C89GL_glEnableVertexAttribArray(5);
+    C89GL_glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(16 * sizeof(float)));
+    C89GL_glEnableVertexAttribArray(6);
 
     C89GL_glBindVertexArray(0);
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
