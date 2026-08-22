@@ -140,7 +140,10 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 
     vec3 color = (uAmbientCol + uLightCol * diffuse_term) * uMatAmbientLightFactor;
+
+#ifndef EFFECT_GOOCH
     color = color * uMatColor;
+#endif
 
 #ifdef EFFECT_GOOCH
     {

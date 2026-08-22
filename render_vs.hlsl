@@ -139,11 +139,15 @@ float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
 #endif
 
     float3 color = (uAmbientCol.xyz + uLightCol.xyz * diffuse_term) * uMatAmbientLightFactor;
+
+#ifndef EFFECT_GOOCH
     color = color * uMatColor;
+#endif
 
 #ifdef EFFECT_GOOCH
     { float t = (ndotl+1.0f)*0.5f; color *= lerp(uMatGoochCool, uMatGoochWarm, t); }
 #endif
+
 #ifdef EFFECT_BACK_GLOW
     { float ndotl_neg = dot(N, -L); color += uMatBackGlowColor * max(0.0f, ndotl_neg); }
 #endif
