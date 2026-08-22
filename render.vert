@@ -1,12 +1,11 @@
 #version 330 core
 
-layout(location = 0) in vec3 aPos;          // local position
-layout(location = 1) in vec3 aNormal;       // local normal
-layout(location = 2) in vec3 aLocalPos;     // local position (for effects)
-layout(location = 3) in float aModelIndex;  // index into ModelMatrices UBO
-layout(location = 4) in vec3 aFaceNormal;   // per‑triangle face normal (world space)
-layout(location = 5) in vec3 aWorldCentroid; // per‑triangle world centroid
-layout(location = 6) in vec3 aLocalCentroid; // per‑triangle local centroid
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec3 aLocalPos;
+layout(location = 3) in float aModelIndex;
+layout(location = 4) in vec3 aLocalFaceNormal;
+layout(location = 5) in vec3 aLocalCentroid;
 
 /* ---- Standard uniforms (non‑UBO) ---- */
 uniform mat4 uViewProj;
@@ -71,9 +70,11 @@ layout(std140, row_major) uniform ModelMatrices {
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec3 vLocalPos;
-out vec3 vVertexColor;   /* for Gouraud and Flat shading */
-flat out vec3 vFaceNormal;
-flat out vec3 vCentroid;
+out vec3 vVertexColor;          /* used for Gouraud only */
+flat out vec3 vLocalFaceNormal;
+flat out vec3 vLocalCentroid;
+flat out vec3 vWorldFaceNormal;
+flat out vec3 vWorldCentroid;
 
 /* ---- Utility functions ---- */
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
@@ -301,22 +302,24 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 }
 
 void main() {
-    /* Select the model matrix using the per‑vertex index */
     mat4 model = uModels[int(aModelIndex)];
     vec4 worldPos = model * vec4(aPos, 1.0);
 
     vWorldPos = worldPos.xyz;
     vNormal   = normalize(mat3(model) * aNormal);
     vLocalPos = aLocalPos;
-    vFaceNormal = normalize(aFaceNormal);
-    vCentroid = aWorldCentroid;
+
+    vLocalFaceNormal = normalize(aLocalFaceNormal);
+    vLocalCentroid   = aLocalCentroid;
+
+    /* Compute world-space face normal and centroid from local data */
+    vWorldFaceNormal = normalize(mat3(model) * vLocalFaceNormal);
+    vWorldCentroid   = (model * vec4(vLocalCentroid, 1.0)).xyz;
 
     gl_Position = uViewProj * worldPos;
 
 #ifdef MODE_GOURAUD
     vVertexColor = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
-#elif defined(MODE_FLAT)
-    vVertexColor = shade_surface(normalize(vFaceNormal), vCentroid, aLocalCentroid);
 #else
     vVertexColor = vec3(0.0);
 #endif

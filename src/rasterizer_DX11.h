@@ -97,8 +97,8 @@ static INLINE u8 color_to_u8(real x);
 #define MAX_TRANSPARENT_TRIS     8192
 #define MAX_VERTICES_PER_FRAME   (1024 * 1024)
 #define MAX_INDICES_PER_FRAME    (MAX_VERTICES_PER_FRAME * 3)
-/* Vertex layout: pos(3) + normal(3) + localPos(3) + modelIndex(1) + faceNormal(3) + worldCentroid(3) + localCentroid(3) = 19 */
-#define VERTEX_STRIDE_FLOATS     19
+/* Vertex layout: pos(3) + normal(3) + localPos(3) + modelIndex(1) + localFaceNormal(3) + localCentroid(3) = 16 */
+#define VERTEX_STRIDE_FLOATS     16
 #define VERTEX_STRIDE_BYTES      (VERTEX_STRIDE_FLOATS * sizeof(float))
 
 /* ---------------------------------------------------------------------------*/
@@ -995,21 +995,18 @@ static void dx_flush_transparent_batches(void) {
                     dx_index_pool_capacity = new_idx_cap;
                 }
                 float *ptr = &dx_vertex_pool[dx_pool_used_floats];
-                /* Compute face normal, world centroid, local centroid for transparent */
-                vec3 faceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
-                vec3 worldCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
-                vec3 localCentroid = worldCentroid; /* Use worldCentroid as local fallback (we don't store local for transparent) */
-                #define PACK_V(v, n, l, fn, wc, lc, mi) \
+                vec3 localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
+                vec3 localCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
+                #define PACK_V(v, n, l, lfn, lc, mi) \
                     *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
                     *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
                     *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
                     *(ptr++) = (float)(mi); \
-                    *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
-                    *(ptr++) = (wc).position.x; *(ptr++) = (wc).position.y; *(ptr++) = (wc).position.z; \
+                    *(ptr++) = (lfn).position.x; *(ptr++) = (lfn).position.y; *(ptr++) = (lfn).position.z; \
                     *(ptr++) = (lc).position.x; *(ptr++) = (lc).position.y; *(ptr++) = (lc).position.z;
-                PACK_V(t->v0, t->n0, t->v0, faceNormal, worldCentroid, localCentroid, t->model_index);
-                PACK_V(t->v1, t->n1, t->v1, faceNormal, worldCentroid, localCentroid, t->model_index);
-                PACK_V(t->v2, t->n2, t->v2, faceNormal, worldCentroid, localCentroid, t->model_index);
+                PACK_V(t->v0, t->n0, t->v0, localFaceNormal, localCentroid, t->model_index);
+                PACK_V(t->v1, t->n1, t->v1, localFaceNormal, localCentroid, t->model_index);
+                PACK_V(t->v2, t->n2, t->v2, localFaceNormal, localCentroid, t->model_index);
                 #undef PACK_V
                 u16 base = (u16)(dx_pool_used_floats / VERTEX_STRIDE_FLOATS);
                 dx_index_pool[dx_index_pool_used++] = base;
@@ -1043,12 +1040,11 @@ static void dx_draw_triangle_indexed(
 
     if (dx_triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
 
-    /* Compute face normal, world centroid, local centroid for FLAT and WIREFRAME */
-    vec3 faceNormal = {0,0,0}, worldCentroid = {0,0,0}, localCentroid = {0,0,0};
+    /* Compute local face normal and centroid for FLAT and WIREFRAME */
+    vec3 localFaceNormal = {0,0,0}, localCentroid = {0,0,0};
     u32 mode = mat->render_method & 0x7;
     if (mode == MODE_FLAT || mode == MODE_WIREFRAME) {
-        faceNormal = vec3_normalize(vec3_cross(vec3_sub(world_v1, world_v0), vec3_sub(world_v2, world_v0)));
-        worldCentroid = vec3_div_scalar(vec3_add(vec3_add(world_v0, world_v1), world_v2), 3.0f);
+        localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(local_v1, local_v0), vec3_sub(local_v2, local_v0)));
         localCentroid = vec3_div_scalar(vec3_add(vec3_add(local_v0, local_v1), local_v2), 3.0f);
     }
 
@@ -1098,17 +1094,16 @@ static void dx_draw_triangle_indexed(
     }
 
     float *ptr = &dx_vertex_pool[dx_pool_used_floats];
-    #define PACK_V(v, n, l, fn, wc, lc, mi) \
+    #define PACK_V(v, n, l, lfn, lc, mi) \
         *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
         *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
         *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
         *(ptr++) = (float)(mi); \
-        *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
-        *(ptr++) = (wc).position.x; *(ptr++) = (wc).position.y; *(ptr++) = (wc).position.z; \
+        *(ptr++) = (lfn).position.x; *(ptr++) = (lfn).position.y; *(ptr++) = (lfn).position.z; \
         *(ptr++) = (lc).position.x; *(ptr++) = (lc).position.y; *(ptr++) = (lc).position.z;
-    PACK_V(local_v0, local_n0, local_v0, faceNormal, worldCentroid, localCentroid, model_index);
-    PACK_V(local_v1, local_n1, local_v1, faceNormal, worldCentroid, localCentroid, model_index);
-    PACK_V(local_v2, local_n2, local_v2, faceNormal, worldCentroid, localCentroid, model_index);
+    PACK_V(local_v0, local_n0, local_v0, localFaceNormal, localCentroid, model_index);
+    PACK_V(local_v1, local_n1, local_v1, localFaceNormal, localCentroid, model_index);
+    PACK_V(local_v2, local_n2, local_v2, localFaceNormal, localCentroid, model_index);
     #undef PACK_V
 
     u16 base = (u16)(dx_pool_used_floats / VERTEX_STRIDE_FLOATS);
@@ -1217,7 +1212,7 @@ int render_init(i32 window_width, i32 window_height) {
         return 0;
     }
 
-    D3D11_INPUT_ELEMENT_DESC layout_desc[7];
+    D3D11_INPUT_ELEMENT_DESC layout_desc[6];
     int layout_index = 0;
     /* POSITION */
     layout_desc[layout_index].SemanticName         = "POSITION";
@@ -1255,7 +1250,7 @@ int render_init(i32 window_width, i32 window_height) {
     layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
     layout_desc[layout_index].InstanceDataStepRate = 0;
     layout_index++;
-    /* TEXCOORD2 (face normal) */
+    /* TEXCOORD2 (local face normal) */
     layout_desc[layout_index].SemanticName         = "TEXCOORD";
     layout_desc[layout_index].SemanticIndex        = 2;
     layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
@@ -1264,21 +1259,12 @@ int render_init(i32 window_width, i32 window_height) {
     layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
     layout_desc[layout_index].InstanceDataStepRate = 0;
     layout_index++;
-    /* TEXCOORD3 (world centroid) */
+    /* TEXCOORD3 (local centroid) */
     layout_desc[layout_index].SemanticName         = "TEXCOORD";
     layout_desc[layout_index].SemanticIndex        = 3;
     layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
     layout_desc[layout_index].InputSlot            = 0;
     layout_desc[layout_index].AlignedByteOffset    = 52;
-    layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
-    layout_desc[layout_index].InstanceDataStepRate = 0;
-    layout_index++;
-    /* TEXCOORD4 (local centroid) */
-    layout_desc[layout_index].SemanticName         = "TEXCOORD";
-    layout_desc[layout_index].SemanticIndex        = 4;
-    layout_desc[layout_index].Format               = DXGI_FORMAT_R32G32B32_FLOAT;
-    layout_desc[layout_index].InputSlot            = 0;
-    layout_desc[layout_index].AlignedByteOffset    = 64;
     layout_desc[layout_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
     layout_desc[layout_index].InstanceDataStepRate = 0;
     layout_index++;

@@ -4,22 +4,21 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec3 vLocalPos;
 in vec3 vVertexColor;
-flat in vec3 vFaceNormal;
-flat in vec3 vCentroid;
+flat in vec3 vLocalFaceNormal;
+flat in vec3 vLocalCentroid;
+flat in vec3 vWorldFaceNormal;
+flat in vec3 vWorldCentroid;
 
-/* Lighting uniforms (still individual) */
 uniform vec3 uLightDir;
 uniform vec3 uLightCol;
 uniform vec3 uAmbientCol;
 uniform vec3 uCamEye;
 uniform float uTime;
-
-/* Fog (still individual) */
 uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
 
-/* ---- Material uniform buffer object (same layout as vertex) ---- */
+/* ---- Material uniform buffer (std140) ---- */
 layout(std140) uniform MaterialUniforms {
     vec3  uMatColor;
     vec3  uMatTint;
@@ -62,6 +61,7 @@ layout(std140) uniform MaterialUniforms {
     float uMatStrobePhase;
 };
 
+/* ---- Utility functions (identical to vertex) ---- */
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
 uint hash(uint x) {
@@ -292,15 +292,18 @@ void main() {
     vec3 color;
 
 #ifdef MODE_WIREFRAME
-    /* Use the pre‑computed face normal and centroid for wireframe shading */
-    color = shade_surface(normalize(vFaceNormal), vCentroid, vLocalPos);
-#elif defined(MODE_GOURAUD) || defined(MODE_FLAT)
+    /* Wireframe uses world space (matches software) */
+    color = shade_surface(normalize(vWorldFaceNormal), vWorldCentroid, vLocalCentroid);
+#elif defined(MODE_GOURAUD)
     color = vVertexColor;
+#elif defined(MODE_FLAT)
+    /* Flat uses world space for normal and centroid (matches software) */
+    color = shade_surface(normalize(vWorldFaceNormal), vWorldCentroid, vLocalCentroid);
 #elif defined(MODE_QUADRATIC)
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
 #elif defined(MODE_CUBIC)
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
-#else /* MODE_PHONG or default */
+#else /* MODE_PHONG */
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);
 #endif
 

@@ -234,8 +234,8 @@ static GLint gl_default_fbo = 0;
 #define MAX_TRANSPARENT_TRIS 8192
 #define MAX_VERTICES_PER_FRAME (1024 * 1024)
 #define MAX_INDICES_PER_FRAME  (MAX_VERTICES_PER_FRAME * 3)
-/* Vertex layout: pos(3) + normal(3) + localPos(3) + modelIndex(1) + faceNormal(3) + worldCentroid(3) + localCentroid(3) = 19 */
-#define VERTEX_STRIDE_FLOATS 19
+/* Vertex layout: pos(3) + normal(3) + localPos(3) + modelIndex(1) + localFaceNormal(3) + localCentroid(3) = 16 */
+#define VERTEX_STRIDE_FLOATS 16
 #define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
 
 /* Transparent triangle storage */
@@ -701,22 +701,19 @@ static void flush_transparent_batches(void) {
                     gl_index_pool_capacity = new_idx_cap;
                 }
                 float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-                /* For transparent, compute face normal, world centroid, local centroid from stored vertices */
-                vec3 faceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
-                vec3 worldCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
-                vec3 localCentroid = worldCentroid;  /* For transparent we don't have separate local, use worldCentroid as fallback, but better: we can store local? We don't have it. We'll just use worldCentroid. */
-                /* Actually we don't have local position for transparent storage, use worldCentroid as local (not ideal). But transparent are rare and usually alpha materials. We can just use worldCentroid as local. */
-                #define PACK_V(v, n, l, fn, wc, lc, mi) \
+                /* Compute local face normal and local centroid from stored vertices */
+                vec3 localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
+                vec3 localCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
+                #define PACK_V(v, n, l, lfn, lc, mi) \
                     *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
                     *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
                     *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
                     *(ptr++) = (float)(mi); \
-                    *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
-                    *(ptr++) = (wc).position.x; *(ptr++) = (wc).position.y; *(ptr++) = (wc).position.z; \
+                    *(ptr++) = (lfn).position.x; *(ptr++) = (lfn).position.y; *(ptr++) = (lfn).position.z; \
                     *(ptr++) = (lc).position.x; *(ptr++) = (lc).position.y; *(ptr++) = (lc).position.z;
-                PACK_V(t->v0, t->n0, t->v0, faceNormal, worldCentroid, localCentroid, t->model_index);
-                PACK_V(t->v1, t->n1, t->v1, faceNormal, worldCentroid, localCentroid, t->model_index);
-                PACK_V(t->v2, t->n2, t->v2, faceNormal, worldCentroid, localCentroid, t->model_index);
+                PACK_V(t->v0, t->n0, t->v0, localFaceNormal, localCentroid, t->model_index);
+                PACK_V(t->v1, t->n1, t->v1, localFaceNormal, localCentroid, t->model_index);
+                PACK_V(t->v2, t->n2, t->v2, localFaceNormal, localCentroid, t->model_index);
                 #undef PACK_V
                 GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
                 gl_index_pool[gl_index_pool_used++] = base;
@@ -753,16 +750,15 @@ static void draw_triangle_indexed(
     vec3 world_v0 = mat4_mul_vec3(model, local_v0);
     vec3 world_v1 = mat4_mul_vec3(model, local_v1);
     vec3 world_v2 = mat4_mul_vec3(model, local_v2);
-    
+
     /* Frustum culling only – backface culling is done on GPU via GL_CULL_FACE */
     if (triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
 
-    /* Compute face normal, world centroid, local centroid for FLAT and WIREFRAME modes */
-    vec3 faceNormal = {0,0,0}, worldCentroid = {0,0,0}, localCentroid = {0,0,0};
+    /* Compute local face normal and local centroid for FLAT and WIREFRAME modes */
+    vec3 localFaceNormal = {0,0,0}, localCentroid = {0,0,0};
     u32 mode = mat->render_method & 0x7;
     if (mode == MODE_FLAT || mode == MODE_WIREFRAME) {
-        faceNormal = vec3_normalize(vec3_cross(vec3_sub(world_v1, world_v0), vec3_sub(world_v2, world_v0)));
-        worldCentroid = vec3_div_scalar(vec3_add(vec3_add(world_v0, world_v1), world_v2), 3.0f);
+        localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(local_v1, local_v0), vec3_sub(local_v2, local_v0)));
         localCentroid = vec3_div_scalar(vec3_add(vec3_add(local_v0, local_v1), local_v2), 3.0f);
     }
 
@@ -824,17 +820,16 @@ static void draw_triangle_indexed(
     }
 
     float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-    #define PACK_V(v, n, l, fn, wc, lc, mi) \
+    #define PACK_V(v, n, l, lfn, lc, mi) \
         *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
         *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
         *(ptr++) = (l).position.x; *(ptr++) = (l).position.y; *(ptr++) = (l).position.z; \
         *(ptr++) = (float)(mi); \
-        *(ptr++) = (fn).position.x; *(ptr++) = (fn).position.y; *(ptr++) = (fn).position.z; \
-        *(ptr++) = (wc).position.x; *(ptr++) = (wc).position.y; *(ptr++) = (wc).position.z; \
+        *(ptr++) = (lfn).position.x; *(ptr++) = (lfn).position.y; *(ptr++) = (lfn).position.z; \
         *(ptr++) = (lc).position.x; *(ptr++) = (lc).position.y; *(ptr++) = (lc).position.z;
-    PACK_V(local_v0, local_n0, local_v0, faceNormal, worldCentroid, localCentroid, model_index);
-    PACK_V(local_v1, local_n1, local_v1, faceNormal, worldCentroid, localCentroid, model_index);
-    PACK_V(local_v2, local_n2, local_v2, faceNormal, worldCentroid, localCentroid, model_index);
+    PACK_V(local_v0, local_n0, local_v0, localFaceNormal, localCentroid, model_index);
+    PACK_V(local_v1, local_n1, local_v1, localFaceNormal, localCentroid, model_index);
+    PACK_V(local_v2, local_n2, local_v2, localFaceNormal, localCentroid, model_index);
     #undef PACK_V
 
     GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
@@ -905,7 +900,6 @@ static void draw_triangle_internal_legacy(
     (void)n0; (void)n1; (void)n2;
     (void)l0; (void)l1; (void)l2;
     (void)mat; (void)entity_depth;
-    /* Not used in the new GPU path */
 }
 
 /* ---- Public API ---- */
@@ -968,8 +962,6 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glEnableVertexAttribArray(4);
     C89GL_glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(13 * sizeof(float)));
     C89GL_glEnableVertexAttribArray(5);
-    C89GL_glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(16 * sizeof(float)));
-    C89GL_glEnableVertexAttribArray(6);
 
     C89GL_glBindVertexArray(0);
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1019,7 +1011,7 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glEnable(GL_DEPTH_TEST);
     C89GL_glEnable(GL_BLEND);
     C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    C89GL_glEnable(GL_CULL_FACE);   /* GPU culling enabled globally, toggled per batch */
+    C89GL_glEnable(GL_CULL_FACE);
     C89GL_glFrontFace(GL_CCW);
 
     printf("render_init returning 1 (success)\n");
@@ -1090,7 +1082,6 @@ void render_draw_entities(struct entity_definition **entities, int count) {
 
 /* ---- Legacy render_draw_entity (CPU transforms) ---- */
 void render_draw_entity(const struct entity_definition *ent) {
-    /* Use the new GPU path by building a temporary entities array */
     if (!ent) return;
     struct entity_definition *ents[1] = { (struct entity_definition*)ent };
     render_draw_entities(ents, 1);
@@ -1103,7 +1094,6 @@ void draw_triangle_shaded(
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat)
 {
-    /* Not used in the new GPU path – kept for compatibility */
     (void)v0; (void)v1; (void)v2;
     (void)n0; (void)n1; (void)n2;
     (void)l0; (void)l1; (void)l2;
@@ -1138,7 +1128,6 @@ int render_resize(i32 new_w, i32 new_h) {
     if (gl_win_width == new_w && gl_win_height == new_h) return 0;
     gl_win_width = new_w;
     gl_win_height = new_h;
-    /* Do NOT change gl_render_width / gl_render_height. */
     return 0;
 }
 
@@ -1210,14 +1199,12 @@ void render_finish(void) {
                 current_program = variant->program;
             }
 
-            /* ---- Per‑batch backface culling (GPU) ---- */
             if (b->mat->double_sided) {
                 C89GL_glDisable(GL_CULL_FACE);
             } else {
                 C89GL_glEnable(GL_CULL_FACE);
             }
 
-            /* ---- Depth & blend state ---- */
             if (b->is_transparent) {
                 C89GL_glDepthMask(GL_FALSE);
                 C89GL_glEnable(GL_BLEND);
@@ -1241,7 +1228,6 @@ void render_finish(void) {
         }
         if (current_program) C89GL_glUseProgram(0);
         C89GL_glBindVertexArray(0);
-        /* Restore default states for next frame */
         C89GL_glDepthMask(GL_TRUE);
         C89GL_glDisable(GL_BLEND);
         C89GL_glEnable(GL_DEPTH_TEST);

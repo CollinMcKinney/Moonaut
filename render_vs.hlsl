@@ -58,9 +58,8 @@ struct VS_INPUT {
     float3 normal : NORMAL;
     float3 localPos : TEXCOORD0;
     float modelIndex : TEXCOORD1;
-    float3 faceNormal : TEXCOORD2;
-    float3 worldCentroid : TEXCOORD3;
-    float3 localCentroid : TEXCOORD4;
+    float3 localFaceNormal : TEXCOORD2;
+    float3 localCentroid : TEXCOORD3;
 };
 
 struct VS_OUTPUT {
@@ -68,9 +67,11 @@ struct VS_OUTPUT {
     float3 worldPos : TEXCOORD0;
     float3 normal : TEXCOORD1;
     float3 localPos : TEXCOORD2;
-    float3 vertexColor : TEXCOORD3;
-    nointerpolation float3 faceNormal : TEXCOORD4;
-    nointerpolation float3 worldCentroid : TEXCOORD5;
+    float3 vertexColor : TEXCOORD3;          // for Gouraud only
+    nointerpolation float3 localFaceNormal : TEXCOORD4;
+    nointerpolation float3 localCentroid : TEXCOORD5;
+    nointerpolation float3 worldFaceNormal : TEXCOORD6;
+    nointerpolation float3 worldCentroid : TEXCOORD7;
 };
 
 float saturate(float x) { return clamp(x, 0.0f, 1.0f); }
@@ -236,24 +237,32 @@ float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
 
 VS_OUTPUT main(VS_INPUT input) {
     VS_OUTPUT output;
+
     float4x4 model = uModels[int(input.modelIndex)];
     float4 worldPos = mul(model, float4(input.pos, 1.0f));
 
     output.worldPos = worldPos.xyz;
-    output.normal = mul((float3x3)model, input.normal);
+    output.normal = normalize(mul((float3x3)model, input.normal));
     output.localPos = input.localPos;
-    output.vertexColor = float3(0.0f, 0.0f, 0.0f);
-    output.faceNormal = normalize(input.faceNormal);
-    output.worldCentroid = input.worldCentroid;
 
+    output.localFaceNormal = normalize(input.localFaceNormal);
+    output.localCentroid = input.localCentroid;
+
+    /* Compute world‑space face normal and centroid from local data */
+    float3x3 rotMatrix = (float3x3)model;
+    output.worldFaceNormal = normalize(mul(rotMatrix, output.localFaceNormal));
+    output.worldCentroid = mul(model, float4(output.localCentroid, 1.0f)).xyz;
+
+    // Gouraud shading uses per‑vertex world data
 #ifdef MODE_GOURAUD
     output.vertexColor = shade_surface(normalize(output.normal), output.worldPos, output.localPos);
-#elif defined(MODE_FLAT)
-    output.vertexColor = shade_surface(normalize(output.faceNormal), output.worldCentroid, input.localCentroid);
+#else
+    output.vertexColor = float3(0.0f, 0.0f, 0.0f);
 #endif
 
     float4 clip = mul(uViewProj, worldPos);
-    clip.z = (clip.z + clip.w) * 0.5f;  // Convert depth from OpenGL [-1,1] to DirectX [0,1]
+    // Convert depth from OpenGL [-1,1] to DirectX [0,1]
+    clip.z = (clip.z + clip.w) * 0.5f;
     output.pos = clip;
     return output;
 }
