@@ -186,7 +186,7 @@ float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
 #endif
 #ifdef EFFECT_GLITCH
     {
-        float3 q = floor(worldPos * 4096.0f);
+        float3 q = floor(worldPos * 4096.0f + uTime * 60.0f);
         float offset = (hash_float(q)-0.5f) * uMatGlitchIntensity;
         color.r += offset;
         color.g += offset*0.7f;

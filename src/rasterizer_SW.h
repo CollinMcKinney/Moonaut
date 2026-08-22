@@ -311,6 +311,29 @@ static INLINE void project(vec3 w, i32 *sx, i32 *sy, real *iw) {
     *sy = (i32)((1.0f - (ndcy * 0.5f + 0.5f)) * RENDER_HEIGHT);
 }
 
+/* ---- GPU‑compatible hash functions (matches render.frag / render_ps.hlsl) ---- */
+static INLINE u32 sw_hash_u32(u32 x) {
+    x = (x ^ 61u) ^ (x >> 16u);
+    x = x + (x << 3u);
+    x = x ^ (x >> 4u);
+    x = x * 0x27d4eb2du;
+    x = x ^ (x >> 15u);
+    return x;
+}
+
+static INLINE u32 sw_float_to_u32(real f) {
+    u32 result;
+    memcpy(&result, &f, sizeof(u32));
+    return result;
+}
+
+static INLINE real sw_hash_float(vec3 p) {
+    u32 h = sw_hash_u32(sw_float_to_u32(p.position.x));
+    h = sw_hash_u32(h ^ sw_float_to_u32(p.position.y));
+    h = sw_hash_u32(h ^ sw_float_to_u32(p.position.z));
+    return (real)h / 4294967296.0f;
+}
+
 /* ---------------------------------------------------------------------------*/
 /*  Frustum Culling                                                           */
 /* ---------------------------------------------------------------------------*/
@@ -516,16 +539,26 @@ static INLINE vec3 shade_surface(
     }
 
     real diffuse_term = ndotl;
-    vec3 color = mat->color;
+    vec3 color;
 
+    /* ---- Base colour: ambient + diffuse ---- */
+    color = vec3_add(sw_ambient_col, vec3_mul_scalar(sw_light_col, diffuse_term));
+    color = vec3_mul_scalar(color, mat->ambient_light_factor);
+
+    /* ---- Apply base colour (skip if Gooch is active) ---- */
+    if (!(mat->render_method & EFFECT_GOOCH)) {
+        color = vec3_mul(color, mat->color);
+    }
+
+    /* ---- Diffuse model modifications ---- */
     if (mat->render_method & EFFECT_DIFFUSE_WRAP) {
         real t = ndotl;
-        ndotl = t * t * (3.0f - 2.0f * t);
+        diffuse_term = t * t * (3.0f - 2.0f * t);
     }
 
     if (mat->render_method & EFFECT_CEL_SHADING) {
         real inv = 1.0f / (real)(mat->cel_bands - 1);
-        ndotl = real_min(1.0f, real_floor(ndotl * mat->cel_bands) * inv);
+        diffuse_term = real_min(1.0f, real_floor(diffuse_term * mat->cel_bands) * inv);
     }
 
     if (mat->render_method & EFFECT_MINNAERT) {
@@ -570,21 +603,16 @@ static INLINE vec3 shade_surface(
         diffuse_term = saturate(diffuse_term);
     }
 
-    if (mat->render_method & EFFECT_AMBIENT_LIGHT) {
-        color = vec3_add(sw_ambient_col, vec3_mul_scalar(sw_light_col, diffuse_term));
-        color = vec3_mul_scalar(color, mat->ambient_light_factor);
-    }
-
+    /* ---- Gooch shading (replaces base colour) ---- */
     if (mat->render_method & EFFECT_GOOCH) {
         real t = (ndotl + 1.0f) * 0.5f;
         vec3 gooch = vec3_add(
             vec3_mul_scalar(mat->gooch_cool, 1.0f - t),
             vec3_mul_scalar(mat->gooch_warm, t));
         color = vec3_mul(color, gooch);
-    } else {
-        color = vec3_mul(color, mat->color);
     }
 
+    /* ---- Back glow ---- */
     if (mat->render_method & EFFECT_BACK_GLOW) {
         vec3 ln = vec3_mul_scalar(sw_light_dir, -1.0f);
         real ndotl_neg = vec3_dot(N, ln);
@@ -592,11 +620,13 @@ static INLINE vec3 shade_surface(
             ndotl_neg < 0.0f ? 0.0f : ndotl_neg));
     }
 
+    /* ---- Rim ---- */
     if (mat->render_method & EFFECT_RIM) {
         real rim = real_pow(1.0f - ndotv, mat->rim_exponent);
         color = vec3_add(color, vec3_mul_scalar(mat->rim_color, rim));
     }
 
+    /* ---- Fresnel ---- */
     if (mat->render_method & EFFECT_FRESNEL) {
         real fresnel = real_pow(1.0f - ndotv, mat->fresnel_exponent);
         color = vec3_add(
@@ -604,6 +634,7 @@ static INLINE vec3 shade_surface(
             vec3_mul_scalar(mat->fresnel_color, fresnel));
     }
 
+    /* ---- Emissive ---- */
     if (mat->render_method & EFFECT_EMISSIVE) {
         vec3 emissive = mat->emissive_color;
         if (mat->render_method & EFFECT_EMISSIVE_PULSE) {
@@ -615,12 +646,14 @@ static INLINE vec3 shade_surface(
         color = vec3_add(color, emissive);
     }
 
+    /* ---- Strobe ---- */
     if (mat->render_method & EFFECT_STROBE) {
         real s = real_sin(sw_render_time * mat->strobe_frequency + mat->strobe_phase);
         s = s * 0.5f + 0.5f;
         color = vec3_add(color, vec3_mul_scalar(mat->strobe_color, s));
     }
 
+    /* ---- Specular ---- */
     if (mat->render_method & EFFECT_SPECULAR) {
         vec3 H = vec3_normalize(vec3_add(sw_light_dir, V));
         real nh = vec3_dot(N, H);
@@ -631,6 +664,7 @@ static INLINE vec3 shade_surface(
         color = vec3_add(color, vec3_mul_scalar(mat->specular_color, spec));
     }
 
+    /* ---- Saturation ---- */
     if (mat->render_method & EFFECT_SATURATION) {
         real luma = color.color.r * 0.299f +
                     color.color.g * 0.587f +
@@ -640,6 +674,7 @@ static INLINE vec3 shade_surface(
         color.color.b = luma + (color.color.b - luma) * mat->saturation;
     }
 
+    /* ---- Iridescence ---- */
     if (mat->render_method & EFFECT_IRIDESCENCE) {
         real angle = ndotv * 2.0f * VECTORS_PI;
         real c = real_cos(angle);
@@ -664,45 +699,35 @@ static INLINE vec3 shade_surface(
         color.color.b = b * is + color.color.b * (1.0f - is);
     }
 
-    color = vec3_mul(color, mat->tint);
-
+    /* ---- Glitch (time‑dependent, matching software behaviour) ---- */
     if (mat->render_method & EFFECT_GLITCH) {
-        u32 x = (u32)(sw_render_time * 60.0f);
-        vec3 wp_q = vec3_floor(vec3_mul_scalar(world_pos, 4096.0f));
-        x ^= (u32)wp_q.components[0];
-        x = x * 1664525u + 1013904223u;
-        x ^= (u32)wp_q.components[1];
-        x = x * 1664525u + 1013904223u;
-        x ^= (u32)wp_q.components[2];
-        x = x * 1664525u + 1013904223u;
-        real offset = ((real)x * (1.0f / 4294967296.0f) - 0.5f) *
-                      mat->glitch_intensity;
+        vec3 q = vec3_floor(vec3_add(
+            vec3_mul_scalar(world_pos, 4096.0f),
+            vec3_init_from_1(sw_render_time * 60.0f)
+        ));
+        real offset = (sw_hash_float(q) - 0.5f) * mat->glitch_intensity;
         color.color.r += offset;
         color.color.g += offset * 0.7f;
         color.color.b -= offset;
     }
 
+    /* ---- Roughness (matches GPU, position‑only) ---- */
     if (mat->render_method & EFFECT_ROUGHNESS) {
-        u32 x = 2166136261u;
         vec3 q = vec3_floor(vec3_mul_scalar(local_pos, 256.0f));
-        x ^= (u32)q.components[0];
-        x *= 16777619u;
-        x ^= (u32)q.components[1];
-        x *= 16777619u;
-        x ^= (u32)q.components[2];
-        x *= 16777619u;
-        real offset = ((real)x * (1.0f / 4294967296.0f) - 0.5f) * mat->roughness;
+        real offset = (sw_hash_float(q) - 0.5f) * mat->roughness;
         color.color.r += offset * 0.25f;
         color.color.g += offset * 0.25f;
         color.color.b += offset * 0.25f;
     }
 
+    /* ---- Fringe ---- */
     if (mat->render_method & EFFECT_FRINGE) {
         real fringe = real_pow(1.0f - ndotv, 3.0f) * mat->fringe_intensity;
         color.color.r += fringe;
         color.color.b -= fringe;
     }
 
+    /* ---- Posterize ---- */
     if (mat->render_method & EFFECT_POSTERIZE) {
         real levels = (real)(mat->posterize_levels);
         color.color.r = real_floor(color.color.r * levels + 0.5f) / levels;
@@ -710,6 +735,7 @@ static INLINE vec3 shade_surface(
         color.color.b = real_floor(color.color.b * levels + 0.5f) / levels;
     }
 
+    /* ---- Fog ---- */
     if ((mat->render_method & EFFECT_FOG) && sw_fog_end > sw_fog_start) {
         real dist = vec3_magnitude(vec3_sub(world_pos, sw_cam_eye));
         real t = (dist - sw_fog_start) / (sw_fog_end - sw_fog_start);
@@ -718,6 +744,9 @@ static INLINE vec3 shade_surface(
             vec3_mul_scalar(color, 1.0f - t),
             vec3_mul_scalar(sw_fog_color, t));
     }
+
+    /* ---- Tint (applied unconditionally) ---- */
+    color = vec3_mul(color, mat->tint);
 
     color.color.r = saturate(color.color.r);
     color.color.g = saturate(color.color.g);
