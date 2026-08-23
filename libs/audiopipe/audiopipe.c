@@ -1,6 +1,6 @@
 /*
-  audiopipe.c – Minimal cross‑platform audio output.
-  Windows: WASAPI (low‑latency, float) – with mix‑format fallback
+  audiopipe.c - Minimal cross‑platform audio output.
+  Windows: WASAPI (low‑latency, float) - with mix‑format fallback
   Linux:   ALSA (uses -lasound)
   macOS:   CoreAudio (uses -framework CoreAudio -framework AudioUnit)
 */
@@ -33,7 +33,7 @@ static void *ap_malloc(size_t sz) { return malloc(sz); }
 static void  ap_free(void *p)     { free(p); }
 
 /* ------------------------------------------------------------------ */
-/* Windows – WASAPI (diagnostic + fallback)                           */
+/* Windows - WASAPI (diagnostic + fallback)                           */
 /* ------------------------------------------------------------------ */
 #ifdef AP_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -286,7 +286,7 @@ int ap_init(int sample_rate, int channels, int buffer_frames,
         goto error;
     }
 
-    /* Store context – note the actual sample rate used (from pwfx) */
+    /* Store context - note the actual sample rate used (from pwfx) */
     int actual_sample_rate = pwfx->nSamplesPerSec;
     g_actual_sample_rate = actual_sample_rate;   /* NEW */
     g_audio.sample_rate   = actual_sample_rate;
@@ -404,7 +404,7 @@ int ap_get_actual_sample_rate(void)
 #endif /* AP_WINDOWS */
 
 /* ------------------------------------------------------------------ */
-/* macOS – CoreAudio (unchanged, plus getter)                         */
+/* macOS - CoreAudio (unchanged, plus getter)                         */
 /* ------------------------------------------------------------------ */
 #ifdef AP_MACOS
 #include <AudioUnit/AudioUnit.h>
@@ -586,7 +586,7 @@ int ap_get_actual_sample_rate(void)   /* NEW */
 #endif /* AP_MACOS */
 
 /* ------------------------------------------------------------------ */
-/* Linux – ALSA (unchanged, plus getter)                              */
+/* Linux - ALSA (unchanged, plus getter)                              */
 /* ------------------------------------------------------------------ */
 #ifdef AP_LINUX
 #include <alsa/asoundlib.h>

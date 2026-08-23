@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------------
-   A raw byte block – nothing more than a counted array of u8.
+   A raw byte block - nothing more than a counted array of u8.
    ------------------------------------------------------------------------ */
 TAG_BLOCK_BEGIN(lua_byte_block, 65535, sizeof(u8))
     FIELD_TERMINATOR

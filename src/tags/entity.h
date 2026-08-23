@@ -34,13 +34,13 @@ TAG_REFERENCE(entity_rigid_body_ref,    TAG_rigid_body) /* 'rbdy' */
 TAG_REFERENCE(entity_collision_bsp_ref, TAG_collision_bsp) /* 'rbdy' */
 
 /* ------------------------------------------------------------------------
-   Entity – a logical object in the world
+   Entity - a logical object in the world
    ------------------------------------------------------------------------ */
 typedef struct entity_definition {
     enum32          type;
-    struct tag_reference model;       /* optional – visual representation */
-    struct tag_reference rigid_body;  /* optional – physics properties */
-    struct tag_reference collision_bsp; /* complex collision – may be null */
+    struct tag_reference model;       /* optional - visual representation */
+    struct tag_reference rigid_body;  /* optional - physics properties */
+    struct tag_reference collision_bsp; /* complex collision - may be null */
     vec3            position;
     vec4            orientation;      /* quaternion */
     /* future: script reference, sound, etc. */

@@ -1,5 +1,5 @@
 cbuffer MaterialCB : register(b0) {
-    float4 uMatData[15];
+    float4 uMatData[18];   // now 18 elements
 }
 
 cbuffer GlobalsCB : register(b1) {
@@ -53,6 +53,14 @@ cbuffer ModelCB : register(b2) {
 #define uMatStrobeFrequency uMatData[13].w
 #define uMatStrobePhase uMatData[14].x
 
+// ---- New defines ----
+#define uMatClearcoatColor uMatData[15].xyz
+#define uMatClearcoatExponent uMatData[15].w
+#define uMatClearcoatStrength uMatData[16].x
+#define uMatSheenColor uMatData[16].yzw
+#define uMatSheenExponent uMatData[17].x
+#define uMatSheenStrength uMatData[17].y
+
 struct VS_INPUT {
     float3 pos : POSITION;
     float3 normal : NORMAL;
@@ -67,7 +75,7 @@ struct VS_OUTPUT {
     float3 worldPos : TEXCOORD0;
     float3 normal : TEXCOORD1;
     float3 localPos : TEXCOORD2;
-    float3 vertexColor : TEXCOORD3;          // for Gouraud only
+    float3 vertexColor : TEXCOORD3;
     nointerpolation float3 localFaceNormal : TEXCOORD4;
     nointerpolation float3 localCentroid : TEXCOORD5;
     nointerpolation float3 worldFaceNormal : TEXCOORD6;
@@ -231,6 +239,26 @@ float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
     }
 #endif
 
+    // ---- Clearcoat ----
+#ifdef EFFECT_CLEARCOAT
+    {
+        float3 H = normalize(L + V);
+        float nh = max(dot(N, H), 0.0);
+        float spec = pow(nh, uMatClearcoatExponent);
+        color += uMatClearcoatColor * spec * uMatClearcoatStrength;
+    }
+#endif
+
+    // ---- Sheen ----
+#ifdef EFFECT_SHEEN
+    {
+        float3 H = normalize(L + V);
+        float ndoth = dot(N, H);
+        float sheen = pow(saturate(1.0 - ndoth), uMatSheenExponent);
+        color += uMatSheenColor * sheen * uMatSheenStrength * ndotl;
+    }
+#endif
+
     color *= uMatTint;
     return clamp(color, 0.0f, 1.0f);
 }
@@ -248,12 +276,10 @@ VS_OUTPUT main(VS_INPUT input) {
     output.localFaceNormal = normalize(input.localFaceNormal);
     output.localCentroid = input.localCentroid;
 
-    /* Compute world‑space face normal and centroid from local data */
     float3x3 rotMatrix = (float3x3)model;
     output.worldFaceNormal = normalize(mul(rotMatrix, output.localFaceNormal));
     output.worldCentroid = mul(model, float4(output.localCentroid, 1.0f)).xyz;
 
-    // Gouraud shading uses per‑vertex world data
 #ifdef MODE_GOURAUD
     output.vertexColor = shade_surface(normalize(output.normal), output.worldPos, output.localPos);
 #else
@@ -261,7 +287,6 @@ VS_OUTPUT main(VS_INPUT input) {
 #endif
 
     float4 clip = mul(uViewProj, worldPos);
-    // Convert depth from OpenGL [-1,1] to DirectX [0,1]
     clip.z = (clip.z + clip.w) * 0.5f;
     output.pos = clip;
     return output;

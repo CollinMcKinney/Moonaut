@@ -268,7 +268,7 @@ func handleConnection(conn net.Conn) {
 				continue
 			}
 			if acc == nil {
-				// Do NOT reveal if user exists – use generic error
+				// Do NOT reveal if user exists - use generic error
 				conn.Write([]byte("ERR Invalid credentials\n"))
 				continue
 			}

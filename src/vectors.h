@@ -31,7 +31,7 @@ extern "C" {
     /* C99 or later */
     #define INLINE inline
   #elif defined(__GNUC__)
-    /* GCC, Clang, ICC, etc. – even in pre‑C99 modes */
+    /* GCC, Clang, ICC, etc. - even in pre‑C99 modes */
     #define INLINE __inline__
   #elif defined(_MSC_VER)
     /* Microsoft Visual C */

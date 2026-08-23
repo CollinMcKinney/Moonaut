@@ -55,11 +55,11 @@ static void window_shutdown(void)
     g_window_inited = 0;
 }
 
-/* window_resize is not needed – if you need it, call render_resize from runtime.h. */
+/* window_resize is not needed - if you need it, call render_resize from runtime.h. */
 /* Remove the call to render_resize from window_resize, or delete the function. */
 static void window_resize(int new_w, int new_h)
 {
-    /* render_resize is not available here – remove this line: */
+    /* render_resize is not available here - remove this line: */
     /* render_resize(new_w, new_h); */
     C89FW_apply_resize(g_window);
 }

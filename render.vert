@@ -59,6 +59,16 @@ layout(std140) uniform MaterialUniforms {
     vec3  uMatStrobeColor;
     float uMatStrobeFrequency;
     float uMatStrobePhase;
+
+    /* Clearcoat */
+    vec3  uClearcoatColor;
+    float uClearcoatExponent;
+    float uClearcoatStrength;
+
+    /* Sheen */
+    vec3  uSheenColor;
+    float uSheenExponent;
+    float uSheenStrength;
 };
 
 /* ---- Model matrices UBO (up to 1024 models) ---- */
@@ -70,7 +80,7 @@ layout(std140, row_major) uniform ModelMatrices {
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec3 vLocalPos;
-out vec3 vVertexColor;          /* used for Gouraud only */
+out vec3 vVertexColor;          /* for Gouraud only */
 flat out vec3 vLocalFaceNormal;
 flat out vec3 vLocalCentroid;
 flat out vec3 vWorldFaceNormal;
@@ -222,6 +232,27 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         }
 #endif
         color += uMatSpecularColor * spec;
+    }
+#endif
+
+/* ---- Clearcoat ---- */
+#ifdef EFFECT_CLEARCOAT
+    {
+        vec3 H = normalize(L + V);
+        float nh = max(dot(N, H), 0.0);
+        float spec = pow(nh, uClearcoatExponent);
+        color += uClearcoatColor * spec * uClearcoatStrength;
+    }
+#endif
+
+/* ---- Sheen ---- */
+#ifdef EFFECT_SHEEN
+    {
+        vec3 H = normalize(L + V);
+        float ndoth = dot(N, H);
+        /* Use the existing ndotl (already computed) - do NOT redeclare it */
+        float sheen = pow(saturate(1.0 - ndoth), uSheenExponent);
+        color += uSheenColor * sheen * uSheenStrength * ndotl;
     }
 #endif
 

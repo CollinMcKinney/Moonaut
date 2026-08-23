@@ -1,5 +1,5 @@
 /*
-  wavloader.h – Simple WAV file loader (PCM 8/16/24/32-bit and 32-bit float).
+  wavloader.h - Simple WAV file loader (PCM 8/16/24/32-bit and 32-bit float).
   Declares the load_wav function and its helper.
 */
 

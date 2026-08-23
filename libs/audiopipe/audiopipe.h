@@ -1,14 +1,14 @@
 /*
-  audiopipe.h – Minimal cross‑platform audio output (ANSI C89)
+  audiopipe.h - Minimal cross‑platform audio output (ANSI C89)
   =============================================================
   This header declares the public API of audiopipe, a tiny pipe from
   your mixer to the speakers. You fully own mixing, scheduling, and
-  threading – this library only handles platform audio output.
+  threading - this library only handles platform audio output.
 
   Supported platforms:
-    Windows   (WASAPI)  – link with ole32.lib
-    macOS     (CoreAudio / AudioUnit) – link with CoreAudio.framework & AudioUnit.framework
-    Linux     (ALSA)    – link with -lasound
+    Windows   (WASAPI)  - link with ole32.lib
+    macOS     (CoreAudio / AudioUnit) - link with CoreAudio.framework & AudioUnit.framework
+    Linux     (ALSA)    - link with -lasound
 
   Usage:
     #include "audiopipe.h"
@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-/* Mixer callback – called by ap_update() on YOUR thread.
+/* Mixer callback - called by ap_update() on YOUR thread.
    buffer   : interleaved 32‑bit float samples (L0,R0, L1,R1, ...)
    frames   : number of sample frames (per channel)
    channels : channel count (1 to 8, or any value you pass to ap_init)

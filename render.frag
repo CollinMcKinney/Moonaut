@@ -59,9 +59,19 @@ layout(std140) uniform MaterialUniforms {
     vec3  uMatStrobeColor;
     float uMatStrobeFrequency;
     float uMatStrobePhase;
+
+    /* Clearcoat */
+    vec3  uClearcoatColor;
+    float uClearcoatExponent;
+    float uClearcoatStrength;
+
+    /* Sheen */
+    vec3  uSheenColor;
+    float uSheenExponent;
+    float uSheenStrength;
 };
 
-/* ---- Utility functions (identical to vertex) ---- */
+/* ---- Utility functions ---- */
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
 uint hash(uint x) {
@@ -210,6 +220,27 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
+/* ---- Clearcoat ---- */
+#ifdef EFFECT_CLEARCOAT
+    {
+        vec3 H = normalize(L + V);
+        float nh = max(dot(N, H), 0.0);
+        float spec = pow(nh, uClearcoatExponent);
+        color += uClearcoatColor * spec * uClearcoatStrength;
+    }
+#endif
+
+/* ---- Sheen ---- */
+#ifdef EFFECT_SHEEN
+    {
+        vec3 H = normalize(L + V);
+        float ndoth = dot(N, H);
+        /* Use the existing ndotl - do NOT redeclare it */
+        float sheen = pow(saturate(1.0 - ndoth), uSheenExponent);
+        color += uSheenColor * sheen * uSheenStrength * ndotl;
+    }
+#endif
+
 #ifdef EFFECT_SATURATION
     {
         float luma = dot(color, vec3(0.299,0.587,0.114));
@@ -292,12 +323,10 @@ void main() {
     vec3 color;
 
 #ifdef MODE_WIREFRAME
-    /* Wireframe uses world space (matches software) */
     color = shade_surface(normalize(vWorldFaceNormal), vWorldCentroid, vLocalCentroid);
 #elif defined(MODE_GOURAUD)
     color = vVertexColor;
 #elif defined(MODE_FLAT)
-    /* Flat uses world space for normal and centroid (matches software) */
     color = shade_surface(normalize(vWorldFaceNormal), vWorldCentroid, vLocalCentroid);
 #elif defined(MODE_QUADRATIC)
     color = shade_surface(normalize(vNormal), vWorldPos, vLocalPos);

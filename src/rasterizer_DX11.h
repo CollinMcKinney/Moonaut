@@ -90,7 +90,8 @@ static INLINE u8 color_to_u8(real x);
 /*  Constants                                                                  */
 /* ---------------------------------------------------------------------------*/
 
-#define MATERIAL_CB_SIZE_FLOAT4 15
+/* Changed: material cbuffer now uses 18 float4s (was 15) to accommodate clearcoat & sheen */
+#define MATERIAL_CB_SIZE_FLOAT4 18
 #define MATERIAL_CB_SIZE_BYTES  (MATERIAL_CB_SIZE_FLOAT4 * 16)
 #define MAX_MODEL_MATRICES       1024
 #define MAX_BATCHES              128
@@ -113,7 +114,7 @@ typedef struct {
 } dx_shader_variant_t;
 
 typedef struct {
-    float data[MATERIAL_CB_SIZE_FLOAT4][4];
+    float data[MATERIAL_CB_SIZE_FLOAT4][4];  /* now 18 entries */
 } dx_material_cb_t;
 
 typedef struct {
@@ -385,6 +386,9 @@ static void dx_generate_defines(render_method key, char* out, size_t out_size) {
     if (effects & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
     if (effects & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
     if (effects & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
+    /* New effects */
+    if (effects & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
 }
 
 static ID3DBlob* dx_compile_shader_with_defines(const char* filename, const char* defines, const char* entry, const char* target) {
@@ -471,7 +475,7 @@ static dx_shader_variant_t* dx_get_program_for_method(render_method key) {
         index = (index + 1) % dx_shader_cache_size;
     }
 
-    printf("[SHADER CACHE] Miss for key 0x%x – compiling new variant...\n", (unsigned)key);
+    printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
 
     char defines[4096];
     dx_generate_defines(key, defines, sizeof(defines));
@@ -765,7 +769,7 @@ static int dx_create_buffers(void) {
     D3D11_BUFFER_DESC ib_desc;
 
     memset(&cb_desc, 0, sizeof(cb_desc));
-    cb_desc.ByteWidth      = sizeof(dx_material_cb_t);
+    cb_desc.ByteWidth      = sizeof(dx_material_cb_t);  /* now 288 bytes */
     cb_desc.Usage          = D3D11_USAGE_DEFAULT;
     cb_desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
     cb_desc.CPUAccessFlags = 0;
@@ -872,6 +876,21 @@ static void dx_update_material_cb(const struct material_definition *mat) {
     cb->data[13][2] = (float)mat->strobe_color.position.z;
     cb->data[13][3] = (float)mat->strobe_frequency;
     cb->data[14][0] = (float)mat->strobe_phase;
+
+    /* ---- New clearcoat & sheen fields (indices 15,16,17) ---- */
+    cb->data[15][0] = (float)mat->clearcoat_color.position.x;
+    cb->data[15][1] = (float)mat->clearcoat_color.position.y;
+    cb->data[15][2] = (float)mat->clearcoat_color.position.z;
+    cb->data[15][3] = (float)mat->clearcoat_exponent;
+
+    cb->data[16][0] = (float)mat->clearcoat_strength;
+    cb->data[16][1] = (float)mat->sheen_color.position.x;
+    cb->data[16][2] = (float)mat->sheen_color.position.y;
+    cb->data[16][3] = (float)mat->sheen_color.position.z;
+
+    cb->data[17][0] = (float)mat->sheen_exponent;
+    cb->data[17][1] = (float)mat->sheen_strength;
+    /* data[17][2] and data[17][3] remain 0 */
 
     dx_context->lpVtbl->UpdateSubresource(dx_context,
                                           (ID3D11Resource*)dx_material_cb,
@@ -1141,7 +1160,7 @@ static void dx_draw_entity_with_model_index(const struct entity_definition *ent,
                 mat = (material_definition*)tag_get(mat_handle, TAG_material);
         }
         if (!mat) {
-            static material_definition fallback = DEFAULT_MATERIAL_BRICK;
+            static material_definition fallback = DEFAULT_MATERIAL_PLASTIC;
             mat = &fallback;
         }
 

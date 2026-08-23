@@ -1,21 +1,21 @@
 /*
- * rasterizer_GL.h – GPU‑accelerated renderer (OpenGL 3.3+) with batching
+ * rasterizer_GL.h - GPU‑accelerated renderer (OpenGL 3.3+) with batching
  *
  * Supports: Wireframe, Flat, Gouraud, Phong, Quadratic, Cubic.
  * All shading modes run on the GPU, including Quadratic/Cubic.
  *
  * FEATURES:
  *   - Frustum culling (CPU)
- *   - Backface culling (GPU, per‑batch – toggled via GL_CULL_FACE)
+ *   - Backface culling (GPU, per‑batch - toggled via GL_CULL_FACE)
  *   - Transparent sorting (CPU buffer, back‑to‑front) + batching by material
- *   - **Upscaling** – render at a lower internal resolution
+ *   - **Upscaling** - render at a lower internal resolution
  *     and stretch to the window with nearest‑neighbour filtering.
- *   - **Batching** – one draw call per material, not per triangle.
- *   - **No geometry shader** – uses dFdx/dFdy for flat shading.
- *   - **Entity‑level sorting** for transparent objects – eliminates flicker.
- *   - **Shader variants** – compiles specialised shaders per material key.
- *   - **Hash table cache** – O(1) average lookup for thousands of variants.
- *   - **Uniform Buffer Objects** – reduces per‑draw uniform upload overhead.
+ *   - **Batching** - one draw call per material, not per triangle.
+ *   - **No geometry shader** - uses dFdx/dFdy for flat shading.
+ *   - **Entity‑level sorting** for transparent objects - eliminates flicker.
+ *   - **Shader variants** - compiles specialised shaders per material key.
+ *   - **Hash table cache** - O(1) average lookup for thousands of variants.
+ *   - **Uniform Buffer Objects** - reduces per‑draw uniform upload overhead.
  *
  * OPTIMISATIONS (WebGL‑friendly):
  *   - GPU vertex transforms (model matrix UBO + per‑vertex index)
@@ -67,7 +67,7 @@ void render_set_time(real t);
 void render_clear(u8 r, u8 g, u8 b);
 void render_clear_color(real r, real g, real b);
 
-/* Legacy per‑triangle draw (backward compatible – CPU transforms) */
+/* Legacy per‑triangle draw (backward compatible - CPU transforms) */
 void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
@@ -75,10 +75,10 @@ void draw_triangle_shaded(
     const struct material_definition *mat
 );
 
-/* Entity‑level draw – uses entity depth for transparent sorting (CPU transforms) */
+/* Entity‑level draw - uses entity depth for transparent sorting (CPU transforms) */
 void render_draw_entity(const struct entity_definition *ent);
 
-/* Batch draw – sorts entities by depth before drawing (GPU transforms + indexed) */
+/* Batch draw - sorts entities by depth before drawing (GPU transforms + indexed) */
 void render_draw_entities(struct entity_definition **entities, int count);
 
 void render_finish(void);
@@ -124,6 +124,7 @@ static i32 gl_render_height = 0;
 #define MODEL_UBO_BINDING     1
 
 /* ---- Material UBO (std140, 240 bytes) ---- */
+/* NEW: added clearcoat and sheen fields */
 typedef struct {
     float uMatColor[3];
     float _pad0;
@@ -163,6 +164,18 @@ typedef struct {
     float uMatStrobeFrequency;
     float uMatStrobePhase;
     float _pad4[3];
+
+    /* NEW: Clearcoat */
+    float uClearcoatColor[3];
+    float uClearcoatExponent;
+    float uClearcoatStrength;
+    float _pad5[3];
+
+    /* NEW: Sheen */
+    float uSheenColor[3];
+    float uSheenExponent;
+    float uSheenStrength;
+
 } material_ubo_t;
 
 /* ---- Model matrices UBO (for GPU transforms) ---- */
@@ -408,7 +421,7 @@ static GLuint compile_shader_with_defines(GLenum type, const char* filename, con
     return shader;
 }
 
-/* ---- Generate shader defines ---- */
+/* ---- Generate shader defines (updated for CLEARCOAT and SHEEN) ---- */
 static void generate_defines(render_method key, char* out, size_t out_size) {
     char* p = out;
     size_t remaining = out_size;
@@ -456,6 +469,10 @@ static void generate_defines(render_method key, char* out, size_t out_size) {
     if (effects & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
     if (effects & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
     if (effects & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
+
+    /* NEW: Clearcoat and Sheen */
+    if (effects & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
 }
 
 /* ---- Shader cache (unchanged) ---- */
@@ -494,7 +511,7 @@ static shader_variant_t* get_program_for_method(render_method key) {
         }
         index = (index + 1) % gl_shader_cache_size;
     }
-    printf("[SHADER CACHE] Miss for key 0x%x – compiling new variant...\n", (unsigned)key);
+    printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
     char defines[4096];
     generate_defines(key, defines, sizeof(defines));
     GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "render.vert", defines);
@@ -555,7 +572,7 @@ static shader_variant_t* get_program_for_method(render_method key) {
     return entry;
 }
 
-/* ---- Update material UBO (unchanged) ---- */
+/* ---- Update material UBO (updated with new fields) ---- */
 static void update_material_ubo(const material_definition *mat) {
     material_ubo_t ubo;
     memset(&ubo, 0, sizeof(ubo));
@@ -612,6 +629,21 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatStrobeColor[2] = mat->strobe_color.position.z;
     ubo.uMatStrobeFrequency = mat->strobe_frequency;
     ubo.uMatStrobePhase     = mat->strobe_phase;
+
+    /* NEW: Clearcoat */
+    ubo.uClearcoatColor[0] = mat->clearcoat_color.position.x;
+    ubo.uClearcoatColor[1] = mat->clearcoat_color.position.y;
+    ubo.uClearcoatColor[2] = mat->clearcoat_color.position.z;
+    ubo.uClearcoatExponent = mat->clearcoat_exponent;
+    ubo.uClearcoatStrength = mat->clearcoat_strength;
+
+    /* NEW: Sheen */
+    ubo.uSheenColor[0] = mat->sheen_color.position.x;
+    ubo.uSheenColor[1] = mat->sheen_color.position.y;
+    ubo.uSheenColor[2] = mat->sheen_color.position.z;
+    ubo.uSheenExponent = mat->sheen_exponent;
+    ubo.uSheenStrength = mat->sheen_strength;
+
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(material_ubo_t), &ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
@@ -701,7 +733,6 @@ static void flush_transparent_batches(void) {
                     gl_index_pool_capacity = new_idx_cap;
                 }
                 float *ptr = &gl_vertex_pool[gl_pool_used_floats];
-                /* Compute local face normal and local centroid from stored vertices */
                 vec3 localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
                 vec3 localCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
                 #define PACK_V(v, n, l, lfn, lc, mi) \
@@ -751,10 +782,8 @@ static void draw_triangle_indexed(
     vec3 world_v1 = mat4_mul_vec3(model, local_v1);
     vec3 world_v2 = mat4_mul_vec3(model, local_v2);
 
-    /* Frustum culling only – backface culling is done on GPU via GL_CULL_FACE */
     if (triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
 
-    /* Compute local face normal and local centroid for FLAT and WIREFRAME modes */
     vec3 localFaceNormal = {0,0,0}, localCentroid = {0,0,0};
     u32 mode = mat->render_method & 0x7;
     if (mode == MODE_FLAT || mode == MODE_WIREFRAME) {
@@ -866,7 +895,7 @@ static void draw_entity_with_model_index(const struct entity_definition *ent, in
                 mat = (material_definition*)tag_get(mat_handle, TAG_material);
         }
         if (!mat) {
-            static material_definition fallback = DEFAULT_MATERIAL_BRICK;
+            static material_definition fallback = DEFAULT_MATERIAL_PLASTIC;
             mat = &fallback;
         }
 

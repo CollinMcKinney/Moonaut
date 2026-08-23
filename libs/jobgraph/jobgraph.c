@@ -57,7 +57,7 @@
   #define ATOMIC_SUB(ptr,val)   InterlockedExchangeAdd((LONG volatile*)(ptr), -(LONG)(val))
   #define ATOMIC_LOAD(ptr)      InterlockedExchangeAdd((LONG volatile*)(ptr), 0)
 #else
-  #error "No atomics support – implement platform-specific atomics"
+  #error "No atomics support - implement platform-specific atomics"
 #endif
 
 /* ==================== CONSTANTS ==================== */

@@ -1,5 +1,5 @@
 /*
-  audiomixer.c – Mixer with exaggerated HRTF (notch + low‑pass) with distinct front/back/above/below.
+  audiomixer.c - Mixer with exaggerated HRTF (notch + low‑pass) with distinct front/back/above/below.
   Behind: very dark, quiet; Below: dark; Above: bright; Front: brightest.
 */
 

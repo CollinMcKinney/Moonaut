@@ -194,7 +194,7 @@ typedef struct C89FW_window_t {
 } C89FW_window_t;
 
 /* ========================================================================
-   NATIVE HANDLES – THE EXTENSIBILITY BRIDGE
+   NATIVE HANDLES - THE EXTENSIBILITY BRIDGE
    ======================================================================== */
 typedef struct C89FW_native_handles_t {
 #if defined(C89FW_WINDOWS)

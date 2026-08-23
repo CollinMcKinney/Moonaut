@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
             net_cleanup();
             return 1;
         }
-        /* 'QUEUED' or other messages – just wait */
+        /* 'QUEUED' or other messages - just wait */
     }
     net_close_socket(tcp_sock);
     printf("Match %u assigned to server %s:%u\n", match_id, server_ip, server_port);
@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
         uint8 packet[10];
 
         while (1) {
-            /* Send only raw inputs – NO player ID, NO position */
+            /* Send only raw inputs - NO player ID, NO position */
             packet[0] = 0x01;
             *(float*)(packet + 1) = stick_x;
             *(float*)(packet + 5) = stick_y;

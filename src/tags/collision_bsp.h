@@ -22,7 +22,7 @@ TAG_BLOCK_BEGIN(bsp_triangle_block, 65535, sizeof(struct bsp_triangle))
 TAG_BLOCK_END(bsp_triangle_block, 65535, sizeof(struct bsp_triangle))
 
 /* ------------------------------------------------------------------------
-    BSP plane – defines a splitting surface
+    BSP plane - defines a splitting surface
     ------------------------------------------------------------------------ */
 typedef struct bsp_plane {
     vec3 normal;       /* unit length */
@@ -36,7 +36,7 @@ TAG_BLOCK_BEGIN(bsp_plane_block, 65535, sizeof(struct bsp_plane))
 TAG_BLOCK_END(bsp_plane_block, 65535, sizeof(struct bsp_plane))
 
 /* ------------------------------------------------------------------------
-   BSP node – references a plane and two children
+   BSP node - references a plane and two children
    ------------------------------------------------------------------------ */
 typedef struct bsp_node {
     i32 plane_index;        /* index into planes array */
@@ -54,7 +54,7 @@ TAG_BLOCK_BEGIN(bsp_node_block, 65535, sizeof(struct bsp_node))
 TAG_BLOCK_END(bsp_node_block, 65535, sizeof(struct bsp_node))
 
 /* ------------------------------------------------------------------------
-   BSP leaf – a solid / empty cell
+   BSP leaf - a solid / empty cell
    ------------------------------------------------------------------------ */
 typedef struct bsp_leaf {
     i32 solid;   /* 1 = solid, 0 = empty */

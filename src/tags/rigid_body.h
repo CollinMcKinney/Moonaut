@@ -27,7 +27,7 @@ TAG_ENUM_BEGIN(rigid_body_shape)
 TAG_ENUM_END(rigid_body_shape)
 
 /* ------------------------------------------------------------------------
-   Convex hull vertex block – simple array of vec3
+   Convex hull vertex block - simple array of vec3
    ------------------------------------------------------------------------ */
 TAG_BLOCK_BEGIN(convex_hull_vertex_block, 256, sizeof(vec3))
     FIELD_VEC3("position"),
@@ -50,7 +50,7 @@ typedef struct rigid_body_definition {
     real             capsule_height;       /* central cylinder length (excluding end‑caps) */
     real             cylinder_radius;      /* for CYLINDER */
     real             cylinder_height;      /* total height */
-    struct tag_block convex_hull_vertices; /* for CONVEX – array of vec3 */
+    struct tag_block convex_hull_vertices; /* for CONVEX - array of vec3 */
 
     /* - Movement & damping - */
     vec3            velocity;
@@ -60,7 +60,7 @@ typedef struct rigid_body_definition {
     real            linear_damping;
     real            angular_damping;
 
-    /* - BSP data (placeholder – will become a tag_reference to 'cbsp' later) - */
+    /* - BSP data (placeholder - will become a tag_reference to 'cbsp' later) - */
 } rigid_body_definition;
 
 TAG_GROUP_BEGIN(rigid_body, TAG_MAGIC_PACK(rbdy), sizeof(struct rigid_body_definition))

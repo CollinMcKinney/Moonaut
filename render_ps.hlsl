@@ -1,5 +1,5 @@
 cbuffer MaterialCB : register(b0) {
-    float4 uMatData[15];
+    float4 uMatData[18];   // now 18 elements (was 15)
 }
 
 cbuffer GlobalsCB : register(b1) {
@@ -15,6 +15,7 @@ cbuffer GlobalsCB : register(b1) {
     float pad[5];
 }
 
+// Existing defines
 #define uMatColor uMatData[0].xyz
 #define uMatTint uMatData[1].xyz
 #define uMatAlpha uMatData[1].w
@@ -48,6 +49,14 @@ cbuffer GlobalsCB : register(b1) {
 #define uMatStrobeColor uMatData[13].xyz
 #define uMatStrobeFrequency uMatData[13].w
 #define uMatStrobePhase uMatData[14].x
+
+// ---- New defines for clearcoat & sheen ----
+#define uMatClearcoatColor uMatData[15].xyz
+#define uMatClearcoatExponent uMatData[15].w
+#define uMatClearcoatStrength uMatData[16].x
+#define uMatSheenColor uMatData[16].yzw
+#define uMatSheenExponent uMatData[17].x
+#define uMatSheenStrength uMatData[17].y
 
 struct PS_INPUT {
     float4 pos : SV_POSITION;
@@ -218,6 +227,26 @@ float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
     }
 #endif
 
+    // ---- Clearcoat ----
+#ifdef EFFECT_CLEARCOAT
+    {
+        float3 H = normalize(L + V);
+        float nh = max(dot(N, H), 0.0);
+        float spec = pow(nh, uMatClearcoatExponent);
+        color += uMatClearcoatColor * spec * uMatClearcoatStrength;
+    }
+#endif
+
+    // ---- Sheen ----
+#ifdef EFFECT_SHEEN
+    {
+        float3 H = normalize(L + V);
+        float ndoth = dot(N, H);
+        float sheen = pow(saturate(1.0 - ndoth), uMatSheenExponent);
+        color += uMatSheenColor * sheen * uMatSheenStrength * ndotl;
+    }
+#endif
+
     color *= uMatTint;
     return clamp(color, 0.0f, 1.0f);
 }
@@ -226,12 +255,10 @@ float4 main(PS_INPUT input) : SV_TARGET {
     float3 color;
 
 #ifdef MODE_WIREFRAME
-    // Wireframe uses world space
     color = shade_surface(normalize(input.worldFaceNormal), input.worldCentroid, input.localCentroid);
 #elif defined(MODE_GOURAUD)
     color = input.vertexColor;
 #elif defined(MODE_FLAT)
-    // Flat uses world space (matches software)
     color = shade_surface(normalize(input.worldFaceNormal), input.worldCentroid, input.localCentroid);
 #elif defined(MODE_QUADRATIC)
     color = shade_surface(normalize(input.normal), input.worldPos, input.localPos);

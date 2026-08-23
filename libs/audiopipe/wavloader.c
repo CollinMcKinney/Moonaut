@@ -1,5 +1,5 @@
 /*
-  wavloader.c – Implementation of the WAV loader (pure ANSI C89).
+  wavloader.c - Implementation of the WAV loader (pure ANSI C89).
 */
 
 #include "wavloader.h"

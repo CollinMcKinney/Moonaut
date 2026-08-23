@@ -642,7 +642,7 @@ func handleUDP(conn *net.UDPConn) {
 			port := int(binary.BigEndian.Uint16(data[nullPos+1 : nullPos+3]))
 			updateHeartbeat(addr.IP.String(), port, region, maxMatches)
 
-		case 'R': // Match result – push to worker pool
+		case 'R': // Match result - push to worker pool
 			if n < 6 {
 				continue
 			}

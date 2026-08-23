@@ -1,5 +1,5 @@
 /*
- * rasterizer_SW.h – Unified software rasterizer
+ * rasterizer_SW.h - Unified software rasterizer
  *
  * Uses material_definition.h for shading parameters.
  * Supports: Wireframe, Flat, Gouraud, Quadratic, Cubic, and Phong.
@@ -68,7 +68,7 @@ static INLINE u8 color_to_u8(real x);
 #endif /* RASTERIZER_SW_H */
 
 /* ================================================================
-   IMPLEMENTATION – define RASTERIZER_SW_IMPLEMENTATION in ONE .c file
+   IMPLEMENTATION - define RASTERIZER_SW_IMPLEMENTATION in ONE .c file
    ================================================================ */
 #ifdef RASTERIZER_SW_IMPLEMENTATION
 
@@ -531,9 +531,10 @@ static INLINE vec3 shade_surface(
 
     ndotl = saturate(vec3_dot(N, sw_light_dir));
 
+    /* Compute V and ndotv if any of the view‑dependent effects are active */
     if (mat->render_method & (EFFECT_MINNAERT | EFFECT_OREN_NAYAR | EFFECT_RIM |
-                   EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE |
-                   EFFECT_FRINGE)) {
+                              EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_IRIDESCENCE |
+                              EFFECT_FRINGE | EFFECT_CLEARCOAT | EFFECT_SHEEN)) {
         V = vec3_normalize(vec3_sub(sw_cam_eye, world_pos));
         ndotv = saturate(vec3_dot(N, V));
     }
@@ -662,6 +663,24 @@ static INLINE vec3 shade_surface(
             spec = (spec > mat->specular_threshold) ? 1.0f : 0.0f;
         }
         color = vec3_add(color, vec3_mul_scalar(mat->specular_color, spec));
+    }
+
+    /* ---- Clearcoat ---- */
+    if (mat->render_method & EFFECT_CLEARCOAT) {
+        vec3 H = vec3_normalize(vec3_add(sw_light_dir, V));
+        real nh = vec3_dot(N, H);
+        real spec = real_pow(nh < 0.0f ? 0.0f : nh, mat->clearcoat_exponent);
+        color = vec3_add(color, vec3_mul_scalar(mat->clearcoat_color, spec * mat->clearcoat_strength));
+    }
+
+    /* ---- Sheen ---- */
+    if (mat->render_method & EFFECT_SHEEN) {
+        vec3 H = vec3_normalize(vec3_add(sw_light_dir, V));
+        real ndoth = vec3_dot(N, H);
+        real ndotl = saturate(vec3_dot(N, sw_light_dir));
+        real sheen = real_pow(saturate(1.0f - ndoth), mat->sheen_exponent);
+        color = vec3_add(color, vec3_mul_scalar(mat->sheen_color,
+                                                sheen * mat->sheen_strength * ndotl));
     }
 
     /* ---- Saturation ---- */
@@ -2833,7 +2852,7 @@ void render_draw_entity(const struct entity_definition *ent) {
                 mat = (material_definition*)tag_get(mat_handle, TAG_material);
         }
         if (!mat) {
-            static material_definition fallback = DEFAULT_MATERIAL_BRICK;
+            static material_definition fallback = DEFAULT_MATERIAL_PLASTIC;
             mat = &fallback;
         }
 

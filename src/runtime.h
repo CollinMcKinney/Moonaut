@@ -7,7 +7,7 @@
 #include "physics.h"
 
 
-#define USE_DX11
+#define USE_GL
 #if defined(USE_DX11)
 #define RASTERIZER_DX11_IMPLEMENTATION
 #include "rasterizer_DX11.h"
@@ -89,7 +89,7 @@ static int g_last_width = 0;
 static int g_last_height = 0;
 
 /* ------------------------------------------------------------------------
-   Lua helper – return the internal physics_body for a given entity index,
+   Lua helper - return the internal physics_body for a given entity index,
    or NULL if it isn't dynamic.
    ------------------------------------------------------------------------ */
 static physics_body *scenario_get_physics_body(i32 entity_index) {
@@ -277,7 +277,7 @@ static void scenario_render(void) {
 }
 
 /* ====================================================================
-   Lua runtime API – adapted to entity‑based physics
+   Lua runtime API - adapted to entity‑based physics
    ==================================================================== */
 
 /* - Vector conversion helpers (unchanged) - */
@@ -1058,7 +1058,7 @@ static void print_fps(double now)
 }
 
 /* ------------------------------------------------------------------------
-   runtime_start()  –  main game loop (fixed‑timestep accumulator)
+   runtime_start()  -  main game loop (fixed‑timestep accumulator)
    ------------------------------------------------------------------------ */
 static void runtime_start(void)
 {

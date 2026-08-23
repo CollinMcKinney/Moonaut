@@ -62,7 +62,7 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------------
- * Field types – includes both legacy ENUM/FLAGS and new BITFIELD32
+ * Field types - includes both legacy ENUM/FLAGS and new BITFIELD32
  * ------------------------------------------------------------------------ */
 typedef enum tag_field_type {
     TAG_FIELD_TERMINATOR  = 0,
@@ -148,14 +148,14 @@ typedef struct tag_group_definition {
 } tag_group_definition;
 
 /* ------------------------------------------------------------------------
- * String table entry – index is implicit (position in array)
+ * String table entry - index is implicit (position in array)
  * ------------------------------------------------------------------------ */
 typedef struct string_table_entry {
     char string[STRING_TABLE_MAX_STRING_LENGTH];
 } string_table_entry;
 
 /* ------------------------------------------------------------------------
- * Enum / Flags support – for both legacy and BITFIELD32
+ * Enum / Flags support - for both legacy and BITFIELD32
  * ------------------------------------------------------------------------ */
 typedef struct tag_enum_value {
     i32         value;
@@ -170,7 +170,7 @@ typedef struct tag_enum_definition {
 } tag_enum_definition;
 
 /* ------------------------------------------------------------------------
- * Bitfield definition – holds enum_bits and the combined enum definition
+ * Bitfield definition - holds enum_bits and the combined enum definition
  * ------------------------------------------------------------------------ */
 typedef struct tag_bitfield_definition {
     u32                        enum_bits;   /* number of low bits reserved for enum */
@@ -178,7 +178,7 @@ typedef struct tag_bitfield_definition {
 } tag_bitfield_definition;
 
 /* ------------------------------------------------------------------------
- * Field macros – both legacy and new
+ * Field macros - both legacy and new
  * ------------------------------------------------------------------------ */
 #define FIELD_TERMINATOR    { TAG_FIELD_TERMINATOR,     "",    0, NULL }
 
@@ -218,11 +218,11 @@ typedef struct tag_bitfield_definition {
 
 #define FIELD_PAD(bytes)    { TAG_FIELD_PAD,            "",    (bytes), NULL }
 
-/* ---- TAG_REFERENCE macro – defines a tag_reference_definition variable ---- */
+/* ---- TAG_REFERENCE macro - defines a tag_reference_definition variable ---- */
 #define TAG_REFERENCE(name_, allowed_tag_) static const tag_reference_definition name_ = { (allowed_tag_) };
 
 /* ------------------------------------------------------------------------
- * Bitfield definition macros – for defining tag_enum_definition and bitfield
+ * Bitfield definition macros - for defining tag_enum_definition and bitfield
  * from a manually defined enum.
  *
  * Usage:
@@ -303,7 +303,7 @@ typedef struct tag_bitfield_definition {
     };
 
 /* ------------------------------------------------------------------------
- * Group macros – Four‑CC typed only once, terminator must be
+ * Group macros - Four‑CC typed only once, terminator must be
  * the last entry in the field list. Embedded semicolons included.
  * ------------------------------------------------------------------------ */
 #define TAG_GROUP_BEGIN(name_, magic_, total_size_)                       \
@@ -583,7 +583,7 @@ static void tag_postprocess_tag(i32 idx) {
 }
 
 /* ------------------------------------------------------------------------
- * String table implementation – index‑based
+ * String table implementation - index‑based
  * ------------------------------------------------------------------------ */
 static void string_table_init(void) {
     if (g_string_table.initialized) return;
@@ -665,7 +665,7 @@ static const char *tag_enum_get_name(const tag_field_definition *field, i32 valu
 typedef struct { u32 fourcc; u32 struct_size; } tag_file_header;
 
 /* ------------------------------------------------------------------------
- * Generic reader – loads a tag from any source via a read callback
+ * Generic reader - loads a tag from any source via a read callback
  * ------------------------------------------------------------------------ */
 static i32 tag_load_from(
     u32 (*read_fn)(void *dest, u32 size, void *ctx),

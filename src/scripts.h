@@ -1,7 +1,7 @@
 /* Script system */
 /* Lua scripting for managing scenario-state */
 /*
- * scripts.h – script manager with Lua hot-reload support
+ * scripts.h - script manager with Lua hot-reload support
  * Requires: vectors.h (include first)
  */
 
@@ -272,14 +272,14 @@ static int scripts_file_changed(const char *path,
         new_len != *inout_last_len ||
         memcmp(new_source, *inout_last_source, new_len) != 0)
     {
-        /* Content changed – replace stored version */
+        /* Content changed - replace stored version */
         free(*inout_last_source);
         *inout_last_source = new_source;
         *inout_last_len   = new_len;
         return 1;
     }
 
-    /* Same content – discard new_source */
+    /* Same content - discard new_source */
     free(new_source);
     return 0;
 }
@@ -345,7 +345,7 @@ static int lua_script_try_reload(lua_script_context *context)
                              &context->last_source_len) <= 0)
         return 0;   /* unchanged or error */
 
-    /* File changed – reload Lua */
+    /* File changed - reload Lua */
     new_state = scripts_create_bound_lua_state(context->path,
                                                context->bind,
                                                context->bind_userdata);  /* no longer needs write time */

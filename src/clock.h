@@ -1,5 +1,5 @@
 /*
- * clock.h – Single‑header monotonic timing library (strict C89)
+ * clock.h - Single‑header monotonic timing library (strict C89)
  *
  * Provides:
  *   clock_time          - double precision seconds
@@ -10,10 +10,10 @@
  *   clock_ticks_to_seconds() / clock_seconds_to_ticks()
  *
  * Platforms:
- *   Windows  (MSVC, MinGW, Clang‑CL)  – QueryPerformanceCounter
- *   Linux    (GCC, Clang)              – clock_gettime(CLOCK_MONOTONIC)
- *   macOS    (Apple Clang)             – mach_absolute_time
- *   Generic  (POSIX)                   – gettimeofday fallback
+ *   Windows  (MSVC, MinGW, Clang‑CL)  - QueryPerformanceCounter
+ *   Linux    (GCC, Clang)              - clock_gettime(CLOCK_MONOTONIC)
+ *   macOS    (Apple Clang)             - mach_absolute_time
+ *   Generic  (POSIX)                   - gettimeofday fallback
  *
  * Intended for game engines and real‑time applications where
  * wall‑clock time (epoch) is not needed and can cause jumps.
@@ -26,20 +26,20 @@
 extern "C" {
 #endif
 
-/* Universal time type – double precision seconds */
+/* Universal time type - double precision seconds */
 typedef double clock_time;
 
-/* High‑resolution tick counter – stored as double for C89 portability */
+/* High‑resolution tick counter - stored as double for C89 portability */
 typedef double clock_ticks;
 
 /* ------------------------------------------------------------------
-   Initialisation – call once before any other function (optional,
+   Initialisation - call once before any other function (optional,
    all functions self‑initialise). Safe to call multiple times.
    ------------------------------------------------------------------ */
 void clock_init(void);
 
 /* ------------------------------------------------------------------
-   clock_monotonic() – seconds since clock_init() was first called.
+   clock_monotonic() - seconds since clock_init() was first called.
    Always non‑decreasing; ideal for delta‑time and game loops.
    ------------------------------------------------------------------ */
 clock_time clock_monotonic(void);

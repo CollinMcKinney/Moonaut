@@ -1,4 +1,4 @@
-// rankskill.go – Weng‑Lin (logistic) rating system
+// rankskill.go - Weng‑Lin (logistic) rating system
 // Place this file next to master.go. It will become part of the `main` package.
 
 package main

@@ -27,7 +27,7 @@ TAG_BLOCK_END(model_index_block, 1048576, sizeof(u16))
 
 TAG_REFERENCE(model_material_ref, TAG_material);   /* keep if used elsewhere */
 
-/* Block of tag references – each element is a single handle (4 bytes) */
+/* Block of tag references - each element is a single handle (4 bytes) */
 TAG_BLOCK_BEGIN(model_material_block, 256, sizeof(tag_reference))
     FIELD_REFERENCE("material", model_material_ref),   /* each element is a reference to an entity tag */
     FIELD_TERMINATOR

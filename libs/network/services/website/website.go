@@ -149,7 +149,7 @@ type MatchPlayer struct {
 
 // ---------- API Handlers ----------
 
-// handleLeaderboard – uses cache to avoid DB hammering
+// handleLeaderboard - uses cache to avoid DB hammering
 func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -167,7 +167,7 @@ func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 	lbCache.mu.RUnlock()
 
-	// Cache expired or empty – fetch from DB
+	// Cache expired or empty - fetch from DB
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -200,7 +200,7 @@ func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(players)
 }
 
-// handlePlayer – single player profile
+// handlePlayer - single player profile
 func handlePlayer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -239,7 +239,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(p)
 }
 
-// handleMatches – match history
+// handleMatches - match history
 func handleMatches(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -294,7 +294,7 @@ func handleMatches(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(matches)
 }
 
-// handleMatchDetail – full match details
+// handleMatchDetail - full match details
 func handleMatchDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -362,7 +362,7 @@ func handleMatchDetail(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// handleSearch – search players
+// handleSearch - search players
 func handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

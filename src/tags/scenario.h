@@ -14,7 +14,7 @@ extern "C" {
 typedef struct scenario_definition {
     struct tag_reference globals;           /* link to 'glbl' */
     struct tag_reference camera;            /* link to 'cmra' */
-    struct tag_reference map_collision_bsp; /* cbsp – optional static world collision */
+    struct tag_reference map_collision_bsp; /* cbsp - optional static world collision */
     struct tag_block entities;              /* array of tag_reference to entity_definition */
 } scenario_definition;
 

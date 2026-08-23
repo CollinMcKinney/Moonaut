@@ -66,7 +66,7 @@ typedef float GLclampf;
 #endif
 
 /* ========================================================================
-   OPENGL 3.3 CORE – ENUMS
+   OPENGL 3.3 CORE - ENUMS
    ======================================================================== */
 #define GL_FALSE                                    0
 #define GL_TRUE                                     1
@@ -206,7 +206,7 @@ typedef float GLclampf;
 #define GL_POINT                                    0x1B00
 
 /* ========================================================================
-   OPENGL 3.3 CORE – FUNCTION POINTER TYPES
+   OPENGL 3.3 CORE - FUNCTION POINTER TYPES
    ======================================================================== */
 
 /* 1.0 / 1.1 */
@@ -903,7 +903,7 @@ int C89GL_load_functions(void) {
 }
 
 /* ========================================================================
-   CONTEXT CREATION – WINDOWS
+   CONTEXT CREATION - WINDOWS
    ======================================================================== */
 #if defined(C89FW_WINDOWS)
 
@@ -976,7 +976,7 @@ void C89GL_swap_buffers(C89GL_Context* ctx) {
 #endif /* C89FW_WINDOWS */
 
 /* ========================================================================
-   CONTEXT CREATION – LINUX
+   CONTEXT CREATION - LINUX
    ======================================================================== */
 #if defined(C89FW_LINUX)
 
@@ -1055,7 +1055,7 @@ void C89GL_swap_buffers(C89GL_Context* ctx) {
 #endif /* C89FW_LINUX */
 
 /* ========================================================================
-   CONTEXT CREATION – MACOS
+   CONTEXT CREATION - MACOS
    ======================================================================== */
 #if defined(C89FW_MACOS)
 

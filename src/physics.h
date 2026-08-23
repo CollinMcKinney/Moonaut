@@ -1,5 +1,5 @@
 /*
- * physics.h – Rigid‑body physics using entity_definition
+ * physics.h - Rigid‑body physics using entity_definition
  *
  * All shape / mass properties are read once from the entity's
  * rigid_body_definition tag when the body is registered.
@@ -80,7 +80,7 @@ static collision_bsp_definition *get_entity_collision_bsp(physics_world *w, i32 
 }
 
 /* ====================================================================
-   Internal helpers – access entity fields via body index
+   Internal helpers - access entity fields via body index
    ==================================================================== */
 static vec3  phys_ent_pos(const physics_world *w, i32 b) {
     return w->entities[w->bodies[b].entity_index]->position;
