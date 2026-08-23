@@ -143,7 +143,19 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_snow",       TAG_material, &DEFAULT_MATERIAL_SNOW);
     tag_register_default("default_material_dirt",       TAG_material, &DEFAULT_MATERIAL_DIRT);
     tag_register_default("default_material_neon",       TAG_material, &DEFAULT_MATERIAL_NEON);
-
+    tag_register_default("default_material_velvet",     TAG_material, &DEFAULT_MATERIAL_VELVET);
+    tag_register_default("default_material_marble",     TAG_material, &DEFAULT_MATERIAL_MARBLE);
+    tag_register_default("default_material_wax",        TAG_material, &DEFAULT_MATERIAL_WAX);
+    tag_register_default("default_material_pearl",      TAG_material, &DEFAULT_MATERIAL_PEARL);
+    tag_register_default("default_material_ceramic",    TAG_material, &DEFAULT_MATERIAL_CERAMIC);
+    tag_register_default("default_material_chalk",      TAG_material, &DEFAULT_MATERIAL_CHALK);
+    tag_register_default("default_material_posterized", TAG_material, &DEFAULT_MATERIAL_POSTERIZED);
+    tag_register_default("default_material_frost",      TAG_material, &DEFAULT_MATERIAL_FROST);
+    tag_register_default("default_material_rust",       TAG_material, &DEFAULT_MATERIAL_RUST);
+    tag_register_default("default_material_carbon",     TAG_material, &DEFAULT_MATERIAL_CARBON);
+    tag_register_default("default_material_chrome",     TAG_material, &DEFAULT_MATERIAL_CHROME);
+    tag_register_default("default_material_emerald",    TAG_material, &DEFAULT_MATERIAL_EMERALD);
+    tag_register_default("default_material_oilslick",   TAG_material, &DEFAULT_MATERIAL_OILSLICK);
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);

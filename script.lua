@@ -4,21 +4,104 @@ local scenario_handle = load_scenario("default_scenario")
 -- Over-ride the background/clear-color of the scene.
 clear_color(0, 32, 64)
 
--- Pre-load some materials to cycle through
-local material_pool = {
+-- Two separate material pools – both contain the same list initially
+local sphere_material_pool = {
     "default_material_wireframe",
-    "default_material_water", "default_material_grass", "default_material_cloth", "default_material_wood",
-    "default_material_metal", "default_material_glass", "default_material_skin", "default_material_rubber",
-    "default_material_ice", "default_material_stone", "default_material_lava","default_material_toon",
-    "default_material_hologram", "default_material_iridescent", "default_material_plastic", "default_material_brick",
-    "default_material_leather", "default_material_gold", "default_material_snow", "default_material_dirt",
-    "default_material_neon" }
+    "default_material_flat",
+    "default_material_gouraud",
+    "default_material_phong",
+    "default_material_water",
+    "default_material_grass",
+    "default_material_cloth",
+    "default_material_wood",
+    "default_material_metal",
+    "default_material_glass",
+    "default_material_skin",
+    "default_material_rubber",
+    "default_material_ice",
+    "default_material_stone",
+    "default_material_lava",
+    "default_material_toon",
+    "default_material_hologram",
+    "default_material_iridescent",
+    "default_material_plastic",
+    "default_material_brick",
+    "default_material_leather",
+    "default_material_gold",
+    "default_material_snow",
+    "default_material_dirt",
+    "default_material_neon",
+    "default_material_velvet",
+    "default_material_marble",
+    "default_material_wax",
+    "default_material_pearl",
+    "default_material_ceramic",
+    "default_material_chalk",
+    "default_material_posterized",
+    "default_material_frost",
+    "default_material_rust",
+    "default_material_carbon",
+    "default_material_chrome",
+    "default_material_emerald",
+    "default_material_oilslick"
+}
 
-local material_handles = {}
-for i, name in ipairs(material_pool) do
-    material_handles[i] = tag_load(name, TAG_material)
+local station_material_pool = {
+    "default_material_wireframe",
+    "default_material_flat",
+    "default_material_gouraud",
+    "default_material_phong",
+    "default_material_water",
+    "default_material_grass",
+    "default_material_cloth",
+    "default_material_wood",
+    "default_material_metal",
+    "default_material_glass",
+    "default_material_skin",
+    "default_material_rubber",
+    "default_material_ice",
+    "default_material_stone",
+    "default_material_lava",
+    "default_material_toon",
+    "default_material_hologram",
+    "default_material_iridescent",
+    "default_material_plastic",
+    "default_material_brick",
+    "default_material_leather",
+    "default_material_gold",
+    "default_material_snow",
+    "default_material_dirt",
+    "default_material_neon",
+    "default_material_velvet",
+    "default_material_marble",
+    "default_material_wax",
+    "default_material_pearl",
+    "default_material_ceramic",
+    "default_material_chalk",
+    "default_material_posterized",
+    "default_material_frost",
+    "default_material_rust",
+    "default_material_carbon",
+    "default_material_chrome",
+    "default_material_emerald",
+    "default_material_oilslick"
+}
+
+-- Load material handles for each pool
+local sphere_handles = {}
+for i, name in ipairs(sphere_material_pool) do
+    sphere_handles[i] = tag_load(name, TAG_material)
 end
 
+local station_handles = {}
+for i, name in ipairs(station_material_pool) do
+    station_handles[i] = tag_load(name, TAG_material)
+end
+
+local sphere_pool_size = #sphere_handles
+local station_pool_size = #station_handles
+
+-- Import the station model
 local station_model_handle = import_model("station.glb")
 local station_cbsp_handle = build_cbsp(station_model_handle)
 
@@ -30,15 +113,16 @@ if tag_get_block_count(scenario_handle, "entities") > 0 then
     end
 end
 
--- Both use the same timer and interval, but different starting indices
-local mat_timer = 0
-local mat_interval = 5 -- seconds
+-- ------------------------------------------------------------
+-- Independent timers and indices
+-- ------------------------------------------------------------
+local sphere_timer = 0
+local sphere_interval = 5   -- seconds
+local sphere_index = 1
 
-local sphere_index = 1      -- sphere starts at first material
-local station_index = 2     -- station starts at second material (offset by 1)
-
--- Wrap indices to stay within pool size
-local pool_size = #material_handles
+local station_timer = 0
+local station_interval = 5  -- seconds (can be different)
+local station_index = 2     -- start offset so they're on different materials
 
 -- seconds for all animations to complete their cycles
 local cam_cycle_time = 15
@@ -70,21 +154,20 @@ function update(dt)
     local r = (math.sin(hue * math.pi / 180) + 1) 
     local g = (math.sin((hue + 120) * math.pi / 180) + 1)
     local b = (math.sin((hue + 240) * math.pi / 180) + 1)
-    light_color(r , g , b)
+    light_color(r, g, b)
 
-    -- Cycle materials (both advance together, but stay offset)
-    mat_timer = mat_timer + dt
-    if mat_timer >= mat_interval then
-        mat_timer = 0
+    -- --------------------------------------------------------
+    -- 1. Update sphere material (uses sphere_handles)
+    -- --------------------------------------------------------
+    sphere_timer = sphere_timer + dt
+    if sphere_timer >= sphere_interval then
+        sphere_timer = 0
+        sphere_index = (sphere_index % sphere_pool_size) + 1
+        local sphere_mat = sphere_handles[sphere_index]
+        local sphere_name = sphere_material_pool[sphere_index]
 
-        -- Advance both indices (wrap around)
-        sphere_index = (sphere_index % pool_size) + 1
-        station_index = (station_index % pool_size) + 1
+        print("Sphere material changed to: " .. sphere_name)
 
-        local sphere_mat = material_handles[sphere_index]
-        local station_mat = material_handles[station_index]
-
-        -- 1. Update sphere entity's material
         if tag_get_block_count(scenario_handle, "entities") > 0 then
             local ent_handle = tag_get_block_field(scenario_handle, "entities", 0, "entity")
             if ent_handle and ent_handle >= 0 then
@@ -101,8 +184,20 @@ function update(dt)
                 tag_set_field(ent_handle, "position", vec3(5, 3, 3))
             end
         end
+    end
 
-        -- 2. Update ALL material slots on the station model
+    -- --------------------------------------------------------
+    -- 2. Update station material (uses station_handles)
+    -- --------------------------------------------------------
+    station_timer = station_timer + dt
+    if station_timer >= station_interval then
+        station_timer = 0
+        station_index = (station_index % station_pool_size) + 1
+        local station_mat = station_handles[station_index]
+        local station_name = station_material_pool[station_index]
+
+        print("Station material changed to: " .. station_name)
+
         if station_model_handle and station_model_handle >= 0 then
             local mat_count = tag_get_block_count(station_model_handle, "materials")
             if mat_count > 0 then

@@ -377,7 +377,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
 };
 
 /* ------------------------------------------------------------------------
- * 8. GRASS - natural grass (Oren‑Nayar, bump, sheen)
+ * 8. GRASS - natural grass (Oren‑Nayar, bump, sheen) - cel shading kept
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -430,7 +430,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
 };
 
 /* ------------------------------------------------------------------------
- * 9. CLOTH - fabric (Oren‑Nayar, sheen)
+ * 9. CLOTH - fabric (Oren‑Nayar, sheen) - sheen strength tuned
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -477,17 +477,17 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {1.0f, 1.0f, 1.0f},
     .sheen_exponent         = 2.0f,
-    .sheen_strength         = 3.0f
+    .sheen_strength         = 2.0f  /* tweaked down from 3.0 */
 };
 
 /* ------------------------------------------------------------------------
- * 10. WOOD - varnished wood (clearcoat, rough)
+ * 10. WOOD - varnished wood (clearcoat, rough) - tweaked colour/roughness
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_DIFFUSE_WRAP |
                               EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR |
                               EFFECT_ROUGHNESS | EFFECT_CLEARCOAT,
-    .color                  = {0.55f, 0.32f, 0.12f},
+    .color                  = {0.60f, 0.35f, 0.15f},  /* warmer oak */
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -522,7 +522,7 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.15f,
+    .roughness              = 0.30f,  /* increased from 0.15 */
     .clearcoat_color        = {0.9f, 0.8f, 0.5f},
     .clearcoat_exponent     = 32.0f,
     .clearcoat_strength     = 1.5f
@@ -530,17 +530,17 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
 };
 
 /* ------------------------------------------------------------------------
- * 11. METAL - polished metal (specular, fresnel, iridescence)
+ * 11. METAL - polished metal - tweaked to neutral silver
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_METAL = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
                               EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR |
                               EFFECT_IRIDESCENCE,
-    .color                  = {0.5f, 0.65f, 0.70f},
+    .color                  = {0.80f, 0.80f, 0.85f},  /* neutral silver */
     .ambient_light_factor   = 0.5f,
     .alpha                  = 1.0f,
     .saturation             = 1.2f,
-    .tint                   = {1.0f, 1.8f, 2.0f},
+    .tint                   = {1.0f, 1.0f, 1.0f},
     .cel_bands              = 0,
     .diffuse_wrap           = 0,
     .oren_nayar_sigma       = 0.10f,
@@ -555,8 +555,8 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {1.0f, 1.0f, 1.0f},
     .fresnel_exponent       = 3.0f,
-    .specular_exponent      = 32.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .specular_exponent      = 128.0f,  /* increased from 32 */
+    .specular_color         = {0.80f, 0.80f, 0.85f},  /* metal specular */
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -632,7 +632,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
 };
 
 /* ------------------------------------------------------------------------
- * 13. SKIN - realistic skin (Oren‑Nayar, Gooch, sheen)
+ * 13. SKIN - realistic skin - tweaked sheen strength/colour
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
@@ -677,13 +677,13 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
-    .sheen_color            = {1.0f, 0.7f, 0.6f},
+    .sheen_color            = {1.0f, 0.8f, 0.7f},  /* warmer, less pink */
     .sheen_exponent         = 2.0f,
-    .sheen_strength         = 0.5f
+    .sheen_strength         = 0.8f   /* increased from 0.5 */
 };
 
 /* ------------------------------------------------------------------------
- * 14. RUBBER - matte rubber (Oren‑Nayar, diffuse wrap)
+ * 14. RUBBER - matte rubber - roughness and specular exponent tweaked
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -708,7 +708,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 0.0f,
-    .specular_exponent      = 4.0f,
+    .specular_exponent      = 2.0f,   /* reduced from 4 */
     .specular_color         = {0.25f, 0.25f, 0.25f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
@@ -724,7 +724,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.0f,
+    .roughness              = 0.50f,  /* increased from 0 */
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -786,7 +786,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
 };
 
 /* ------------------------------------------------------------------------
- * 16. STONE - rough stone (Oren‑Nayar, bump, rough)
+ * 16. STONE - rough stone - roughness increased
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_STONE = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -827,7 +827,7 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.20f,
+    .roughness              = 0.35f,  /* increased from 0.20 */
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -1046,7 +1046,7 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
 };
 
 /* ------------------------------------------------------------------------
- * 21. PLASTIC - shiny plastic with clearcoat
+ * 21. PLASTIC - shiny plastic - clearcoat tweaked
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -1090,8 +1090,8 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .double_sided           = false,
     .roughness              = 0.0f,
     .clearcoat_color        = {0.0f, 0.0f, 1.0f},
-    .clearcoat_exponent     = 16.0f,
-    .clearcoat_strength     = 5.0f
+    .clearcoat_exponent     = 32.0f,   /* increased from 16 */
+    .clearcoat_strength     = 2.0f,    /* decreased from 5 */
     /* sheen fields are zero, omitted */
 };
 
@@ -1196,7 +1196,7 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
 };
 
 /* ------------------------------------------------------------------------
- * 24. GOLD - metallic gold (specular, Fresnel, iridescence)
+ * 24. GOLD - metallic gold - specular colour/exponent tweaked
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -1222,8 +1222,8 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.90f, 0.80f, 0.50f},
     .fresnel_exponent       = 4.0f,
-    .specular_exponent      = 32.0f,
-    .specular_color         = {1.00f, 0.90f, 0.60f},
+    .specular_exponent      = 64.0f,   /* increased from 32 */
+    .specular_color         = {1.0f, 0.75f, 0.3f},  /* warmer, more saturated */
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.20f, 0.15f, 0.05f},
     .emissive_pulse_frequency = 0.0f,
@@ -1248,7 +1248,7 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
 };
 
 /* ------------------------------------------------------------------------
- * 25. SNOW - bright, retro‑reflective snow (Oren‑Nayar, sheen)
+ * 25. SNOW - bright, retro‑reflective snow - sheen strength/exponent tweaked
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
@@ -1296,8 +1296,8 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {1.0f, 1.0f, 1.0f},
-    .sheen_exponent         = 1.5f,
-    .sheen_strength         = 2.0f
+    .sheen_exponent         = 2.0f,   /* increased from 1.5 */
+    .sheen_strength         = 1.5f    /* decreased from 2.0 */
 };
 
 /* ------------------------------------------------------------------------
@@ -1400,6 +1400,657 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 28. VELVET – soft fabric with deep colour and warm sheen - tweaked
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_VELVET = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
+                                  EFFECT_SHEEN | EFFECT_ROUGHNESS | EFFECT_BACK_GLOW,
+    /* color                  */ {0.40f, 0.05f, 0.10f},
+    /* ambient_light_factor   */ 0.80f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.2f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.80f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.10f, 0.02f, 0.04f},  /* strengthened */
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.0f, 0.0f, 0.0f},
+    /* fresnel_exponent       */ 0.0f,
+    /* specular_exponent      */ 0.0f,
+    /* specular_color         */ {0.0f, 0.0f, 0.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.40f,  /* increased from 0.30 */
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {1.0f, 0.6f, 0.7f},
+    /* sheen_exponent         */ 2.0f,
+    /* sheen_strength         */ 1.8f
+};
+
+/* ------------------------------------------------------------------------
+ * 29. MARBLE – polished stone with fine grain and soft specular
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_MARBLE = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
+                                  EFFECT_OREN_NAYAR | EFFECT_SPECULAR | EFFECT_FRESNEL,
+    /* color                  */ {0.85f, 0.82f, 0.78f},
+    /* ambient_light_factor   */ 0.90f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.15f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.02f,
+    /* bump_frequency         */ 256.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.9f, 0.9f, 1.0f},
+    /* fresnel_exponent       */ 4.0f,
+    /* specular_exponent      */ 64.0f,
+    /* specular_color         */ {0.9f, 0.9f, 0.9f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 30. WAX – translucent, warm solid with soft glow - alpha tweaked earlier
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_WAX = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
+                                  EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR |
+                                  EFFECT_EMISSIVE,
+    /* color                  */ {0.85f, 0.75f, 0.50f},
+    /* ambient_light_factor   */ 0.80f,
+    /* alpha                  */ 0.87f,  /* already tweaked */
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.05f,
+    /* bump_frequency         */ 16.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.9f, 0.8f, 0.6f},
+    /* fresnel_exponent       */ 3.0f,
+    /* specular_exponent      */ 32.0f,
+    /* specular_color         */ {0.9f, 0.8f, 0.6f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.05f, 0.03f, 0.01f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 31. PEARL – smooth, iridescent with soft luster
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_PEARL = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_IRIDESCENCE |
+                                  EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SATURATION,
+    /* color                  */ {0.95f, 0.90f, 0.85f},
+    /* ambient_light_factor   */ 0.90f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.5f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.9f, 0.9f, 1.0f},
+    /* fresnel_exponent       */ 2.0f,
+    /* specular_exponent      */ 128.0f,
+    /* specular_color         */ {1.0f, 1.0f, 1.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.40f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 32. CERAMIC – glossy, hard surface with clear coat - roughness added
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_CLEARCOAT |
+                                  EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SATURATION,
+    /* color                  */ {0.95f, 0.92f, 0.88f},
+    /* ambient_light_factor   */ 0.90f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.8f, 0.8f, 1.0f},
+    /* fresnel_exponent       */ 6.0f,
+    /* specular_exponent      */ 128.0f,
+    /* specular_color         */ {1.0f, 1.0f, 1.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.05f,  /* added small roughness */
+    /* clearcoat_color        */ {0.9f, 0.9f, 1.0f},
+    /* clearcoat_exponent     */ 64.0f,
+    /* clearcoat_strength     */ 3.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 33. CHALK – powdery matte surface with Minnaert darkening - roughness and k tweaked
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_CHALK = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_MINNAERT |
+                                  EFFECT_DIFFUSE_WRAP | EFFECT_ROUGHNESS,
+    /* color                  */ {0.80f, 0.80f, 0.85f},
+    /* ambient_light_factor   */ 1.0f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 1,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.7f,   /* increased from 0.5 */
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.0f, 0.0f, 0.0f},
+    /* fresnel_exponent       */ 0.0f,
+    /* specular_exponent      */ 0.0f,
+    /* specular_color         */ {0.0f, 0.0f, 0.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.60f,  /* increased from 0.40 */
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 34. POSTERIZED – graphic novel / comic style with limited colour bands
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_POSTERIZE |
+                                  EFFECT_SATURATION | EFFECT_SPECULAR_THRESH,
+    /* color                  */ {0.90f, 0.50f, 0.20f},
+    /* ambient_light_factor   */ 1.0f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.8f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.0f, 0.0f, 0.0f},
+    /* fresnel_exponent       */ 0.0f,
+    /* specular_exponent      */ 2.0f,
+    /* specular_color         */ {1.0f, 1.0f, 1.0f},
+    /* specular_threshold     */ 0.5f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 6,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 35. FROST – frosted / etched glass - roughness increased
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_FROST = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
+                                  EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_ROUGHNESS,
+    /* color                  */ {0.90f, 0.95f, 1.0f},
+    /* ambient_light_factor   */ 1.0f,
+    /* alpha                  */ 0.40f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.02f,
+    /* bump_frequency         */ 64.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.80f, 0.90f, 1.0f},
+    /* fresnel_exponent       */ 2.0f,
+    /* specular_exponent      */ 0.0f,
+    /* specular_color         */ {0.0f, 0.0f, 0.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 1,
+    /* roughness              */ 0.50f,  /* increased from 0.30 */
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 36. RUST – flaky, rough metal oxide with orange-brown colour
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_RUST = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
+                                  EFFECT_BUMP | EFFECT_ROUGHNESS | EFFECT_BACK_GLOW,
+    /* color                  */ {0.60f, 0.20f, 0.05f},
+    /* ambient_light_factor   */ 1.0f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.60f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.15f,
+    /* bump_frequency         */ 16.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.05f, 0.01f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.0f, 0.0f, 0.0f},
+    /* fresnel_exponent       */ 0.0f,
+    /* specular_exponent      */ 0.0f,
+    /* specular_color         */ {0.0f, 0.0f, 0.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.50f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 37. CARBON – woven composite with subtle specular and edge glow
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_CARBON = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
+                                  EFFECT_SPECULAR | EFFECT_ROUGHNESS | EFFECT_FRINGE,
+    /* color                  */ {0.10f, 0.10f, 0.10f},
+    /* ambient_light_factor   */ 0.80f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.05f,
+    /* bump_frequency         */ 128.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.0f, 0.0f, 0.0f},
+    /* fresnel_exponent       */ 0.0f,
+    /* specular_exponent      */ 16.0f,
+    /* specular_color         */ {0.20f, 0.20f, 0.20f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.02f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.20f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 38. CHROME – mirror-like silver with ultra-high specular
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_CHROME = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_SPECULAR |
+                                  EFFECT_FRESNEL,
+    /* color                  */ {0.90f, 0.90f, 0.95f},
+    /* ambient_light_factor   */ 0.30f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {1.0f, 1.0f, 1.0f},
+    /* fresnel_exponent       */ 8.0f,
+    /* specular_exponent      */ 1024.0f,
+    /* specular_color         */ {1.0f, 1.0f, 1.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.0f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 39. EMERALD – green gem with iridescence and high gloss
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_EMERALD = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_IRIDESCENCE |
+                                  EFFECT_SPECULAR | EFFECT_FRESNEL,
+    /* color                  */ {0.10f, 0.70f, 0.30f},
+    /* ambient_light_factor   */ 0.80f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 1.5f,
+    /* tint                   */ {1.0f, 1.2f, 0.8f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.5f, 1.0f, 0.7f},
+    /* fresnel_exponent       */ 6.0f,
+    /* specular_exponent      */ 256.0f,
+    /* specular_color         */ {0.8f, 1.0f, 0.8f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.50f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
+};
+
+/* ------------------------------------------------------------------------
+ * 40. OIL SLICK – dark base with strong rainbow iridescence
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
+    /* render_method          */ MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_IRIDESCENCE |
+                                  EFFECT_FRESNEL | EFFECT_SATURATION,
+    /* color                  */ {0.05f, 0.05f, 0.08f},
+    /* ambient_light_factor   */ 0.80f,
+    /* alpha                  */ 1.0f,
+    /* saturation             */ 2.0f,
+    /* tint                   */ {1.0f, 1.0f, 1.0f},
+    /* cel_bands              */ 0,
+    /* diffuse_wrap           */ 0,
+    /* oren_nayar_sigma       */ 0.0f,
+    /* minnaert_k             */ 0.0f,
+    /* bump_amplitude         */ 0.0f,
+    /* bump_frequency         */ 0.0f,
+    /* bump_speed             */ 0.0f,
+    /* gooch_cool             */ {0.0f, 0.0f, 0.0f},
+    /* gooch_warm             */ {0.0f, 0.0f, 0.0f},
+    /* back_glow_color        */ {0.0f, 0.0f, 0.0f},
+    /* rim_color              */ {0.0f, 0.0f, 0.0f},
+    /* rim_exponent           */ 0.0f,
+    /* fresnel_color          */ {0.8f, 0.8f, 1.0f},
+    /* fresnel_exponent       */ 4.0f,
+    /* specular_exponent      */ 0.0f,
+    /* specular_color         */ {0.0f, 0.0f, 0.0f},
+    /* specular_threshold     */ 0.0f,
+    /* emissive_color         */ {0.0f, 0.0f, 0.0f},
+    /* emissive_pulse_freq    */ 0.0f,
+    /* emissive_pulse_phase   */ 0.0f,
+    /* emissive_pulse_amp     */ 0.0f,
+    /* strobe_color           */ {0.0f, 0.0f, 0.0f},
+    /* strobe_frequency       */ 0.0f,
+    /* strobe_phase           */ 0.0f,
+    /* skip_fog               */ 0,
+    /* iridescence_strength   */ 0.90f,
+    /* glitch_intensity       */ 0.0f,
+    /* fringe_intensity       */ 0.0f,
+    /* posterize_levels       */ 0,
+    /* double_sided           */ 0,
+    /* roughness              */ 0.0f,
+    /* clearcoat_color        */ {0.0f, 0.0f, 0.0f},
+    /* clearcoat_exponent     */ 0.0f,
+    /* clearcoat_strength     */ 0.0f,
+    /* sheen_color            */ {0.0f, 0.0f, 0.0f},
+    /* sheen_exponent         */ 0.0f,
+    /* sheen_strength         */ 0.0f
 };
 
 #ifdef __cplusplus
