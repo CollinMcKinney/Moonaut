@@ -24,6 +24,7 @@
 #include "tags/material.h"
 #include "tags/entity.h"
 #include "tags/model.h"
+#include "tags/particle_emitter.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,6 +57,14 @@ int render_resize(i32 new_w, i32 new_h);
 void render_set_render_resolution(i32 render_width, i32 render_height);
 i32 render_get_render_width(void);
 i32 render_get_render_height(void);
+
+/* Particle system API (DirectX11) - parity with rasterizer_GL.h */
+void render_particle_system_init(int max_particles);
+void render_particle_system_shutdown(void);
+void render_particle_system_set_emitter(const struct particle_emitter_definition *def);
+void render_particle_system_update(float dt);
+void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up);
+void render_particle_system_emit_burst(int count);
 
 static INLINE u8 color_to_u8(real x);
 
@@ -106,6 +115,25 @@ static INLINE u8 color_to_u8(real x);
 /*  Internal Types                                                             */
 /* ---------------------------------------------------------------------------*/
 
+/* Core D3D11 objects and resources (previously removed accidentally) */
+static IDXGISwapChain      *dx_swapchain = NULL;
+static ID3D11Device       *dx_device = NULL;
+static ID3D11DeviceContext*dx_context = NULL;
+static ID3D11RenderTargetView *dx_rtv = NULL;
+static ID3D11DepthStencilView *dx_dsv = NULL;
+static ID3D11Texture2D    *dx_depth_tex = NULL;
+static ID3D11InputLayout  *dx_input_layout = NULL;
+static ID3D11Buffer       *dx_vb = NULL;
+static ID3D11Buffer       *dx_ib = NULL;
+static ID3D11Buffer       *dx_material_cb = NULL;
+static ID3D11Buffer       *dx_globals_cb = NULL;
+static ID3D11Buffer       *dx_model_cb = NULL;
+static ID3D11RasterizerState *dx_rast_cull_none = NULL;
+static ID3D11RasterizerState *dx_rast_cull_back = NULL;
+static ID3D11RasterizerState *dx_rast_wireframe_none = NULL;
+static ID3D11RasterizerState *dx_rast_wireframe_back = NULL;
+
+
 typedef struct {
     ID3D11VertexShader *vs;
     ID3D11PixelShader  *ps;
@@ -123,6 +151,8 @@ typedef struct {
     float light_col[4];
     float ambient_col[4];
     float cam_eye[4];
+    float cam_right[4];
+    float cam_up[4];
     float time;
     float fog_color[4];
     float fog_start;
@@ -134,16 +164,13 @@ typedef struct {
     float data[MAX_MODEL_MATRICES][16];   /* column-major float4x4 */
 } dx_model_cb_t;
 
+/* Frustum plane type (for culling) */
 typedef struct {
-    const struct material_definition *mat;
-    size_t vertex_offset;
-    size_t index_offset;
-    int    vertex_count;
-    int    index_count;
-    int    mode;
-    int    is_transparent;
-} dx_batch_t;
+    vec3 normal;
+    real d;
+} dx_frustum_plane_t;
 
+/* Transparent triangle entry */
 typedef struct {
     vec3 v0, v1, v2;
     vec3 n0, n1, n2;
@@ -154,41 +181,22 @@ typedef struct {
     int   model_index;
 } dx_transparent_tri_t;
 
+/* Entity sort helper */
 typedef struct {
-    vec3 normal;
-    real d;
-} dx_frustum_plane_t;
-
-typedef struct dx_entity_sort_s {
     struct entity_definition *ent;
     float depth;
     int model_index;
 } dx_entity_sort_t;
 
-/* ---------------------------------------------------------------------------*/
-/*  Global State                                                              */
-/* ---------------------------------------------------------------------------*/
-
-static ID3D11Device            *dx_device            = NULL;
-static ID3D11DeviceContext     *dx_context           = NULL;
-static IDXGISwapChain          *dx_swapchain         = NULL;
-
-static ID3D11RenderTargetView  *dx_rtv               = NULL;
-static ID3D11DepthStencilView  *dx_dsv               = NULL;
-static ID3D11Texture2D         *dx_depth_tex         = NULL;
-
-static ID3D11InputLayout       *dx_input_layout      = NULL;
-
-static ID3D11Buffer            *dx_vb                = NULL;
-static ID3D11Buffer            *dx_ib                = NULL;
-static ID3D11Buffer            *dx_material_cb       = NULL;
-static ID3D11Buffer            *dx_globals_cb        = NULL;
-static ID3D11Buffer            *dx_model_cb          = NULL;
-
-static ID3D11RasterizerState   *dx_rast_cull_none    = NULL;
-static ID3D11RasterizerState   *dx_rast_cull_back    = NULL;
-static ID3D11RasterizerState   *dx_rast_wireframe_none = NULL;
-static ID3D11RasterizerState   *dx_rast_wireframe_back = NULL;
+typedef struct {
+    const struct material_definition *mat;
+    size_t vertex_offset;
+    size_t index_offset;
+    int    vertex_count;
+    int    index_count;
+    int    mode;
+    int    is_transparent;
+} dx_batch_t;
 static ID3D11DepthStencilState *dx_depth_opaque      = NULL;
 static ID3D11DepthStencilState *dx_depth_transparent = NULL;
 static ID3D11BlendState        *dx_blend_opaque      = NULL;
@@ -241,6 +249,69 @@ static int dx_model_count = 0;
 static dx_material_cb_t dx_material_cb_data;
 static dx_globals_cb_t  dx_globals_cb_data;
 static dx_model_cb_t    dx_model_cb_data;
+
+/* ========================================================================
+   Particle system (DirectX11) - lightweight port from rasterizer_GL.h
+   ======================================================================== */
+
+typedef struct {
+    vec3 center;
+    vec4 color;
+    float size;
+} dx_particle_instance_t;
+
+static dx_particle_instance_t *dx_particles = NULL;
+static int dx_particle_count = 0;
+static int dx_particle_capacity = 0;
+
+/* Emitter parameters */
+static vec3  dx_emitter_pos;
+static vec3  dx_emitter_color;
+static float dx_emitter_alpha;
+static float dx_emitter_size;
+static float dx_emitter_lifetime;
+static float dx_emitter_speed;
+static float dx_emitter_spread;
+static float dx_emitter_gravity;
+static int   dx_emitter_loop;
+static float dx_emission_rate;
+static float dx_emission_timer;
+static int   dx_burst_done;
+
+static vec3  *dx_particle_velocities = NULL;
+static float *dx_particle_lifetimes = NULL;
+static float *dx_particle_max_lifetimes = NULL;
+
+/* DX resources for particles */
+static ID3D11Buffer *dx_particle_instance_buffer = NULL;
+static ID3D11VertexShader *dx_particle_vs = NULL;
+static ID3D11PixelShader  *dx_particle_ps = NULL;
+static ID3D11InputLayout  *dx_particle_input_layout = NULL;
+
+/* Particle camera state (set from runtime) */
+static mat4 dx_particle_view_proj;
+static vec3 dx_particle_cam_right;
+static vec3 dx_particle_cam_up;
+static int  dx_particle_cam_valid = 0;
+
+/* Forward decl */
+/* Forward decl */
+static void dx_render_particle_system_draw_internal(void);
+static void dx_update_globals_cb(void);
+
+/* Compatibility aliases (runtime.h expects GL-named globals) */
+#define gl_view_proj dx_view_proj
+#define g_emitter_pos dx_emitter_pos
+#define g_emitter_color dx_emitter_color
+#define g_emitter_alpha dx_emitter_alpha
+#define g_emitter_size dx_emitter_size
+#define g_emitter_lifetime dx_emitter_lifetime
+#define g_emitter_speed dx_emitter_speed
+#define g_emitter_spread dx_emitter_spread
+#define g_emitter_gravity dx_emitter_gravity
+#define g_emitter_loop dx_emitter_loop
+#define g_emission_rate dx_emission_rate
+#define g_emission_timer dx_emission_timer
 
 /* Cached states */
 static const struct material_definition *dx_last_material = NULL;
@@ -316,6 +387,267 @@ static INLINE i32 dx_triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
         if (o0 && o1 && o2) return 1;
     }
     return 0;
+}
+
+/* ------------------ Particle system implementation ------------------ */
+
+static INLINE float dx_rand_float(float min, float max) {
+    return min + (max - min) * ((float)rand() / (float)RAND_MAX);
+}
+static INLINE vec3 dx_rand_vec3(float min, float max) {
+    vec3 v = {dx_rand_float(min, max), dx_rand_float(min, max), dx_rand_float(min, max)};
+    return v;
+}
+static INLINE vec3 dx_rand_sphere(float radius) {
+    vec3 v;
+    do { v = dx_rand_vec3(-1.0f, 1.0f); } while (vec3_magnitude(v) > 1.0f);
+    return vec3_mul_scalar(v, radius);
+}
+
+static HRESULT dx_compile_shader_from_source(const char* src, const char* entry, const char* profile, ID3DBlob** outBlob) {
+    ID3DBlob* err = NULL;
+    HRESULT hr = D3DCompile(src, strlen(src), NULL, NULL, NULL, entry, profile, D3DCOMPILE_ENABLE_STRICTNESS, 0, outBlob, &err);
+    if (FAILED(hr)) {
+        if (err) {
+            char *msg = (char*)err->lpVtbl->GetBufferPointer(err);
+            fprintf(stderr, "Shader compile error: %s\n", msg);
+            err->lpVtbl->Release(err);
+        }
+    }
+    return hr;
+}
+
+/* Forward declaration for file-based shader compile helper (defined later) */
+static ID3DBlob* dx_compile_shader_with_defines(const char* filename, const char* defines, const char* entry, const char* target);
+
+static int init_dx_particle_shaders(void) {
+    ID3DBlob *vs_blob = NULL, *ps_blob = NULL;
+    ID3DBlob *tmp = NULL;
+
+    /* Compile from external shader files */
+    vs_blob = dx_compile_shader_with_defines("particle.vs.hlsl", "", "mainVS", "vs_4_0");
+    if (!vs_blob) return 0;
+    ps_blob = dx_compile_shader_with_defines("particle.ps.hlsl", "", "mainPS", "ps_4_0");
+    if (!ps_blob) { vs_blob->lpVtbl->Release(vs_blob); return 0; }
+
+    HRESULT hr = dx_device->lpVtbl->CreateVertexShader(dx_device, vs_blob->lpVtbl->GetBufferPointer(vs_blob), vs_blob->lpVtbl->GetBufferSize(vs_blob), NULL, &dx_particle_vs);
+    if (FAILED(hr)) { vs_blob->lpVtbl->Release(vs_blob); ps_blob->lpVtbl->Release(ps_blob); return 0; }
+    hr = dx_device->lpVtbl->CreatePixelShader(dx_device, ps_blob->lpVtbl->GetBufferPointer(ps_blob), ps_blob->lpVtbl->GetBufferSize(ps_blob), NULL, &dx_particle_ps);
+    if (FAILED(hr)) { vs_blob->lpVtbl->Release(vs_blob); ps_blob->lpVtbl->Release(ps_blob); return 0; }
+
+    /* Input layout for per-instance data: CENTER, COLOR, SIZE (all in one instance buffer) */
+    D3D11_INPUT_ELEMENT_DESC layout[3];
+    memset(layout,0,sizeof(layout));
+    /* Use input slot 1 for instance data so slot 0 can remain the per-vertex buffer */
+    layout[0].SemanticName = "CENTER"; layout[0].SemanticIndex = 0; layout[0].Format = DXGI_FORMAT_R32G32B32_FLOAT; layout[0].InputSlot = 1; layout[0].AlignedByteOffset = 0; layout[0].InputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA; layout[0].InstanceDataStepRate = 1;
+    layout[1].SemanticName = "COLOR";  layout[1].SemanticIndex = 0; layout[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT; layout[1].InputSlot = 1; layout[1].AlignedByteOffset = 12; layout[1].InputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA; layout[1].InstanceDataStepRate = 1;
+    layout[2].SemanticName = "SIZE";   layout[2].SemanticIndex = 0; layout[2].Format = DXGI_FORMAT_R32_FLOAT; layout[2].InputSlot = 1; layout[2].AlignedByteOffset = 28; layout[2].InputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA; layout[2].InstanceDataStepRate = 1;
+
+    hr = dx_device->lpVtbl->CreateInputLayout(dx_device, layout, 3, vs_blob->lpVtbl->GetBufferPointer(vs_blob), vs_blob->lpVtbl->GetBufferSize(vs_blob), &dx_particle_input_layout);
+    vs_blob->lpVtbl->Release(vs_blob);
+    ps_blob->lpVtbl->Release(ps_blob);
+    if (FAILED(hr)) return 0;
+    return 1;
+}
+
+void render_particle_system_init(int max_particles) {
+    if (dx_particles) return;
+    dx_particle_capacity = max_particles > 0 ? max_particles : 4096;
+    dx_particles = (dx_particle_instance_t*)malloc(dx_particle_capacity * sizeof(dx_particle_instance_t));
+    dx_particle_velocities = (vec3*)malloc(dx_particle_capacity * sizeof(vec3));
+    dx_particle_lifetimes = (float*)malloc(dx_particle_capacity * sizeof(float));
+    dx_particle_max_lifetimes = (float*)malloc(dx_particle_capacity * sizeof(float));
+    if (!dx_particles || !dx_particle_velocities || !dx_particle_lifetimes || !dx_particle_max_lifetimes) {
+        fprintf(stderr, "Failed to allocate DX particle memory\n");
+        render_particle_system_shutdown();
+        return;
+    }
+    dx_particle_count = 0; dx_emission_timer = 0.0f; dx_burst_done = 0;
+
+    if (!init_dx_particle_shaders()) {
+        fprintf(stderr, "Failed to compile DX particle shaders\n");
+        render_particle_system_shutdown();
+        return;
+    }
+
+    D3D11_BUFFER_DESC desc;
+    memset(&desc,0,sizeof(desc));
+    desc.ByteWidth = dx_particle_capacity * sizeof(dx_particle_instance_t);
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    HRESULT hr = dx_device->lpVtbl->CreateBuffer(dx_device, &desc, NULL, &dx_particle_instance_buffer);
+    if (FAILED(hr)) { fprintf(stderr, "Failed to create DX particle instance buffer\n"); render_particle_system_shutdown(); return; }
+}
+
+void render_particle_system_shutdown(void) {
+    if (dx_particles) { free(dx_particles); dx_particles = NULL; }
+    if (dx_particle_velocities) { free(dx_particle_velocities); dx_particle_velocities = NULL; }
+    if (dx_particle_lifetimes) { free(dx_particle_lifetimes); dx_particle_lifetimes = NULL; }
+    if (dx_particle_max_lifetimes) { free(dx_particle_max_lifetimes); dx_particle_max_lifetimes = NULL; }
+    if (dx_particle_instance_buffer) { dx_particle_instance_buffer->lpVtbl->Release(dx_particle_instance_buffer); dx_particle_instance_buffer = NULL; }
+    if (dx_particle_input_layout) { dx_particle_input_layout->lpVtbl->Release(dx_particle_input_layout); dx_particle_input_layout = NULL; }
+    if (dx_particle_vs) { dx_particle_vs->lpVtbl->Release(dx_particle_vs); dx_particle_vs = NULL; }
+    if (dx_particle_ps) { dx_particle_ps->lpVtbl->Release(dx_particle_ps); dx_particle_ps = NULL; }
+    dx_particle_count = 0; dx_particle_capacity = 0;
+}
+
+void render_particle_system_set_emitter(const struct particle_emitter_definition *def) {
+    if (!def) return;
+    dx_emitter_pos = def->position;
+    dx_emitter_color = def->color;
+    dx_emitter_alpha = def->alpha;
+    dx_emitter_size = def->size;
+    dx_emitter_lifetime = def->lifetime;
+    dx_emitter_speed = def->speed;
+    dx_emitter_spread = def->spread;
+    dx_emitter_gravity = def->gravity;
+    dx_emitter_loop = def->loop;
+    dx_emission_rate = def->emission_rate > 0.0f ? def->emission_rate : 30.0f;
+    dx_emission_timer = 0.0f; dx_burst_done = 0;
+}
+
+static void dx_spawn_particle(void) {
+    if (dx_particle_count >= dx_particle_capacity) return;
+    dx_particle_instance_t *p = &dx_particles[dx_particle_count];
+    vec3 *vel = &dx_particle_velocities[dx_particle_count];
+    float *life = &dx_particle_lifetimes[dx_particle_count];
+    float *max_life = &dx_particle_max_lifetimes[dx_particle_count];
+
+    p->center = vec3_add(dx_emitter_pos, dx_rand_sphere(0.1f));
+    vec3 dir = dx_rand_vec3(-1.0f, 1.0f);
+    dir = vec3_normalize(dir);
+    *vel = vec3_mul_scalar(dir, dx_emitter_speed * dx_rand_float(0.5f, 1.5f));
+
+    *max_life = dx_rand_float(dx_emitter_lifetime * 0.8f, dx_emitter_lifetime * 1.2f);
+    *life = *max_life;
+
+    p->size = dx_rand_float(dx_emitter_size * 0.8f, dx_emitter_size * 1.2f);
+    p->color = vec4_init_from_4(dx_emitter_color.position.x, dx_emitter_color.position.y, dx_emitter_color.position.z, dx_emitter_alpha);
+    dx_particle_count++;
+    printf("[DX PARTICLES] spawned idx=%d pos=(%.2f,%.2f,%.2f)\n", dx_particle_count, p->center.position.x, p->center.position.y, p->center.position.z);
+}
+
+void render_particle_system_update(float dt) {
+    if (!dx_particles) return;
+    if (dx_emitter_loop) {
+        dx_emission_timer += dt;
+        float interval = 1.0f / dx_emission_rate;
+        while (dx_emission_timer >= interval) { dx_spawn_particle(); dx_emission_timer -= interval; }
+    } else {
+        if (!dx_burst_done) {
+            int burst = (int)(dx_emission_rate * 0.5f);
+            for (int i = 0; i < burst; ++i) dx_spawn_particle();
+            dx_burst_done = 1;
+        }
+    }
+    int i = 0;
+    while (i < dx_particle_count) {
+        float *life = &dx_particle_lifetimes[i];
+        *life -= dt;
+        if (*life <= 0.0f) {
+            dx_particles[i] = dx_particles[dx_particle_count-1];
+            dx_particle_velocities[i] = dx_particle_velocities[dx_particle_count-1];
+            dx_particle_lifetimes[i] = dx_particle_lifetimes[dx_particle_count-1];
+            dx_particle_max_lifetimes[i] = dx_particle_max_lifetimes[dx_particle_count-1];
+            dx_particle_count--;
+            continue;
+        }
+        vec3 grav = vec3_init_from_3(0.0f, dx_emitter_gravity, 0.0f);
+        dx_particle_velocities[i] = vec3_add(dx_particle_velocities[i], vec3_mul_scalar(grav, dt));
+        dx_particles[i].center = vec3_add(dx_particles[i].center, vec3_mul_scalar(dx_particle_velocities[i], dt));
+        float frac = 1.0f - (dx_particle_lifetimes[i] / dx_particle_max_lifetimes[i]);
+        dx_particles[i].color.color.a = dx_emitter_alpha * (1.0f - frac);
+        ++i;
+    }
+}
+
+void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up) {
+    if (!view_proj) return;
+    dx_particle_view_proj = *view_proj;
+    dx_particle_cam_right = cam_right;
+    dx_particle_cam_up = cam_up;
+    dx_particle_cam_valid = 1;
+}
+
+void render_particle_system_emit_burst(int count) {
+    if (!dx_particles) return;
+    for (int i = 0; i < count; ++i) dx_spawn_particle();
+}
+
+static void dx_render_particle_system_draw_internal(void) {
+    if (!dx_particles || dx_particle_count == 0 || !dx_particle_vs || !dx_particle_ps) return;
+
+    /* Upload instance data */
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (SUCCEEDED(dx_context->lpVtbl->Map(dx_context, (ID3D11Resource*)dx_particle_instance_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        memcpy(mapped.pData, dx_particles, dx_particle_count * sizeof(dx_particle_instance_t));
+        dx_context->lpVtbl->Unmap(dx_context, (ID3D11Resource*)dx_particle_instance_buffer, 0);
+    }
+
+    /* Prepare globals CB with particle camera if set */
+    dx_globals_cb_t cb;
+    memset(&cb, 0, sizeof(cb));
+    if (dx_particle_cam_valid) {
+        dx_matrix_to_cb(&dx_particle_view_proj, cb.view_proj);
+        /* Correct cam right for render aspect so quads stay square in screen space (match GL behaviour) */
+        float aspect = (dx_win_width > 0 && dx_win_height > 0) ? ((float)dx_win_width / (float)dx_win_height) : 1.0f;
+        cb.cam_right[0] = (float)(dx_particle_cam_right.position.x * (1.0f / aspect)); cb.cam_right[1] = (float)(dx_particle_cam_right.position.y * (1.0f / aspect)); cb.cam_right[2] = (float)(dx_particle_cam_right.position.z * (1.0f / aspect));
+        cb.cam_up[0] = (float)dx_particle_cam_up.position.x; cb.cam_up[1] = (float)dx_particle_cam_up.position.y; cb.cam_up[2] = (float)dx_particle_cam_up.position.z;
+    } else {
+        dx_matrix_to_cb(&dx_view_proj, cb.view_proj);
+        cb.cam_right[0] = 1.0f; cb.cam_up[1] = 1.0f;
+    }
+    cb.light_dir[0] = (float)dx_light_dir.position.x; cb.light_dir[1] = (float)dx_light_dir.position.y; cb.light_dir[2] = (float)dx_light_dir.position.z;
+    cb.light_col[0] = (float)dx_light_col.position.x; cb.light_col[1] = (float)dx_light_col.position.y; cb.light_col[2] = (float)dx_light_col.position.z;
+    cb.ambient_col[0] = (float)dx_ambient_col.position.x; cb.ambient_col[1] = (float)dx_ambient_col.position.y; cb.ambient_col[2] = (float)dx_ambient_col.position.z;
+    cb.cam_eye[0] = (float)dx_cam_eye.position.x; cb.cam_eye[1] = (float)dx_cam_eye.position.y; cb.cam_eye[2] = (float)dx_cam_eye.position.z;
+    cb.time = (float)dx_time;
+    cb.fog_color[0] = (float)dx_fog_color.position.x; cb.fog_color[1] = (float)dx_fog_color.position.y; cb.fog_color[2] = (float)dx_fog_color.position.z;
+    cb.fog_start = (float)dx_fog_start; cb.fog_end = (float)dx_fog_end;
+    dx_context->lpVtbl->UpdateSubresource(dx_context, (ID3D11Resource*)dx_globals_cb, 0, NULL, &cb, 0, 0);
+
+    /* Bind instance buffer as vertex buffer (per-instance) */
+    UINT stride = sizeof(dx_particle_instance_t);
+    UINT offset = 0;
+    dx_context->lpVtbl->IASetInputLayout(dx_context, dx_particle_input_layout);
+    /* Bind instance buffer at slot 1 so it doesn't interfere with per-vertex slot 0 */
+    dx_context->lpVtbl->IASetVertexBuffers(dx_context, 1, 1, &dx_particle_instance_buffer, &stride, &offset);
+    dx_context->lpVtbl->IASetPrimitiveTopology(dx_context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    ID3D11Buffer *cbs[3] = { dx_material_cb, dx_globals_cb, dx_model_cb };
+    dx_context->lpVtbl->VSSetConstantBuffers(dx_context, 0, 3, cbs);
+    dx_context->lpVtbl->PSSetConstantBuffers(dx_context, 0, 3, cbs);
+
+    dx_context->lpVtbl->VSSetShader(dx_context, dx_particle_vs, NULL, 0);
+    dx_context->lpVtbl->PSSetShader(dx_context, dx_particle_ps, NULL, 0);
+
+    /* Use depth test ON but depth writes OFF, and alpha blending for particles */
+    /* Save previous OM/RS/Blend states so we can restore them after drawing particles */
+    ID3D11DepthStencilState* prevDepth = NULL;
+    UINT prevStencilRef = 0;
+    ID3D11BlendState* prevBlend = NULL;
+    FLOAT prevBlendFactor[4] = {0,0,0,0};
+    UINT prevSampleMask = 0xffffffff;
+    dx_context->lpVtbl->OMGetDepthStencilState(dx_context, &prevDepth, &prevStencilRef);
+    dx_context->lpVtbl->OMGetBlendState(dx_context, &prevBlend, prevBlendFactor, &prevSampleMask);
+    dx_context->lpVtbl->OMSetDepthStencilState(dx_context, dx_depth_transparent, 0);
+    dx_context->lpVtbl->OMSetBlendState(dx_context, dx_blend_alpha, NULL, 0xffffffff);
+
+    /* Draw 6 verts per instance */
+    if (dx_particle_count > 0) {
+        printf("[DX PARTICLES] DrawInstanced count=%d\n", dx_particle_count);
+        dx_context->lpVtbl->DrawInstanced(dx_context, 6, dx_particle_count, 0, 0);
+    }
+
+    /* Restore main globals CB for subsequent draws */
+    dx_update_globals_cb();
+
+    /* Restore previous OM/Blend states to avoid leaking particle state into later draws */
+    dx_context->lpVtbl->OMSetBlendState(dx_context, prevBlend, prevBlendFactor, prevSampleMask);
+    dx_context->lpVtbl->OMSetDepthStencilState(dx_context, prevDepth, prevStencilRef);
+    if (prevBlend) prevBlend->lpVtbl->Release(prevBlend);
+    if (prevDepth) prevDepth->lpVtbl->Release(prevDepth);
 }
 
 static mat4 dx_entity_model_matrix(const struct entity_definition *ent) {
@@ -922,6 +1254,10 @@ static void dx_update_globals_cb(void) {
     cb.cam_eye[0] = (float)dx_cam_eye.position.x;
     cb.cam_eye[1] = (float)dx_cam_eye.position.y;
     cb.cam_eye[2] = (float)dx_cam_eye.position.z;
+
+    /* Camera basis: derive right/up from view matrix so particles stay screen-square */
+    cb.cam_right[0] = (float)dx_view.transpose[0][0]; cb.cam_right[1] = (float)dx_view.transpose[0][1]; cb.cam_right[2] = (float)dx_view.transpose[0][2];
+    cb.cam_up[0]    = (float)dx_view.transpose[1][0]; cb.cam_up[1]    = (float)dx_view.transpose[1][1]; cb.cam_up[2]    = (float)dx_view.transpose[1][2];
 
     cb.time = (float)dx_time;
 
@@ -1589,8 +1925,12 @@ void render_finish(void) {
 
     /* Present with tearing if available, otherwise vsync off */
     if (dx_allow_tearing) {
+        /* Draw particle system after opaque/transparent batches but before present */
+        dx_render_particle_system_draw_internal();
         dx_swapchain->lpVtbl->Present(dx_swapchain, 0, DXGI_PRESENT_ALLOW_TEARING);
     } else {
+        /* Draw particle system after opaque/transparent batches but before present */
+        dx_render_particle_system_draw_internal();
         dx_swapchain->lpVtbl->Present(dx_swapchain, 0, 0);
     }
 

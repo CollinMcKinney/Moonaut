@@ -30,6 +30,8 @@
  * Shaders are loaded from external files:
  *   - material.vert  (vertex shader)
  *   - material.frag  (fragment shader)
+ *   - particle.vert  (particle vertex shader)
+ *   - particle.frag  (particle fragment shader)
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
@@ -45,9 +47,10 @@
 #define RASTERIZER_GL_H
 
 #include "common.h"
-#include "tags/material.h"
 #include "tags/entity.h"
 #include "tags/model.h"
+#include "tags/material.h"
+#include "tags/particle_emitter.h"
 
 #define C89GL_IMPLEMENTATION
 #include "../libs/C89FW/C89GL.h"
@@ -91,6 +94,14 @@ i32 render_get_render_height(void);
 
 static INLINE u8 color_to_u8(real x);
 
+/* ---- Particle system API (OpenGL) ---- */
+void render_particle_system_init(int max_particles);
+void render_particle_system_shutdown(void);
+void render_particle_system_set_emitter(const struct particle_emitter_definition *def);
+void render_particle_system_update(float dt);
+void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up);
+void render_particle_system_emit_burst(int count);
+
 #ifdef __cplusplus
 }
 #endif
@@ -124,7 +135,6 @@ static i32 gl_render_height = 0;
 #define MODEL_UBO_BINDING     1
 
 /* ---- Material UBO (std140, 240 bytes) ---- */
-/* NEW: added clearcoat and sheen fields */
 typedef struct {
     float uMatColor[3];
     float _pad0;
@@ -247,7 +257,6 @@ static GLint gl_default_fbo = 0;
 #define MAX_TRANSPARENT_TRIS 8192
 #define MAX_VERTICES_PER_FRAME (1024 * 1024)
 #define MAX_INDICES_PER_FRAME  (MAX_VERTICES_PER_FRAME * 3)
-/* Vertex layout: pos(3) + normal(3) + localPos(3) + modelIndex(1) + localFaceNormal(3) + localCentroid(3) = 16 */
 #define VERTEX_STRIDE_FLOATS 16
 #define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
 
@@ -293,14 +302,65 @@ static i32 gl_transparent_triangle_id = 0;
 static mat4 gl_model_matrices[MAX_MODEL_MATRICES];
 static int gl_model_count = 0;
 
-/* ---- Helper: compute model matrix from entity (no scale) ---- */
+/* ========================================================================
+   Particle system (internal)
+   ======================================================================== */
+
+typedef struct {
+    vec3 center;
+    vec4 color;
+    float size;
+} particle_instance_t;
+
+static particle_instance_t *g_particles = NULL;
+static int g_particle_count = 0;
+static int g_particle_capacity = 0;
+
+/* Emitter parameters */
+static vec3  g_emitter_pos;
+static vec3  g_emitter_color;
+static float g_emitter_alpha;
+static float g_emitter_size;
+static float g_emitter_lifetime;
+static float g_emitter_speed;
+static float g_emitter_spread;
+static float g_emitter_gravity;
+static int   g_emitter_loop;
+static float g_emission_rate;
+static float g_emission_timer;
+static int   g_burst_done;
+
+/* Particle extra arrays (velocity, lifetimes) */
+static vec3  *g_particle_velocities = NULL;
+static float *g_particle_lifetimes = NULL;
+static float *g_particle_max_lifetimes = NULL;
+
+/* Particle GL objects */
+static GLuint g_particle_vao = 0;
+static GLuint g_particle_vbo = 0;
+static GLuint g_particle_program = 0;
+static GLint  g_particle_u_view_proj = -1;
+static GLint  g_particle_u_cam_right = -1;
+static GLint  g_particle_u_cam_up = -1;
+
+/* Particle camera state (set from runtime) */
+static mat4 g_particle_view_proj;
+static vec3 g_particle_cam_right;
+static vec3 g_particle_cam_up;
+static int  g_particle_cam_valid = 0;
+
+/* ---------------------------------------------------------------------------
+   Helper: compute model matrix from entity (no scale)
+   --------------------------------------------------------------------------- */
 static mat4 entity_model_matrix(const entity_definition *ent) {
     mat4 R = quat_to_mat4(ent->orientation);
     mat4 T = mat4_translation(ent->position);
-    return mat4_mul(T, R);  // T * R (scale can be added later)
+    return mat4_mul(T, R);
 }
 
-/* ---- Helper: sort entities by depth ---- */
+/* ---------------------------------------------------------------------------
+   Helper: sort entities by depth
+   --------------------------------------------------------------------------- */
 typedef struct {
     struct entity_definition *ent;
     float depth;
@@ -315,14 +375,18 @@ static int entity_sort_compare(const void* a, const void* b) {
     return 0;
 }
 
-/* ---- Helper: color conversion ---- */
+/* ---------------------------------------------------------------------------
+   Helper: color conversion
+   --------------------------------------------------------------------------- */
 static INLINE u8 color_to_u8(real x) {
     if (x < 0.0f) return 0;
     if (x > 1.0f) return 255;
     return (u8)(x * 255.0f + 0.5f);
 }
 
-/* ---- Frustum culling (unchanged) ---- */
+/* ---------------------------------------------------------------------------
+   Frustum culling (unchanged)
+   --------------------------------------------------------------------------- */
 static void extract_frustum_planes(void) {
     vec4 c0 = gl_view_proj.columns[0];
     vec4 c1 = gl_view_proj.columns[1];
@@ -375,7 +439,9 @@ static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
     return 0;
 }
 
-/* ---- File reading / shader compilation (unchanged) ---- */
+/* ---------------------------------------------------------------------------
+   File reading / shader compilation (unchanged)
+   --------------------------------------------------------------------------- */
 static char* read_file(const char* filename) {
     FILE* f = fopen(filename, "rb");
     if (!f) { printf("ERROR: Failed to open shader file: %s\n", filename); return NULL; }
@@ -469,8 +535,6 @@ static void generate_defines(render_method key, char* out, size_t out_size) {
     if (effects & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
     if (effects & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
     if (effects & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
-
-    /* NEW: Clearcoat and Sheen */
     if (effects & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
     if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
 }
@@ -1070,6 +1134,7 @@ void render_shutdown(void) {
     gl_batch_count = 0;
     gl_pool_used_floats = 0;
     gl_index_pool_used = 0;
+    render_particle_system_shutdown();
 }
 
 /* ---- render_draw_entities (GPU transforms + indexed) ---- */
@@ -1133,6 +1198,7 @@ void draw_triangle_shaded(
 void render_set_light(vec3 dir, vec3 col, vec3 amb) {
     gl_light_dir = dir; gl_light_col = col; gl_ambient_col = amb;
 }
+
 void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
     gl_cam_eye = eye;
     gl_view = mat4_lookat(eye, center, up);
@@ -1140,6 +1206,7 @@ void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
     gl_view_proj = mat4_mul(gl_proj, gl_view);
     extract_frustum_planes();
 }
+
 void render_set_fog(vec3 color, real start, real end) {
     gl_fog_color = color; gl_fog_start = start; gl_fog_end = end;
 }
@@ -1187,8 +1254,16 @@ static int batch_compare_mode(const void* a, const void* b) {
     return 0;
 }
 
+/* Forward declaration for internal particle draw */
+static void render_particle_system_draw_internal(void);
+
 /* ---- render_finish (indexed, with per‑batch culling and depth handling) ---- */
 void render_finish(void) {
+    /* ---- Ensure correct depth state for all geometry ---- */
+    C89GL_glEnable(GL_DEPTH_TEST);
+    C89GL_glDepthFunc(GL_LESS);
+    C89GL_glDepthMask(GL_TRUE);
+
     flush_transparent_batches();
 
     if (gl_batch_count > 0) {
@@ -1213,13 +1288,17 @@ void render_finish(void) {
         }
         C89GL_glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idx_bytes, gl_index_pool);
 
+        /* Ensure we render into our offscreen FBO */
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+
         C89GL_glBindVertexArray(gl_vao);
 
-        qsort(gl_batches, gl_batch_count, sizeof(batch_t), batch_compare_mode);
-
+        /* First pass: draw opaque batches (depth writes ON, blending OFF) */
         GLuint current_program = 0;
-        for (int i = 0; i < gl_batch_count; i++) {
+        int i;
+        for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
+            if (b->is_transparent) continue;
             shader_variant_t *variant = get_program_for_method(b->mat->render_method);
             if (!variant) continue;
 
@@ -1228,19 +1307,9 @@ void render_finish(void) {
                 current_program = variant->program;
             }
 
-            if (b->mat->double_sided) {
-                C89GL_glDisable(GL_CULL_FACE);
-            } else {
-                C89GL_glEnable(GL_CULL_FACE);
-            }
-
-            if (b->is_transparent) {
-                C89GL_glDepthMask(GL_FALSE);
-                C89GL_glEnable(GL_BLEND);
-            } else {
-                C89GL_glDepthMask(GL_TRUE);
-                C89GL_glDisable(GL_BLEND);
-            }
+            if (b->mat->double_sided) C89GL_glDisable(GL_CULL_FACE); else C89GL_glEnable(GL_CULL_FACE);
+            C89GL_glDisable(GL_BLEND);
+            C89GL_glDepthMask(GL_TRUE);
 
             update_material_ubo(b->mat);
             set_uniforms_for_variant(variant);
@@ -1255,6 +1324,48 @@ void render_finish(void) {
                                      (void*)(b->index_offset * sizeof(GLushort)));
             }
         }
+
+        /* Draw particles AFTER opaque geometry but BEFORE transparent geometry
+           so transparent objects blend correctly over particles that are behind them. */
+        if (current_program) C89GL_glUseProgram(0);
+        C89GL_glBindVertexArray(0);
+        render_particle_system_draw_internal();
+
+        /* Second pass: draw transparent batches (blending ON, depth writes OFF)
+           Transparent batches should be drawn back-to-front per-triangle; the
+           flush_transparent_batches() call ensures triangles inside batches
+           are depth-sorted. We draw batches in their current order. */
+        C89GL_glBindVertexArray(gl_vao);
+        current_program = 0;
+        for (i = 0; i < gl_batch_count; i++) {
+            batch_t *b = &gl_batches[i];
+            if (!b->is_transparent) continue;
+            shader_variant_t *variant = get_program_for_method(b->mat->render_method);
+            if (!variant) continue;
+
+            if (current_program != variant->program) {
+                C89GL_glUseProgram(variant->program);
+                current_program = variant->program;
+            }
+
+            if (b->mat->double_sided) C89GL_glDisable(GL_CULL_FACE); else C89GL_glEnable(GL_CULL_FACE);
+            C89GL_glEnable(GL_BLEND);
+            C89GL_glDepthMask(GL_FALSE);
+
+            update_material_ubo(b->mat);
+            set_uniforms_for_variant(variant);
+
+            if (b->mode == MODE_WIREFRAME) {
+                C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
+                                     (void*)(b->index_offset * sizeof(GLushort)));
+                C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            } else {
+                C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
+                                     (void*)(b->index_offset * sizeof(GLushort)));
+            }
+        }
+
         if (current_program) C89GL_glUseProgram(0);
         C89GL_glBindVertexArray(0);
         C89GL_glDepthMask(GL_TRUE);
@@ -1263,6 +1374,16 @@ void render_finish(void) {
         C89GL_glEnable(GL_CULL_FACE);
     }
 
+    /* ---- Ensure FBO is bound for particle rendering ---- */
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+
+    /* ---- Draw particles AFTER all geometry, with depth test enabled ---- */
+    render_particle_system_draw_internal();
+
+    /* ---- Optional debug: read depth before particles ---- */
+    /* float depth; C89GL_glReadPixels(gl_render_width/2, gl_render_height/2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth); printf("Depth before particles: %f\n", depth); */
+
+    /* Blit and swap */
     C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
     C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
     C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
@@ -1277,6 +1398,278 @@ void render_finish(void) {
     gl_transparent_count = 0;
     gl_transparent_triangle_id = 0;
     gl_model_count = 0;
+}
+
+/* ========================================================================
+   Particle system implementation (OpenGL)
+   ======================================================================== */
+
+static GLuint compile_particle_shader(GLenum type, const char* filename) {
+    char* source = read_file(filename);
+    if (!source) return 0;
+    GLuint shader = C89GL_glCreateShader(type);
+    C89GL_glShaderSource(shader, 1, (const char**)&source, NULL);
+    C89GL_glCompileShader(shader);
+    free(source);
+    GLint status;
+    C89GL_glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    if (!status) {
+        char log[512];
+        C89GL_glGetShaderInfoLog(shader, sizeof(log), NULL, log);
+        printf("Particle shader %s compile error:\n%s\n", filename, log);
+        C89GL_glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static int init_particle_program(void) {
+    GLuint vs = compile_particle_shader(GL_VERTEX_SHADER, "particle.vert");
+    GLuint fs = compile_particle_shader(GL_FRAGMENT_SHADER, "particle.frag");
+    if (!vs || !fs) {
+        if (vs) C89GL_glDeleteShader(vs);
+        if (fs) C89GL_glDeleteShader(fs);
+        return 0;
+    }
+    g_particle_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(g_particle_program, vs);
+    C89GL_glAttachShader(g_particle_program, fs);
+    C89GL_glLinkProgram(g_particle_program);
+    GLint status;
+    C89GL_glGetProgramiv(g_particle_program, GL_LINK_STATUS, &status);
+    if (!status) {
+        char log[512];
+        C89GL_glGetProgramInfoLog(g_particle_program, sizeof(log), NULL, log);
+        printf("Particle program link error:\n%s\n", log);
+        C89GL_glDeleteProgram(g_particle_program);
+        C89GL_glDeleteShader(vs);
+        C89GL_glDeleteShader(fs);
+        return 0;
+    }
+    C89GL_glDeleteShader(vs);
+    C89GL_glDeleteShader(fs);
+    return 1;
+}
+
+void render_particle_system_init(int max_particles) {
+    if (g_particles) return;
+    g_particle_capacity = max_particles > 0 ? max_particles : 4096;
+    g_particles = (particle_instance_t*)malloc(g_particle_capacity * sizeof(particle_instance_t));
+    g_particle_velocities = (vec3*)malloc(g_particle_capacity * sizeof(vec3));
+    g_particle_lifetimes = (float*)malloc(g_particle_capacity * sizeof(float));
+    g_particle_max_lifetimes = (float*)malloc(g_particle_capacity * sizeof(float));
+    if (!g_particles || !g_particle_velocities || !g_particle_lifetimes || !g_particle_max_lifetimes) {
+        fprintf(stderr, "Failed to allocate particle memory\n");
+        render_particle_system_shutdown();
+        return;
+    }
+    g_particle_count = 0;
+    g_emission_timer = 0.0f;
+    g_burst_done = 0;
+
+    if (!init_particle_program()) {
+        fprintf(stderr, "Failed to compile particle shaders\n");
+        render_particle_system_shutdown();
+        return;
+    }
+
+    C89GL_glGenVertexArrays(1, &g_particle_vao);
+    C89GL_glGenBuffers(1, &g_particle_vbo);
+
+    C89GL_glBindVertexArray(g_particle_vao);
+    C89GL_glBindBuffer(GL_ARRAY_BUFFER, g_particle_vbo);
+
+    C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                sizeof(particle_instance_t), (void*)offsetof(particle_instance_t, center));
+    C89GL_glEnableVertexAttribArray(0);
+    C89GL_glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE,
+                                sizeof(particle_instance_t), (void*)offsetof(particle_instance_t, color));
+    C89GL_glEnableVertexAttribArray(1);
+    C89GL_glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE,
+                                sizeof(particle_instance_t), (void*)offsetof(particle_instance_t, size));
+    C89GL_glEnableVertexAttribArray(2);
+    /* Attributes are per-instance (we expand each instance into 6 vertices in the VS using gl_VertexID) */
+    C89GL_glVertexAttribDivisor(0, 1);
+    C89GL_glVertexAttribDivisor(1, 1);
+    C89GL_glVertexAttribDivisor(2, 1);
+
+    C89GL_glBindVertexArray(0);
+    C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    g_particle_u_view_proj = C89GL_glGetUniformLocation(g_particle_program, "uViewProj");
+    g_particle_u_cam_right = C89GL_glGetUniformLocation(g_particle_program, "uCamRight");
+    g_particle_u_cam_up = C89GL_glGetUniformLocation(g_particle_program, "uCamUp");
+}
+
+void render_particle_system_shutdown(void) {
+    if (g_particles) { free(g_particles); g_particles = NULL; }
+    if (g_particle_velocities) { free(g_particle_velocities); g_particle_velocities = NULL; }
+    if (g_particle_lifetimes) { free(g_particle_lifetimes); g_particle_lifetimes = NULL; }
+    if (g_particle_max_lifetimes) { free(g_particle_max_lifetimes); g_particle_max_lifetimes = NULL; }
+    if (g_particle_program) C89GL_glDeleteProgram(g_particle_program);
+    if (g_particle_vbo) C89GL_glDeleteBuffers(1, &g_particle_vbo);
+    if (g_particle_vao) C89GL_glDeleteVertexArrays(1, &g_particle_vao);
+    g_particle_count = 0;
+    g_particle_capacity = 0;
+    g_particle_program = 0;
+}
+
+void render_particle_system_set_emitter(const struct particle_emitter_definition *def) {
+    if (!def) return;
+    g_emitter_pos       = def->position;
+    g_emitter_color     = def->color;
+    g_emitter_alpha     = def->alpha;
+    g_emitter_size      = def->size;
+    g_emitter_lifetime  = def->lifetime;
+    g_emitter_speed     = def->speed;
+    g_emitter_spread    = def->spread;
+    g_emitter_gravity   = def->gravity;
+    g_emitter_loop      = def->loop;
+    g_emission_rate     = def->emission_rate > 0.0f ? def->emission_rate : 30.0f;
+    g_emission_timer    = 0.0f;
+    g_burst_done        = 0;
+}
+
+static INLINE float rand_float(float min, float max) {
+    return min + (max - min) * ((float)rand() / (float)RAND_MAX);
+}
+static INLINE vec3 rand_vec3(float min, float max) {
+    vec3 v = {rand_float(min, max), rand_float(min, max), rand_float(min, max)};
+    return v;
+}
+static INLINE vec3 rand_sphere(float radius) {
+    vec3 v;
+    do { v = rand_vec3(-1.0f, 1.0f); } while (vec3_magnitude(v) > 1.0f);
+    return vec3_mul_scalar(v, radius);
+}
+
+static void spawn_particle(void) {
+    if (g_particle_count >= g_particle_capacity) return;
+    particle_instance_t *p = &g_particles[g_particle_count];
+    vec3 *vel = &g_particle_velocities[g_particle_count];
+    float *life = &g_particle_lifetimes[g_particle_count];
+    float *max_life = &g_particle_max_lifetimes[g_particle_count];
+
+    p->center = vec3_add(g_emitter_pos, rand_sphere(0.1f));
+
+    vec3 dir = rand_vec3(-1.0f, 1.0f);
+    dir = vec3_normalize(dir);
+    *vel = vec3_mul_scalar(dir, g_emitter_speed * rand_float(0.5f, 1.5f));
+
+    *max_life = rand_float(g_emitter_lifetime * 0.8f, g_emitter_lifetime * 1.2f);
+    *life = *max_life;
+
+    p->size = rand_float(g_emitter_size * 0.8f, g_emitter_size * 1.2f);
+
+    p->color = vec4_init_from_4(g_emitter_color.position.x, g_emitter_color.position.y,
+                                g_emitter_color.position.z, g_emitter_alpha);
+
+    g_particle_count++;
+}
+
+void render_particle_system_update(float dt) {
+    if (!g_particles) return;
+
+    if (g_emitter_loop) {
+        g_emission_timer += dt;
+        float interval = 1.0f / g_emission_rate;
+        while (g_emission_timer >= interval) {
+            spawn_particle();
+            g_emission_timer -= interval;
+        }
+    } else {
+        if (!g_burst_done) {
+            int burst = (int)(g_emission_rate * 0.5f);
+            for (int i = 0; i < burst; ++i) spawn_particle();
+            g_burst_done = 1;
+        }
+    }
+
+    int i = 0;
+    while (i < g_particle_count) {
+        float *life = &g_particle_lifetimes[i];
+        *life -= dt;
+        if (*life <= 0.0f) {
+            g_particles[i] = g_particles[g_particle_count-1];
+            g_particle_velocities[i] = g_particle_velocities[g_particle_count-1];
+            g_particle_lifetimes[i] = g_particle_lifetimes[g_particle_count-1];
+            g_particle_max_lifetimes[i] = g_particle_max_lifetimes[g_particle_count-1];
+            g_particle_count--;
+            continue;
+        }
+
+        vec3 grav = vec3_init_from_3(0.0f, g_emitter_gravity, 0.0f);
+        g_particle_velocities[i] = vec3_add(g_particle_velocities[i], vec3_mul_scalar(grav, dt));
+        g_particles[i].center = vec3_add(g_particles[i].center, vec3_mul_scalar(g_particle_velocities[i], dt));
+
+        float frac = 1.0f - (g_particle_lifetimes[i] / g_particle_max_lifetimes[i]);
+        g_particles[i].color.color.a = g_emitter_alpha * (1.0f - frac);
+
+        ++i;
+    }
+}
+
+/* ---- Public: set camera for particle rendering (called from runtime) ---- */
+void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up) {
+    g_particle_view_proj = *view_proj;
+    g_particle_cam_right = cam_right;
+    g_particle_cam_up = cam_up;
+    g_particle_cam_valid = 1;
+}
+
+/* ---- Internal draw function (called from render_finish) ---- */
+static void render_particle_system_draw_internal(void) {
+    if (g_particle_count == 0 || !g_particle_program) return;
+
+    C89GL_glBindBuffer(GL_ARRAY_BUFFER, g_particle_vbo);
+    C89GL_glBufferData(GL_ARRAY_BUFFER,
+                       g_particle_count * sizeof(particle_instance_t),
+                       g_particles, GL_STREAM_DRAW);
+
+    /* ---- Depth test enabled; particles do NOT write depth ---- */
+    C89GL_glEnable(GL_DEPTH_TEST);
+    C89GL_glDepthFunc(GL_LESS);
+    C89GL_glDepthMask(GL_FALSE);
+
+    /* If the particle camera wasn't explicitly set, derive it from the main view/proj so
+       particles always face the current camera when scripts forget to set it. */
+    if (!g_particle_cam_valid) {
+        g_particle_view_proj = gl_view_proj;
+        g_particle_cam_right = vec3_init_from_3(gl_view.transpose[0][0], gl_view.transpose[0][1], gl_view.transpose[0][2]);
+        g_particle_cam_up    = vec3_init_from_3(gl_view.transpose[1][0], gl_view.transpose[1][1], gl_view.transpose[1][2]);
+        g_particle_cam_valid = 1;
+    }
+
+    C89GL_glUseProgram(g_particle_program);
+    /* Other renderer code uploads row-major matrices with transpose=GL_TRUE; match that here. */
+    C89GL_glUniformMatrix4fv(g_particle_u_view_proj, 1, GL_TRUE, (float*)&g_particle_view_proj);
+
+    /* Correct cam right for render aspect so quads stay square in screen space. */
+    float aspect = (gl_render_width > 0 && gl_render_height > 0) ? ((float)gl_render_width / (float)gl_render_height) : 1.0f;
+    vec3 cam_right_scaled = vec3_mul_scalar(g_particle_cam_right, 1.0f / aspect);
+    C89GL_glUniform3fv(g_particle_u_cam_right, 1, (float*)&cam_right_scaled);
+    C89GL_glUniform3fv(g_particle_u_cam_up, 1, (float*)&g_particle_cam_up);
+
+    C89GL_glEnable(GL_BLEND);
+    C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    C89GL_glBindVertexArray(g_particle_vao);
+    /* Draw 6 vertices per particle (two triangles) with instancing */
+    C89GL_glDrawArraysInstanced(GL_TRIANGLES, 0, 6, g_particle_count);
+    C89GL_glBindVertexArray(0);
+
+    C89GL_glDepthMask(GL_TRUE);
+    C89GL_glDisable(GL_BLEND);
+    C89GL_glUseProgram(0);
+    C89GL_glEnable(GL_DEPTH_TEST);
+}
+
+/* ---- Public: emit a burst of particles immediately (for Lua) ---- */
+void render_particle_system_emit_burst(int count) {
+    if (!g_particles) return;
+    for (int i = 0; i < count; ++i) {
+        spawn_particle();
+    }
 }
 
 #endif /* RASTERIZER_GL_IMPLEMENTATION */

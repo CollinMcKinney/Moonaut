@@ -2,13 +2,14 @@
 #define DEFAULTS_H
 
 #include "reflection.h"
-#include "tags/lua_script.h"
-#include "tags/material.h"
 #include "tags/globals.h"
-#include "tags/camera.h"
-#include "tags/model.h"
-#include "tags/entity.h"
 #include "tags/scenario.h"
+#include "tags/lua_script.h"
+#include "tags/camera.h"
+#include "tags/entity.h"
+#include "tags/model.h"
+#include "tags/material.h"
+#include "tags/particle_emitter.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,6 +117,10 @@ static void tag_register_default_all(void){
     tag_register_group(&globals);
     tag_register_group(&scenario);
     tag_register_group(&lua_script);
+    tag_register_group(&particle_emitter);
+
+    /* Default particle emitter definitions. */
+    tag_register_default("default_particle_emitter", TAG_particle_emitter, &DEFAULT_PARTICLE_EMITTER);
 
     /* Default material definitions. */
     tag_register_default("default_material_wireframe",  TAG_material, &DEFAULT_MATERIAL_WIREFRAME);

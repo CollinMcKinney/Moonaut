@@ -4,12 +4,18 @@ local scenario_handle = load_scenario("default_scenario")
 -- Over-ride the background/clear-color of the scene.
 clear_color(0, 32, 64)
 
+-- Load a particle emitter tag
+local emitter = particle_load_emitter("default_particle_emitter")
+
+-- Change its properties on the fly
+particle_set_position(0, 5, 0)
+particle_set_color(1, 0.5, 1)
+particle_set_alpha(1)
+particle_set_rate(1000)
+
 -- Two separate material pools – both contain the same list initially
 local sphere_material_pool = {
     "default_material_wireframe",
-    "default_material_flat",
-    "default_material_gouraud",
-    "default_material_phong",
     "default_material_water",
     "default_material_grass",
     "default_material_cloth",
@@ -48,9 +54,6 @@ local sphere_material_pool = {
 
 local station_material_pool = {
     "default_material_wireframe",
-    "default_material_flat",
-    "default_material_gouraud",
-    "default_material_phong",
     "default_material_water",
     "default_material_grass",
     "default_material_cloth",
@@ -113,6 +116,14 @@ if tag_get_block_count(scenario_handle, "entities") > 0 then
     end
 end
 
+-- Remember the first entity as the 'sphere' to track with particles
+local sphere_entity_handle = nil
+if tag_get_block_count(scenario_handle, "entities") > 0 then
+    -- use index 0 for the first entity element
+    local ent = tag_get_block_field(scenario_handle, "entities", 0, "entity")
+    if ent and ent >= 0 then sphere_entity_handle = ent end
+end
+
 -- ------------------------------------------------------------
 -- Independent timers and indices
 -- ------------------------------------------------------------
@@ -120,7 +131,8 @@ local sphere_timer = 0
 local sphere_interval = 5   -- seconds
 local sphere_index = 1
 
-local station_timer = 0
+-- trigger immediately for debugging
+local station_timer = 5
 local station_interval = 5  -- seconds (can be different)
 local station_index = 2     -- start offset so they're on different materials
 
@@ -147,14 +159,14 @@ function update(dt)
     local light_x = math.sin(light_angle)
     local light_y = math.tan(light_angle) * math.tan(light_angle)
     local light_z = math.cos(light_angle)
-    light_direction(light_x, light_y, light_z)
+    light_direction(0, 0, 0)
 
     -- Cycle light color (hue shift)
     local hue = (total_time / light_col_cycle_time) * 360  -- degrees
     local r = (math.sin(hue * math.pi / 180) + 1) 
     local g = (math.sin((hue + 120) * math.pi / 180) + 1)
     local b = (math.sin((hue + 240) * math.pi / 180) + 1)
-    light_color(r, g, b)
+    light_color(1, 1, 1)
 
     -- --------------------------------------------------------
     -- 1. Update sphere material (uses sphere_handles)
@@ -206,5 +218,32 @@ function update(dt)
                 end
             end
         end
+        -- Debug: print assigned material properties to detect culling/winding issues
+        do
+            local mat_count = tag_get_block_count(station_model_handle, "materials")
+            print("Station materials after assignment: count=" .. tostring(mat_count))
+            for i = 0, mat_count - 1 do
+                local mat_handle = tag_get_block_field(station_model_handle, "materials", i, "material")
+                if mat_handle and mat_handle >= 0 then
+                    local ds = tag_get_field(mat_handle, "double_sided")
+                    local alpha = tag_get_field(mat_handle, "alpha")
+                    local rm = tag_get_field(mat_handle, "render_method")
+                    print(string.format("  material[%d]=%d double_sided=%s alpha=%.2f render_method=0x%X", i, mat_handle, tostring(ds), tonumber(alpha) or 0.0, tonumber(rm) or 0))
+                else
+                    print(string.format("  material[%d]=nil", i))
+                end
+            end
+        end
     end
+
+    -- --------------------------------------------------------
+    -- 3. Track sphere position with particle emitter (leave trail)
+    -- --------------------------------------------------------
+    --if sphere_entity_handle then
+    --    local pos = tag_get_field(sphere_entity_handle, "position")
+    --    if pos then
+    --        -- pos is a vec3-like table with x,y,z fields
+    --        particle_set_position(pos.x, pos.y, pos.z)
+    --    end
+    --end
 end

@@ -32,6 +32,7 @@
 #include "tags/globals.h"
 #include "tags/camera.h"
 #include "tags/lua_script.h"
+#include "tags/particle_emitter.h"   /* new particle emitter definition */
 
 #include "toolbox/model_importer.h"
 #include "toolbox/cbsp_builder.h"
@@ -87,6 +88,9 @@ static int g_print_material_count = 0;
 /* FIX: Window resize tracking */
 static int g_last_width = 0;
 static int g_last_height = 0;
+
+/* ---- Particle system state ---- */
+static i32 g_particle_emitter_handle = -1;   /* current emitter tag handle */
 
 /* ------------------------------------------------------------------------
    Lua helper - return the internal physics_body for a given entity index,
@@ -264,7 +268,6 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
    ------------------------------------------------------------------------ */
 static void scenario_render(void) {
     real aspect = (real)render_get_render_width() / (real)render_get_render_height();
-    i32 i;
 
     render_set_camera(sc_cam_eye, sc_cam_center, sc_cam_up,
                       sc_cam_fov * VECTORS_DEG2RAD, aspect);
@@ -273,7 +276,13 @@ static void scenario_render(void) {
 
     render_draw_entities(g_scene_world->entities, g_scene_world->entity_count);
 
-    render_finish();   /* sorts & draws transparent, swaps buffers */
+    /* ---- Set particle camera ---- */
+    vec3 forward = vec3_normalize(vec3_sub(sc_cam_center, sc_cam_eye));
+    vec3 right = vec3_normalize(vec3_cross(forward, sc_cam_up));
+    vec3 up = vec3_normalize(vec3_cross(right, forward));
+    render_particle_system_set_camera(&gl_view_proj, right, up);
+
+    render_finish();
 }
 
 /* ====================================================================
@@ -494,7 +503,7 @@ static i32 lua_load_scenario(lua_State *L) {
 }
 
 /* ------------------------------------------------------------------------
-   Tag reflection Lua API
+   Tag reflection Lua API (unchanged)
    ------------------------------------------------------------------------ */
 
 /* Helper: push a field value onto the Lua stack */
@@ -889,6 +898,99 @@ static i32 lua_tag_set_block_field(lua_State *L)
     return luaL_error(L, "field '%s' not found in block element", field_name);
 }
 
+/* ========================================================================
+   Particle Lua bindings
+   ======================================================================== */
+
+/* particle_load_emitter(name) -> handle */
+static i32 lua_particle_load_emitter(lua_State *L)
+{
+    const char *name = luaL_checkstring(L, 1);
+    i32 handle = tag_load(name, TAG_particle_emitter);
+    if (handle < 0) return luaL_error(L, "particle emitter '%s' not found", name);
+    g_particle_emitter_handle = handle;
+    particle_emitter_definition *def = (particle_emitter_definition*)tag_get(handle, TAG_particle_emitter);
+    if (def) {
+        render_particle_system_set_emitter(def);
+    }
+    lua_pushinteger(L, handle);
+    return 1;
+}
+
+/* particle_set_position(x, y, z) */
+static i32 lua_particle_set_position(lua_State *L)
+{
+    real x = (real)luaL_checknumber(L, 1);
+    real y = (real)luaL_checknumber(L, 2);
+    real z = (real)luaL_checknumber(L, 3);
+    g_emitter_pos = vec3_init_from_3(x, y, z);
+    /* Also update the tag if loaded */
+    if (g_particle_emitter_handle >= 0) {
+        particle_emitter_definition *def = (particle_emitter_definition*)tag_get(g_particle_emitter_handle, TAG_particle_emitter);
+        if (def) {
+            def->position = g_emitter_pos;
+            render_particle_system_set_emitter(def);
+        }
+    }
+    return 0;
+}
+
+/* particle_set_color(r, g, b) */
+static i32 lua_particle_set_color(lua_State *L)
+{
+    real r = (real)luaL_checknumber(L, 1);
+    real g = (real)luaL_checknumber(L, 2);
+    real b = (real)luaL_checknumber(L, 3);
+    g_emitter_color = vec3_init_from_3(r, g, b);
+    if (g_particle_emitter_handle >= 0) {
+        particle_emitter_definition *def = (particle_emitter_definition*)tag_get(g_particle_emitter_handle, TAG_particle_emitter);
+        if (def) {
+            def->color = g_emitter_color;
+            render_particle_system_set_emitter(def);
+        }
+    }
+    return 0;
+}
+
+/* particle_set_alpha(a) */
+static i32 lua_particle_set_alpha(lua_State *L)
+{
+    real a = (real)luaL_checknumber(L, 1);
+    g_emitter_alpha = a;
+    if (g_particle_emitter_handle >= 0) {
+        particle_emitter_definition *def = (particle_emitter_definition*)tag_get(g_particle_emitter_handle, TAG_particle_emitter);
+        if (def) {
+            def->alpha = a;
+            render_particle_system_set_emitter(def);
+        }
+    }
+    return 0;
+}
+
+/* particle_set_rate(rate) */
+static i32 lua_particle_set_rate(lua_State *L)
+{
+    real rate = (real)luaL_checknumber(L, 1);
+    g_emission_rate = rate;
+    if (g_particle_emitter_handle >= 0) {
+        particle_emitter_definition *def = (particle_emitter_definition*)tag_get(g_particle_emitter_handle, TAG_particle_emitter);
+        if (def) {
+            def->emission_rate = rate;
+            render_particle_system_set_emitter(def);
+        }
+    }
+    return 0;
+}
+
+/* particle_emit_burst(count) */
+static i32 lua_particle_emit_burst(lua_State *L)
+{
+    int count = (int)luaL_checkinteger(L, 1);
+    if (count <= 0) return 0;
+    render_particle_system_emit_burst(count);
+    return 0;
+}
+
 /* ------------------------------------------------------------------------
    Lua registration
    ------------------------------------------------------------------------ */
@@ -915,6 +1017,14 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "tag_set_block_field",  lua_tag_set_block_field);
     lua_register_builtin(state, "tag_get_script",       lua_tag_get_script);
 
+    /* Particle bindings */
+    lua_register_builtin(state, "particle_load_emitter",    lua_particle_load_emitter);
+    lua_register_builtin(state, "particle_set_position",    lua_particle_set_position);
+    lua_register_builtin(state, "particle_set_color",       lua_particle_set_color);
+    lua_register_builtin(state, "particle_set_alpha",       lua_particle_set_alpha);
+    lua_register_builtin(state, "particle_set_rate",        lua_particle_set_rate);
+    lua_register_builtin(state, "particle_emit_burst",      lua_particle_emit_burst);
+
     lua_register_builtin(state, "vec2",                 lua_builtin_vec2);
     lua_register_builtin(state, "vec3",                 lua_builtin_vec3);
     lua_register_builtin(state, "vec4",                 lua_builtin_vec4);
@@ -933,6 +1043,7 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_set_global_integer(state, "TAG_material",       TAG_material);
     lua_set_global_integer(state, "TAG_model",          TAG_model);
     lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
+    lua_set_global_integer(state, "TAG_particle_emitter", TAG_particle_emitter);
 }
 
 static void runtime_bind_lua_state(lua_state *state, void *userdata) {
@@ -1005,6 +1116,53 @@ static void runtime_init(void) {
     if (scripts_add_lua("script.lua", runtime_bind_lua_state, g_scene_world) < 0)
         fprintf(stderr, "Failed to load Lua script: script.lua\n");
 
+    /* ---- Particle system init ---- */
+    render_particle_system_init(4096);
+    g_particle_emitter_handle = tag_load("default_particle_emitter", TAG_particle_emitter);
+    if (g_particle_emitter_handle >= 0) {
+        particle_emitter_definition *def = (particle_emitter_definition*)tag_get(g_particle_emitter_handle, TAG_particle_emitter);
+        if (def) {
+            render_particle_system_set_emitter(def);
+            /* Store parameters for Lua access */
+            g_emitter_pos = def->position;
+            g_emitter_color = def->color;
+            g_emitter_alpha = def->alpha;
+            g_emitter_size = def->size;
+            g_emitter_lifetime = def->lifetime;
+            g_emitter_speed = def->speed;
+            g_emitter_spread = def->spread;
+            g_emitter_gravity = def->gravity;
+            g_emitter_loop = def->loop;
+            g_emission_rate = def->emission_rate;
+        }
+    } else {
+        fprintf(stderr, "Warning: default_particle_emitter not found, using defaults\n");
+        /* Set default parameters manually */
+        g_emitter_pos = vec3_init_from_3(0,0,0);
+        g_emitter_color = vec3_init_from_3(1,0.8f,0.4f);
+        g_emitter_alpha = 1.0f;
+        g_emitter_size = 0.1f;
+        g_emitter_lifetime = 0.5f;
+        g_emitter_speed = 2.0f;
+        g_emitter_spread = 0.5f;
+        g_emitter_gravity = 0.0f;
+        g_emitter_loop = 1;
+        g_emission_rate = 30.0f;
+        /* Need to set emitter in rasterizer using a temporary def */
+        particle_emitter_definition tmp = DEFAULT_PARTICLE_EMITTER;
+        tmp.position = g_emitter_pos;
+        tmp.color = g_emitter_color;
+        tmp.alpha = g_emitter_alpha;
+        tmp.size = g_emitter_size;
+        tmp.lifetime = g_emitter_lifetime;
+        tmp.speed = g_emitter_speed;
+        tmp.spread = g_emitter_spread;
+        tmp.gravity = g_emitter_gravity;
+        tmp.loop = g_emitter_loop;
+        tmp.emission_rate = g_emission_rate;
+        render_particle_system_set_emitter(&tmp);
+    }
+
     runtime_start();
 }
 
@@ -1025,6 +1183,7 @@ static void runtime_reconfigure_thread_count(i32 new_thread_count)
 }
 
 static void runtime_shutdown(void) {
+    render_particle_system_shutdown();
     scripts_shutdown();
     if (g_jobgraph) {
         jobgraph_destroy(g_jobgraph);
@@ -1105,6 +1264,8 @@ static void runtime_start(void)
             if (!sc_pause_physics) {
                 physics_step(&g_scene_world->physics, fixed_dt);
             }
+            /* Update particles */
+            render_particle_system_update((float)fixed_dt);
 
             accumulator -= fixed_dt;
             step_count++;

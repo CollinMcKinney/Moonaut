@@ -237,6 +237,9 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilOp)(unsigned int sfail, unsigne
 typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilMask)(unsigned int mask);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDepthMask)(unsigned char flag);
 
+/* 1.0/1.1 ReadPixels (added) */
+typedef void (C89GL_APIENTRY *C89GL_PFN_glReadPixels)(int x, int y, int width, int height, unsigned int format, unsigned int type, void* pixels);
+
 /* 1.5 Buffers */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGenBuffers)(int n, unsigned int* buffers);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDeleteBuffers)(int n, const unsigned int* buffers);
@@ -401,6 +404,9 @@ extern C89GL_PFN_glStencilFunc C89GL_glStencilFunc;
 extern C89GL_PFN_glStencilOp C89GL_glStencilOp;
 extern C89GL_PFN_glStencilMask C89GL_glStencilMask;
 extern C89GL_PFN_glDepthMask C89GL_glDepthMask;
+
+/* 1.0/1.1 ReadPixels (added) */
+extern C89GL_PFN_glReadPixels C89GL_glReadPixels;
 
 /* 1.5 */
 extern C89GL_PFN_glGenBuffers C89GL_glGenBuffers;
@@ -631,6 +637,9 @@ C89GL_PFN_glStencilOp C89GL_glStencilOp = NULL;
 C89GL_PFN_glStencilMask C89GL_glStencilMask = NULL;
 C89GL_PFN_glDepthMask C89GL_glDepthMask = NULL;
 
+/* 1.0/1.1 ReadPixels (added) */
+C89GL_PFN_glReadPixels C89GL_glReadPixels = NULL;
+
 /* 1.5 */
 C89GL_PFN_glGenBuffers C89GL_glGenBuffers = NULL;
 C89GL_PFN_glDeleteBuffers C89GL_glDeleteBuffers = NULL;
@@ -779,6 +788,9 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glStencilOp, "glStencilOp");
     C89GL_LOAD_FUNC(C89GL_glStencilMask, "glStencilMask");
     C89GL_LOAD_FUNC(C89GL_glDepthMask, "glDepthMask");
+
+    /* 1.0/1.1 ReadPixels (added) */
+    C89GL_LOAD_FUNC(C89GL_glReadPixels, "glReadPixels");
 
     /* 1.5 */
     C89GL_LOAD_FUNC(C89GL_glGenBuffers, "glGenBuffers");
