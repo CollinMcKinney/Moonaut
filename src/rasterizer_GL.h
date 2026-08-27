@@ -28,8 +28,8 @@
  *   - Depth writes disabled for transparent objects
  *
  * Shaders are loaded from external files:
- *   - render.vert  (vertex shader)
- *   - render.frag  (fragment shader)
+ *   - material.vert  (vertex shader)
+ *   - material.frag  (fragment shader)
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
@@ -514,8 +514,8 @@ static shader_variant_t* get_program_for_method(render_method key) {
     printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
     char defines[4096];
     generate_defines(key, defines, sizeof(defines));
-    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "render.vert", defines);
-    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "render.frag", defines);
+    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "material.vert", defines);
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material.frag", defines);
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
         if (fs) C89GL_glDeleteShader(fs);

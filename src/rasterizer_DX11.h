@@ -11,7 +11,7 @@
  *   #include "rasterizer_DX11.h"
  * in exactly one .c file.
  *
- * Shader files "render_vs.hlsl" and "render_ps.hlsl" must be present
+ * Shader files "material.vs.hlsl" and "material.ps.hlsl" must be present
  * in the working directory.
  *
  * Link with: d3d11.lib, dxgi.lib, d3dcompiler_47.lib (or d3dcompiler.lib)
@@ -480,8 +480,8 @@ static dx_shader_variant_t* dx_get_program_for_method(render_method key) {
     char defines[4096];
     dx_generate_defines(key, defines, sizeof(defines));
 
-    ID3DBlob *vs_blob = dx_compile_shader_with_defines("render_vs.hlsl", defines, "main", "vs_4_0");
-    ID3DBlob *ps_blob = dx_compile_shader_with_defines("render_ps.hlsl", defines, "main", "ps_4_0");
+    ID3DBlob *vs_blob = dx_compile_shader_with_defines("material.vs.hlsl", defines, "main", "vs_4_0");
+    ID3DBlob *ps_blob = dx_compile_shader_with_defines("material.ps.hlsl", defines, "main", "ps_4_0");
 
     if (!vs_blob || !ps_blob) {
         if (vs_blob) vs_blob->lpVtbl->Release(vs_blob);
@@ -1289,7 +1289,7 @@ int render_init(i32 window_width, i32 window_height) {
     layout_index++;
 
     char defines[] = "#define DUMMY\n";
-    ID3DBlob *vs_blob = dx_compile_shader_with_defines("render_vs.hlsl", defines, "main", "vs_4_0");
+    ID3DBlob *vs_blob = dx_compile_shader_with_defines("material.vs.hlsl", defines, "main", "vs_4_0");
     if (!vs_blob) {
         printf("ERROR: Failed to compile initial vertex shader for input layout.\n");
         dx_release_com_objects();
