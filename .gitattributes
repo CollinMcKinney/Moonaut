@@ -1,4 +1,8 @@
 libs/lua-5.5.0/** linguist-vendored
+libs/C89FW/** linguist-vendored
+libs/audiopipe/** linguist-vendored
+libs/jobgraph/** linguist-vendored
+libs/menus/** linguist-vendored
 
 *.md linguist-documentation
 
