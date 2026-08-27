@@ -99,8 +99,8 @@ static INLINE u8 color_to_u8(real x);
 /*  Constants                                                                  */
 /* ---------------------------------------------------------------------------*/
 
-/* Changed: material cbuffer now uses 18 float4s (was 15) to accommodate clearcoat & sheen */
-#define MATERIAL_CB_SIZE_FLOAT4 18
+/* Material cbuffer mirrors GL's std140 layout, including padding between effects. */
+#define MATERIAL_CB_SIZE_FLOAT4 19
 #define MATERIAL_CB_SIZE_BYTES  (MATERIAL_CB_SIZE_FLOAT4 * 16)
 #define MAX_MODEL_MATRICES       1024
 #define MAX_BATCHES              128
@@ -142,7 +142,7 @@ typedef struct {
 } dx_shader_variant_t;
 
 typedef struct {
-    float data[MATERIAL_CB_SIZE_FLOAT4][4];  /* now 18 entries */
+    float data[MATERIAL_CB_SIZE_FLOAT4][4];
 } dx_material_cb_t;
 
 typedef struct {
@@ -153,11 +153,9 @@ typedef struct {
     float cam_eye[4];
     float cam_right[4];
     float cam_up[4];
-    float time;
+    float time[4];         /* x = uTime */
     float fog_color[4];
-    float fog_start;
-    float fog_end;
-    float pad[5];          /* total size = 176 bytes (multiple of 16) */
+    float fog_params[4];   /* x = uFogStart, y = uFogEnd */
 } dx_globals_cb_t;
 
 typedef struct {
@@ -525,7 +523,6 @@ static void dx_spawn_particle(void) {
     p->size = dx_rand_float(dx_emitter_size * 0.8f, dx_emitter_size * 1.2f);
     p->color = vec4_init_from_4(dx_emitter_color.position.x, dx_emitter_color.position.y, dx_emitter_color.position.z, dx_emitter_alpha);
     dx_particle_count++;
-    printf("[DX PARTICLES] spawned idx=%d pos=(%.2f,%.2f,%.2f)\n", dx_particle_count, p->center.position.x, p->center.position.y, p->center.position.z);
 }
 
 void render_particle_system_update(float dt) {
@@ -602,9 +599,9 @@ static void dx_render_particle_system_draw_internal(void) {
     cb.light_col[0] = (float)dx_light_col.position.x; cb.light_col[1] = (float)dx_light_col.position.y; cb.light_col[2] = (float)dx_light_col.position.z;
     cb.ambient_col[0] = (float)dx_ambient_col.position.x; cb.ambient_col[1] = (float)dx_ambient_col.position.y; cb.ambient_col[2] = (float)dx_ambient_col.position.z;
     cb.cam_eye[0] = (float)dx_cam_eye.position.x; cb.cam_eye[1] = (float)dx_cam_eye.position.y; cb.cam_eye[2] = (float)dx_cam_eye.position.z;
-    cb.time = (float)dx_time;
+    cb.time[0] = (float)dx_time;
     cb.fog_color[0] = (float)dx_fog_color.position.x; cb.fog_color[1] = (float)dx_fog_color.position.y; cb.fog_color[2] = (float)dx_fog_color.position.z;
-    cb.fog_start = (float)dx_fog_start; cb.fog_end = (float)dx_fog_end;
+    cb.fog_params[0] = (float)dx_fog_start; cb.fog_params[1] = (float)dx_fog_end;
     dx_context->lpVtbl->UpdateSubresource(dx_context, (ID3D11Resource*)dx_globals_cb, 0, NULL, &cb, 0, 0);
 
     /* Bind instance buffer as vertex buffer (per-instance) */
@@ -636,7 +633,6 @@ static void dx_render_particle_system_draw_internal(void) {
 
     /* Draw 6 verts per instance */
     if (dx_particle_count > 0) {
-        printf("[DX PARTICLES] DrawInstanced count=%d\n", dx_particle_count);
         dx_context->lpVtbl->DrawInstanced(dx_context, 6, dx_particle_count, 0, 0);
     }
 
@@ -648,6 +644,10 @@ static void dx_render_particle_system_draw_internal(void) {
     dx_context->lpVtbl->OMSetDepthStencilState(dx_context, prevDepth, prevStencilRef);
     if (prevBlend) prevBlend->lpVtbl->Release(prevBlend);
     if (prevDepth) prevDepth->lpVtbl->Release(prevDepth);
+
+    dx_last_material = NULL;
+    dx_last_rasterizer = NULL;
+    dx_last_is_transparent = -1;
 }
 
 static mat4 dx_entity_model_matrix(const struct entity_definition *ent) {
@@ -1101,7 +1101,7 @@ static int dx_create_buffers(void) {
     D3D11_BUFFER_DESC ib_desc;
 
     memset(&cb_desc, 0, sizeof(cb_desc));
-    cb_desc.ByteWidth      = sizeof(dx_material_cb_t);  /* now 288 bytes */
+    cb_desc.ByteWidth      = sizeof(dx_material_cb_t);
     cb_desc.Usage          = D3D11_USAGE_DEFAULT;
     cb_desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
     cb_desc.CPUAccessFlags = 0;
@@ -1209,20 +1209,21 @@ static void dx_update_material_cb(const struct material_definition *mat) {
     cb->data[13][3] = (float)mat->strobe_frequency;
     cb->data[14][0] = (float)mat->strobe_phase;
 
-    /* ---- New clearcoat & sheen fields (indices 15,16,17) ---- */
+    /* ---- New clearcoat & sheen fields ---- */
     cb->data[15][0] = (float)mat->clearcoat_color.position.x;
     cb->data[15][1] = (float)mat->clearcoat_color.position.y;
     cb->data[15][2] = (float)mat->clearcoat_color.position.z;
     cb->data[15][3] = (float)mat->clearcoat_exponent;
 
     cb->data[16][0] = (float)mat->clearcoat_strength;
-    cb->data[16][1] = (float)mat->sheen_color.position.x;
-    cb->data[16][2] = (float)mat->sheen_color.position.y;
-    cb->data[16][3] = (float)mat->sheen_color.position.z;
 
-    cb->data[17][0] = (float)mat->sheen_exponent;
-    cb->data[17][1] = (float)mat->sheen_strength;
-    /* data[17][2] and data[17][3] remain 0 */
+    cb->data[17][0] = (float)mat->sheen_color.position.x;
+    cb->data[17][1] = (float)mat->sheen_color.position.y;
+    cb->data[17][2] = (float)mat->sheen_color.position.z;
+    cb->data[17][3] = (float)mat->sheen_exponent;
+
+    cb->data[18][0] = (float)mat->sheen_strength;
+    /* data[18][1..3] remain 0 */
 
     dx_context->lpVtbl->UpdateSubresource(dx_context,
                                           (ID3D11Resource*)dx_material_cb,
@@ -1259,14 +1260,14 @@ static void dx_update_globals_cb(void) {
     cb.cam_right[0] = (float)dx_view.transpose[0][0]; cb.cam_right[1] = (float)dx_view.transpose[0][1]; cb.cam_right[2] = (float)dx_view.transpose[0][2];
     cb.cam_up[0]    = (float)dx_view.transpose[1][0]; cb.cam_up[1]    = (float)dx_view.transpose[1][1]; cb.cam_up[2]    = (float)dx_view.transpose[1][2];
 
-    cb.time = (float)dx_time;
+    cb.time[0] = (float)dx_time;
 
     cb.fog_color[0] = (float)dx_fog_color.position.x;
     cb.fog_color[1] = (float)dx_fog_color.position.y;
     cb.fog_color[2] = (float)dx_fog_color.position.z;
 
-    cb.fog_start = (float)dx_fog_start;
-    cb.fog_end   = (float)dx_fog_end;
+    cb.fog_params[0] = (float)dx_fog_start;
+    cb.fog_params[1] = (float)dx_fog_end;
 
     dx_context->lpVtbl->UpdateSubresource(dx_context,
                                           (ID3D11Resource*)dx_globals_cb,

@@ -7,9 +7,11 @@ cbuffer Globals : register(b1) {
     float4 uCamRight;
     float4 uCamUp;
     float uTime;
+    float3 _GlobalsPad0;
     float4 uFogColor;
     float uFogStart;
     float uFogEnd;
+    float2 _GlobalsPad1;
 }
 
 struct VSOut {

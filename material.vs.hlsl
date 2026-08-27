@@ -1,5 +1,5 @@
 cbuffer MaterialCB : register(b0) {
-    float4 uMatData[18];   // now 18 elements
+    float4 uMatData[19];
 }
 
 cbuffer GlobalsCB : register(b1) {
@@ -8,11 +8,14 @@ cbuffer GlobalsCB : register(b1) {
     float4 uLightCol;
     float4 uAmbientCol;
     float4 uCamEye;
+    float4 uCamRight;
+    float4 uCamUp;
     float uTime;
+    float3 _GlobalsPad0;
     float4 uFogColor;
     float uFogStart;
     float uFogEnd;
-    float pad[5];
+    float2 _GlobalsPad1;
 }
 
 cbuffer ModelCB : register(b2) {
@@ -57,9 +60,9 @@ cbuffer ModelCB : register(b2) {
 #define uMatClearcoatColor uMatData[15].xyz
 #define uMatClearcoatExponent uMatData[15].w
 #define uMatClearcoatStrength uMatData[16].x
-#define uMatSheenColor uMatData[16].yzw
-#define uMatSheenExponent uMatData[17].x
-#define uMatSheenStrength uMatData[17].y
+#define uMatSheenColor uMatData[17].xyz
+#define uMatSheenExponent uMatData[17].w
+#define uMatSheenStrength uMatData[18].x
 
 struct VS_INPUT {
     float3 pos : POSITION;
@@ -102,7 +105,12 @@ float hash_float(float3 p) {
 
 float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
     N = normalize(N);
-    float3 L = normalize(uLightDir.xyz);
+    float3 L;
+    if (length(uLightDir.xyz) < 0.0001) {
+        L = float3(0, 0, 0);
+    } else {
+        L = normalize(uLightDir.xyz);
+    }
     float3 V = normalize(uCamEye.xyz - worldPos);
     float ndotl = saturate(dot(N, L));
     float ndotv = saturate(dot(N, V));

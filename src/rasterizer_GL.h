@@ -134,7 +134,7 @@ static i32 gl_render_height = 0;
 #define MATERIAL_UBO_BINDING  0
 #define MODEL_UBO_BINDING     1
 
-/* ---- Material UBO (std140, 240 bytes) ---- */
+/* ---- Material UBO (std140, 304 bytes) ---- */
 typedef struct {
     float uMatColor[3];
     float _pad0;
@@ -185,6 +185,7 @@ typedef struct {
     float uSheenColor[3];
     float uSheenExponent;
     float uSheenStrength;
+    float _pad6[3];
 
 } material_ubo_t;
 

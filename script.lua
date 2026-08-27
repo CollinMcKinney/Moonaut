@@ -159,7 +159,7 @@ function update(dt)
     local light_x = math.sin(light_angle)
     local light_y = math.tan(light_angle) * math.tan(light_angle)
     local light_z = math.cos(light_angle)
-    light_direction(0, 0, 0)
+    light_direction(light_x, light_y, light_z)
 
     -- Cycle light color (hue shift)
     local hue = (total_time / light_col_cycle_time) * 360  -- degrees
@@ -239,11 +239,11 @@ function update(dt)
     -- --------------------------------------------------------
     -- 3. Track sphere position with particle emitter (leave trail)
     -- --------------------------------------------------------
-    --if sphere_entity_handle then
-    --    local pos = tag_get_field(sphere_entity_handle, "position")
-    --    if pos then
-    --        -- pos is a vec3-like table with x,y,z fields
-    --        particle_set_position(pos.x, pos.y, pos.z)
-    --    end
-    --end
+    if sphere_entity_handle then
+        local pos = tag_get_field(sphere_entity_handle, "position")
+        if pos then
+            -- pos is a vec3-like table with x,y,z fields
+            particle_set_position(pos.x, pos.y, pos.z)
+        end
+    end
 end
