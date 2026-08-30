@@ -991,6 +991,118 @@ static i32 lua_particle_emit_burst(lua_State *L)
     return 0;
 }
 
+/* ========================================================================
+   Light Lua bindings (NEW)
+   ======================================================================== */
+
+static i32 lua_light_clear(lua_State *L) {
+    (void)L;
+    render_clear_lights();
+    return 0;
+}
+
+static i32 lua_light_set_type(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    int type = (int)luaL_checkinteger(L, 2);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+    }
+    g_lights[index].type = (enum32)type;
+    g_lights[index].enabled = 1;
+    return 0;
+}
+
+static i32 lua_light_set_position(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+        g_lights[index].enabled = 1;
+    }
+    vec3 pos = vec3_init_from_3((real)luaL_checknumber(L, 2),
+                                (real)luaL_checknumber(L, 3),
+                                (real)luaL_checknumber(L, 4));
+    g_lights[index].position = pos;
+    return 0;
+}
+
+static i32 lua_light_set_color(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+        g_lights[index].enabled = 1;
+    }
+    vec3 col = vec3_init_from_3((real)luaL_checknumber(L, 2),
+                                (real)luaL_checknumber(L, 3),
+                                (real)luaL_checknumber(L, 4));
+    g_lights[index].color = col;
+    return 0;
+}
+
+static i32 lua_light_set_direction(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+        g_lights[index].enabled = 1;
+    }
+    vec3 dir = vec3_init_from_3((real)luaL_checknumber(L, 2),
+                                (real)luaL_checknumber(L, 3),
+                                (real)luaL_checknumber(L, 4));
+    g_lights[index].direction = vec3_normalize(dir);
+    return 0;
+}
+
+static i32 lua_light_set_range(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+        g_lights[index].enabled = 1;
+    }
+    g_lights[index].range = (real)luaL_checknumber(L, 2);
+    return 0;
+}
+
+static i32 lua_light_set_spot_params(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+        g_lights[index].enabled = 1;
+    }
+    g_lights[index].spot_inner_angle = (real)luaL_checknumber(L, 2);
+    g_lights[index].spot_outer_angle = (real)luaL_checknumber(L, 3);
+    g_lights[index].spot_falloff = (real)luaL_checknumber(L, 4);
+    return 0;
+}
+
+static i32 lua_light_set_enabled(lua_State *L) {
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= RENDER_MAX_LIGHTS)
+        return luaL_error(L, "light index out of range");
+    if (index >= g_light_count) {
+        g_light_count = index + 1;
+        memset(&g_lights[index], 0, sizeof(light_definition));
+    }
+    g_lights[index].enabled = (bool)lua_toboolean(L, 2);
+    return 0;
+}
+
 /* ------------------------------------------------------------------------
    Lua registration
    ------------------------------------------------------------------------ */
@@ -1025,6 +1137,16 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "particle_set_rate",        lua_particle_set_rate);
     lua_register_builtin(state, "particle_emit_burst",      lua_particle_emit_burst);
 
+    /* ---- Light bindings (NEW) ---- */
+    lua_register_builtin(state, "light_clear",          lua_light_clear);
+    lua_register_builtin(state, "light_set_type",       lua_light_set_type);
+    lua_register_builtin(state, "light_set_position",   lua_light_set_position);
+    lua_register_builtin(state, "light_set_color",      lua_light_set_color);
+    lua_register_builtin(state, "light_set_direction",  lua_light_set_direction);
+    lua_register_builtin(state, "light_set_range",      lua_light_set_range);
+    lua_register_builtin(state, "light_set_spot_params", lua_light_set_spot_params);
+    lua_register_builtin(state, "light_set_enabled",    lua_light_set_enabled);
+
     lua_register_builtin(state, "vec2",                 lua_builtin_vec2);
     lua_register_builtin(state, "vec3",                 lua_builtin_vec3);
     lua_register_builtin(state, "vec4",                 lua_builtin_vec4);
@@ -1044,6 +1166,12 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_set_global_integer(state, "TAG_model",          TAG_model);
     lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
     lua_set_global_integer(state, "TAG_particle_emitter", TAG_particle_emitter);
+    lua_set_global_integer(state, "TAG_light",          TAG_light);
+
+    /* Light types. */
+    lua_set_global_integer(state, "LIGHT_DIRECTIONAL",  LIGHT_DIRECTIONAL);
+    lua_set_global_integer(state, "LIGHT_POINT",        LIGHT_POINT);
+    lua_set_global_integer(state, "LIGHT_SPOT",         LIGHT_SPOT);
 }
 
 static void runtime_bind_lua_state(lua_state *state, void *userdata) {
@@ -1277,6 +1405,7 @@ static void runtime_start(void)
 
         render_set_time((real)now);
         scenario_render();
+
 
         const u32 *fb = render_get_fb();
         present_frame((void*)fb);

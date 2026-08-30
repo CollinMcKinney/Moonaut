@@ -51,6 +51,7 @@
 #include "tags/model.h"
 #include "tags/material.h"
 #include "tags/particle_emitter.h"
+#include "tags/light.h"
 
 #define C89GL_IMPLEMENTATION
 #include "../libs/C89FW/C89GL.h"
@@ -60,7 +61,6 @@ extern "C" {
 #endif
 
 /* ---- Public API ---- */
-
 int  render_init(i32 window_width, i32 window_height);
 void render_shutdown(void);
 void render_set_light(vec3 dir, vec3 col, vec3 amb);
@@ -69,38 +69,31 @@ void render_set_fog(vec3 color, real start, real end);
 void render_set_time(real t);
 void render_clear(u8 r, u8 g, u8 b);
 void render_clear_color(real r, real g, real b);
-
-/* Legacy per‑triangle draw (backward compatible - CPU transforms) */
 void draw_triangle_shaded(
     vec3 v0, vec3 v1, vec3 v2,
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat
 );
-
-/* Entity‑level draw - uses entity depth for transparent sorting (CPU transforms) */
 void render_draw_entity(const struct entity_definition *ent);
-
-/* Batch draw - sorts entities by depth before drawing (GPU transforms + indexed) */
 void render_draw_entities(struct entity_definition **entities, int count);
-
 void render_finish(void);
 const u32* render_get_fb(void);
 int render_resize(i32 new_w, i32 new_h);
-
 void render_set_render_resolution(i32 render_width, i32 render_height);
 i32 render_get_render_width(void);
 i32 render_get_render_height(void);
-
 static INLINE u8 color_to_u8(real x);
 
-/* ---- Particle system API (OpenGL) ---- */
 void render_particle_system_init(int max_particles);
 void render_particle_system_shutdown(void);
 void render_particle_system_set_emitter(const struct particle_emitter_definition *def);
 void render_particle_system_update(float dt);
 void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up);
 void render_particle_system_emit_burst(int count);
+
+void render_clear_lights(void);
+void render_set_light_at_index(int index, const struct light_definition *def);
 
 #ifdef __cplusplus
 }
@@ -116,25 +109,37 @@ void render_particle_system_emit_burst(int count);
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+
+/* ---- Extra light limits (must match shader) ---- */
+#define MAX_EXTRA_DIR_LIGHTS   16
+#define MAX_EXTRA_POINT_LIGHTS 64
+#define MAX_EXTRA_SPOT_LIGHTS  64
+
+#ifndef GL_UNIFORM_BLOCK_DATA_SIZE
+#define GL_UNIFORM_BLOCK_DATA_SIZE 0x8A3C
+#endif
+#ifndef GL_UNIFORM_BLOCK_BINDING
+#define GL_UNIFORM_BLOCK_BINDING 0x8A3F
+#endif
+#ifndef GL_UNIFORM_OFFSET
+#define GL_UNIFORM_OFFSET 0x8A3D
+#endif
 
 /* ---------------------------------------------------------------------------
    Internal state
    --------------------------------------------------------------------------- */
-
-/* ---- GL context (owned by the rasterizer) ---- */
 static C89GL_Context gl_ctx;
 
-/* ---- Window state ---- */
 static i32 gl_win_width  = 0;
 static i32 gl_win_height = 0;
 static i32 gl_render_width  = 0;
 static i32 gl_render_height = 0;
 
-/* ---- UBO binding points ---- */
 #define MATERIAL_UBO_BINDING  0
 #define MODEL_UBO_BINDING     1
 
-/* ---- Material UBO (std140, 304 bytes) ---- */
+/* ---- Material UBO (std140) ---- */
 typedef struct {
     float uMatColor[3];
     float _pad0;
@@ -174,22 +179,16 @@ typedef struct {
     float uMatStrobeFrequency;
     float uMatStrobePhase;
     float _pad4[3];
-
-    /* NEW: Clearcoat */
     float uClearcoatColor[3];
     float uClearcoatExponent;
     float uClearcoatStrength;
     float _pad5[3];
-
-    /* NEW: Sheen */
     float uSheenColor[3];
     float uSheenExponent;
     float uSheenStrength;
     float _pad6[3];
-
 } material_ubo_t;
 
-/* ---- Model matrices UBO (for GPU transforms) ---- */
 #define MAX_MODEL_MATRICES 1024
 
 /* ---- Shader variant cache ---- */
@@ -206,6 +205,27 @@ typedef struct {
     GLint u_fog_color;
     GLint u_fog_start;
     GLint u_fog_end;
+
+    /* Directional */
+    GLint u_num_dir_lights;
+    GLint u_dir_dir[MAX_EXTRA_DIR_LIGHTS];
+    GLint u_dir_col[MAX_EXTRA_DIR_LIGHTS];
+
+    /* Point */
+    GLint u_num_point_lights;
+    GLint u_point_pos[MAX_EXTRA_POINT_LIGHTS];
+    GLint u_point_col[MAX_EXTRA_POINT_LIGHTS];
+    GLint u_point_range[MAX_EXTRA_POINT_LIGHTS];
+
+    /* Spot */
+    GLint u_num_spot_lights;
+    GLint u_spot_pos[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_spot_dir[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_spot_col[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_spot_range[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_spot_inner_cos[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_spot_outer_cos[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_spot_falloff[MAX_EXTRA_SPOT_LIGHTS];
 } shader_variant_t;
 
 #define SHADER_CACHE_INITIAL_SIZE 64
@@ -220,13 +240,12 @@ static int gl_shader_compilations = 0;
 static GLuint gl_material_ubo = 0;
 static GLuint gl_model_ubo = 0;
 
-/* ---- Frustum culling state ---- */
+/* ---- Frustum culling ---- */
 #define FRUSTUM_PLANES 6
 typedef struct {
     vec3 normal;
     real d;
 } frustum_plane_t;
-
 static frustum_plane_t gl_frustum[FRUSTUM_PLANES];
 static mat4 gl_view, gl_proj, gl_view_proj;
 static vec3 gl_cam_eye;
@@ -240,7 +259,12 @@ static real gl_fog_start;
 static real gl_fog_end;
 static real gl_time;
 
-/* ---- VAO / VBO (dynamic for vertex & index data) ---- */
+/* ---- Global light list (for Lua) ---- */
+#define RENDER_MAX_LIGHTS (MAX_EXTRA_DIR_LIGHTS + MAX_EXTRA_POINT_LIGHTS + MAX_EXTRA_SPOT_LIGHTS)
+static light_definition g_lights[RENDER_MAX_LIGHTS];
+static int g_light_count = 0;
+
+/* ---- VAO / VBO ---- */
 static GLuint gl_vao = 0;
 static GLuint gl_vertex_vbo = 0;
 static GLuint gl_index_vbo = 0;
@@ -253,7 +277,7 @@ static GLuint gl_color_tex = 0;
 static GLuint gl_depth_rb = 0;
 static GLint gl_default_fbo = 0;
 
-/* ---- Batching state (indexed) ---- */
+/* ---- Batching state ---- */
 #define MAX_BATCHES         128
 #define MAX_TRANSPARENT_TRIS 8192
 #define MAX_VERTICES_PER_FRAME (1024 * 1024)
@@ -261,7 +285,6 @@ static GLint gl_default_fbo = 0;
 #define VERTEX_STRIDE_FLOATS 16
 #define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
 
-/* Transparent triangle storage */
 typedef struct {
     vec3 v0, v1, v2;
     vec3 n0, n1, n2;
@@ -272,7 +295,6 @@ typedef struct {
     int   model_index;
 } transparent_tri_t;
 
-/* Batch entry */
 typedef struct {
     const struct material_definition *mat;
     size_t vertex_offset;
@@ -283,7 +305,6 @@ typedef struct {
     int    is_transparent;
 } batch_t;
 
-/* Dynamic pools */
 static float *gl_vertex_pool = NULL;
 static size_t gl_pool_capacity_floats = 0;
 static size_t gl_pool_used_floats = 0;
@@ -299,14 +320,10 @@ static transparent_tri_t gl_transparent_tris[MAX_TRANSPARENT_TRIS];
 static i32 gl_transparent_count = 0;
 static i32 gl_transparent_triangle_id = 0;
 
-/* ---- Model matrix storage for current frame ---- */
 static mat4 gl_model_matrices[MAX_MODEL_MATRICES];
 static int gl_model_count = 0;
 
-/* ========================================================================
-   Particle system (internal)
-   ======================================================================== */
-
+/* ---- Particle system ---- */
 typedef struct {
     vec3 center;
     vec4 color;
@@ -317,7 +334,6 @@ static particle_instance_t *g_particles = NULL;
 static int g_particle_count = 0;
 static int g_particle_capacity = 0;
 
-/* Emitter parameters */
 static vec3  g_emitter_pos;
 static vec3  g_emitter_color;
 static float g_emitter_alpha;
@@ -331,12 +347,10 @@ static float g_emission_rate;
 static float g_emission_timer;
 static int   g_burst_done;
 
-/* Particle extra arrays (velocity, lifetimes) */
 static vec3  *g_particle_velocities = NULL;
 static float *g_particle_lifetimes = NULL;
 static float *g_particle_max_lifetimes = NULL;
 
-/* Particle GL objects */
 static GLuint g_particle_vao = 0;
 static GLuint g_particle_vbo = 0;
 static GLuint g_particle_program = 0;
@@ -344,14 +358,13 @@ static GLint  g_particle_u_view_proj = -1;
 static GLint  g_particle_u_cam_right = -1;
 static GLint  g_particle_u_cam_up = -1;
 
-/* Particle camera state (set from runtime) */
 static mat4 g_particle_view_proj;
 static vec3 g_particle_cam_right;
 static vec3 g_particle_cam_up;
 static int  g_particle_cam_valid = 0;
 
 /* ---------------------------------------------------------------------------
-   Helper: compute model matrix from entity (no scale)
+   Helper functions
    --------------------------------------------------------------------------- */
 static mat4 entity_model_matrix(const entity_definition *ent) {
     mat4 R = quat_to_mat4(ent->orientation);
@@ -359,9 +372,6 @@ static mat4 entity_model_matrix(const entity_definition *ent) {
     return mat4_mul(T, R);
 }
 
-/* ---------------------------------------------------------------------------
-   Helper: sort entities by depth
-   --------------------------------------------------------------------------- */
 typedef struct {
     struct entity_definition *ent;
     float depth;
@@ -376,9 +386,6 @@ static int entity_sort_compare(const void* a, const void* b) {
     return 0;
 }
 
-/* ---------------------------------------------------------------------------
-   Helper: color conversion
-   --------------------------------------------------------------------------- */
 static INLINE u8 color_to_u8(real x) {
     if (x < 0.0f) return 0;
     if (x > 1.0f) return 255;
@@ -386,7 +393,7 @@ static INLINE u8 color_to_u8(real x) {
 }
 
 /* ---------------------------------------------------------------------------
-   Frustum culling (unchanged)
+   Frustum culling
    --------------------------------------------------------------------------- */
 static void extract_frustum_planes(void) {
     vec4 c0 = gl_view_proj.columns[0];
@@ -441,7 +448,7 @@ static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
 }
 
 /* ---------------------------------------------------------------------------
-   File reading / shader compilation (unchanged)
+   File reading / shader compilation
    --------------------------------------------------------------------------- */
 static char* read_file(const char* filename) {
     FILE* f = fopen(filename, "rb");
@@ -488,7 +495,6 @@ static GLuint compile_shader_with_defines(GLenum type, const char* filename, con
     return shader;
 }
 
-/* ---- Generate shader defines (updated for CLEARCOAT and SHEEN) ---- */
 static void generate_defines(render_method key, char* out, size_t out_size) {
     char* p = out;
     size_t remaining = out_size;
@@ -540,7 +546,6 @@ static void generate_defines(render_method key, char* out, size_t out_size) {
     if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
 }
 
-/* ---- Shader cache (unchanged) ---- */
 static void shader_cache_resize(int new_size) {
     shader_variant_t *old_cache = gl_shader_cache;
     int old_size = gl_shader_cache_size;
@@ -560,12 +565,20 @@ static void shader_cache_resize(int new_size) {
 }
 
 static shader_variant_t* get_program_for_method(render_method key) {
+    shader_variant_t *entry;
+    GLuint vs, fs, prog;
+    int index, link_status, blockIndex, modelBlock, i;
+    char defines[4096];
+    char name[32];
+    GLint len;
+    char log[512];
+
     if (!gl_shader_cache) {
         gl_shader_cache_size = SHADER_CACHE_INITIAL_SIZE;
         gl_shader_cache = (shader_variant_t*)calloc(gl_shader_cache_size, sizeof(shader_variant_t));
         gl_shader_cache_count = 0;
     }
-    int index = (unsigned)key % gl_shader_cache_size;
+    index = (unsigned)key % gl_shader_cache_size;
     while (gl_shader_cache[index].program != 0) {
         if (gl_shader_cache[index].key == key) {
             if (!gl_shader_cache[index].hit_logged) {
@@ -577,24 +590,21 @@ static shader_variant_t* get_program_for_method(render_method key) {
         index = (index + 1) % gl_shader_cache_size;
     }
     printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
-    char defines[4096];
     generate_defines(key, defines, sizeof(defines));
-    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "material.vert", defines);
-    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material.frag", defines);
+    vs = compile_shader_with_defines(GL_VERTEX_SHADER,   "material2.vert", defines);
+    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material2.frag", defines);
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
         if (fs) C89GL_glDeleteShader(fs);
         printf("[SHADER CACHE] ERROR: Failed to compile shaders for key 0x%x\n", (unsigned)key);
         return NULL;
     }
-    GLuint prog = C89GL_glCreateProgram();
+    prog = C89GL_glCreateProgram();
     C89GL_glAttachShader(prog, vs);
     C89GL_glAttachShader(prog, fs);
     C89GL_glLinkProgram(prog);
-    GLint link_status;
     C89GL_glGetProgramiv(prog, GL_LINK_STATUS, &link_status);
     if (!link_status) {
-        char log[512];
         C89GL_glGetProgramInfoLog(prog, sizeof(log), NULL, log);
         printf("[SHADER CACHE] ERROR: Program link failed for key 0x%x:\n%s\n", (unsigned)key, log);
         C89GL_glDeleteProgram(prog);
@@ -602,22 +612,17 @@ static shader_variant_t* get_program_for_method(render_method key) {
         C89GL_glDeleteShader(fs);
         return NULL;
     }
-    GLuint blockIndex = C89GL_glGetUniformBlockIndex(prog, "MaterialUniforms");
+    C89GL_glGetProgramInfoLog(prog, sizeof(log), &len, log);
+    if (len > 0) printf("Program info log (warnings):\n%s\n", log);
+
+    blockIndex = C89GL_glGetUniformBlockIndex(prog, "MaterialUniforms");
     if (blockIndex != GL_INVALID_INDEX)
         C89GL_glUniformBlockBinding(prog, blockIndex, MATERIAL_UBO_BINDING);
-    GLuint modelBlock = C89GL_glGetUniformBlockIndex(prog, "ModelMatrices");
+    modelBlock = C89GL_glGetUniformBlockIndex(prog, "ModelMatrices");
     if (modelBlock != GL_INVALID_INDEX)
         C89GL_glUniformBlockBinding(prog, modelBlock, MODEL_UBO_BINDING);
 
-    C89GL_glDeleteShader(vs);
-    C89GL_glDeleteShader(fs);
-
-    if ((float)(gl_shader_cache_count + 1) / gl_shader_cache_size > SHADER_CACHE_MAX_LOAD_FACTOR) {
-        shader_cache_resize(gl_shader_cache_size * 2);
-        index = (unsigned)key % gl_shader_cache_size;
-        while (gl_shader_cache[index].program != 0) index = (index + 1) % gl_shader_cache_size;
-    }
-    shader_variant_t *entry = &gl_shader_cache[index];
+    entry = &gl_shader_cache[index];
     entry->key = key;
     entry->program = prog;
     entry->hit_logged = 0;
@@ -630,14 +635,63 @@ static shader_variant_t* get_program_for_method(render_method key) {
     entry->u_fog_color = C89GL_glGetUniformLocation(prog, "uFogColor");
     entry->u_fog_start = C89GL_glGetUniformLocation(prog, "uFogStart");
     entry->u_fog_end = C89GL_glGetUniformLocation(prog, "uFogEnd");
+
+    /* Directional */
+    entry->u_num_dir_lights = C89GL_glGetUniformLocation(prog, "uNumDirLights");
+    for (i = 0; i < MAX_EXTRA_DIR_LIGHTS; i++) {
+        snprintf(name, sizeof(name), "uDirDir[%d]", i);
+        entry->u_dir_dir[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uDirCol[%d]", i);
+        entry->u_dir_col[i] = C89GL_glGetUniformLocation(prog, name);
+    }
+
+    /* Point */
+    entry->u_num_point_lights = C89GL_glGetUniformLocation(prog, "uNumPointLights");
+    for (i = 0; i < MAX_EXTRA_POINT_LIGHTS; i++) {
+        snprintf(name, sizeof(name), "uPointPos[%d]", i);
+        entry->u_point_pos[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uPointCol[%d]", i);
+        entry->u_point_col[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uPointRange[%d]", i);
+        entry->u_point_range[i] = C89GL_glGetUniformLocation(prog, name);
+    }
+
+    /* Spot */
+    entry->u_num_spot_lights = C89GL_glGetUniformLocation(prog, "uNumSpotLights");
+    for (i = 0; i < MAX_EXTRA_SPOT_LIGHTS; i++) {
+        snprintf(name, sizeof(name), "uSpotPos[%d]", i);
+        entry->u_spot_pos[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uSpotDir[%d]", i);
+        entry->u_spot_dir[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uSpotCol[%d]", i);
+        entry->u_spot_col[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uSpotRange[%d]", i);
+        entry->u_spot_range[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uSpotInnerCos[%d]", i);
+        entry->u_spot_inner_cos[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uSpotOuterCos[%d]", i);
+        entry->u_spot_outer_cos[i] = C89GL_glGetUniformLocation(prog, name);
+        snprintf(name, sizeof(name), "uSpotFalloff[%d]", i);
+        entry->u_spot_falloff[i] = C89GL_glGetUniformLocation(prog, name);
+    }
+
+    C89GL_glDeleteShader(vs);
+    C89GL_glDeleteShader(fs);
+
+    if ((float)(gl_shader_cache_count + 1) / gl_shader_cache_size > SHADER_CACHE_MAX_LOAD_FACTOR) {
+        shader_cache_resize(gl_shader_cache_size * 2);
+        index = (unsigned)key % gl_shader_cache_size;
+        while (gl_shader_cache[index].program != 0) index = (index + 1) % gl_shader_cache_size;
+    }
+    gl_shader_cache[index] = *entry;
     gl_shader_cache_count++;
     gl_shader_compilations++;
     printf("[SHADER CACHE] Compiled new variant #%d for key 0x%x (program %u)\n",
            gl_shader_compilations, (unsigned)key, prog);
-    return entry;
+    return &gl_shader_cache[index];
 }
 
-/* ---- Update material UBO (updated with new fields) ---- */
+/* ---- Update material UBO ---- */
 static void update_material_ubo(const material_definition *mat) {
     material_ubo_t ubo;
     memset(&ubo, 0, sizeof(ubo));
@@ -694,15 +748,11 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatStrobeColor[2] = mat->strobe_color.position.z;
     ubo.uMatStrobeFrequency = mat->strobe_frequency;
     ubo.uMatStrobePhase     = mat->strobe_phase;
-
-    /* NEW: Clearcoat */
     ubo.uClearcoatColor[0] = mat->clearcoat_color.position.x;
     ubo.uClearcoatColor[1] = mat->clearcoat_color.position.y;
     ubo.uClearcoatColor[2] = mat->clearcoat_color.position.z;
     ubo.uClearcoatExponent = mat->clearcoat_exponent;
     ubo.uClearcoatStrength = mat->clearcoat_strength;
-
-    /* NEW: Sheen */
     ubo.uSheenColor[0] = mat->sheen_color.position.x;
     ubo.uSheenColor[1] = mat->sheen_color.position.y;
     ubo.uSheenColor[2] = mat->sheen_color.position.z;
@@ -725,8 +775,24 @@ static void update_model_ubo(void) {
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
-/* ---- Set non‑material uniforms ---- */
+/* ---- Public Light Management API ---- */
+void render_clear_lights(void) {
+    g_light_count = 0;
+}
+
+void render_set_light_at_index(int index, const light_definition *def) {
+    if (index < 0 || index >= RENDER_MAX_LIGHTS) return;
+    g_lights[index] = *def;
+    if (index + 1 > g_light_count) g_light_count = index + 1;
+}
+
+/* ---- Set non‑material uniforms (including all extra lights) ---- */
 static void set_uniforms_for_variant(shader_variant_t* variant) {
+    int i, dir_count, point_count, spot_count;
+    int dir_idx, point_idx, spot_idx;
+    vec4 zero, dir, col, pos;
+
+    /* ---- Standard uniforms ---- */
     if (variant->u_view_proj != -1)
         C89GL_glUniformMatrix4fv(variant->u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
     if (variant->u_light_dir != -1)
@@ -745,8 +811,140 @@ static void set_uniforms_for_variant(shader_variant_t* variant) {
         C89GL_glUniform1f(variant->u_fog_start, gl_fog_start);
     if (variant->u_fog_end != -1)
         C89GL_glUniform1f(variant->u_fog_end, gl_fog_end);
+
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MATERIAL_UBO_BINDING, gl_material_ubo);
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MODEL_UBO_BINDING, gl_model_ubo);
+
+    /* ===== Directional lights ===== */
+    dir_count = 0;
+    for (i = 0; i < g_light_count && dir_count < MAX_EXTRA_DIR_LIGHTS; i++) {
+        if (g_lights[i].enabled && g_lights[i].type == LIGHT_DIRECTIONAL)
+            dir_count++;
+    }
+    if (variant->u_num_dir_lights != -1)
+        C89GL_glUniform1i(variant->u_num_dir_lights, dir_count);
+
+    dir_idx = 0;
+    for (i = 0; i < g_light_count && dir_idx < MAX_EXTRA_DIR_LIGHTS; i++) {
+        if (g_lights[i].enabled && g_lights[i].type == LIGHT_DIRECTIONAL) {
+            dir = vec4_init_from_4(g_lights[i].direction.position.x,
+                                   g_lights[i].direction.position.y,
+                                   g_lights[i].direction.position.z,
+                                   0.0f);
+            col = vec4_init_from_4(g_lights[i].color.color.r,
+                                   g_lights[i].color.color.g,
+                                   g_lights[i].color.color.b,
+                                   1.0f);
+            if (variant->u_dir_dir[dir_idx] != -1)
+                C89GL_glUniform4fv(variant->u_dir_dir[dir_idx], 1, (float*)&dir);
+            if (variant->u_dir_col[dir_idx] != -1)
+                C89GL_glUniform4fv(variant->u_dir_col[dir_idx], 1, (float*)&col);
+            dir_idx++;
+        }
+    }
+    zero = vec4_init_from_4(0.0f, 0.0f, 0.0f, 0.0f);
+    for (; dir_idx < MAX_EXTRA_DIR_LIGHTS; dir_idx++) {
+        if (variant->u_dir_dir[dir_idx] != -1)
+            C89GL_glUniform4fv(variant->u_dir_dir[dir_idx], 1, (float*)&zero);
+        if (variant->u_dir_col[dir_idx] != -1)
+            C89GL_glUniform4fv(variant->u_dir_col[dir_idx], 1, (float*)&zero);
+    }
+
+    /* ===== Point lights ===== */
+    point_count = 0;
+    for (i = 0; i < g_light_count && point_count < MAX_EXTRA_POINT_LIGHTS; i++) {
+        if (g_lights[i].enabled && g_lights[i].type == LIGHT_POINT)
+            point_count++;
+    }
+    if (variant->u_num_point_lights != -1)
+        C89GL_glUniform1i(variant->u_num_point_lights, point_count);
+
+    point_idx = 0;
+    for (i = 0; i < g_light_count && point_idx < MAX_EXTRA_POINT_LIGHTS; i++) {
+        if (g_lights[i].enabled && g_lights[i].type == LIGHT_POINT) {
+            pos = vec4_init_from_4(g_lights[i].position.position.x,
+                                   g_lights[i].position.position.y,
+                                   g_lights[i].position.position.z,
+                                   1.0f);
+            col = vec4_init_from_4(g_lights[i].color.color.r,
+                                   g_lights[i].color.color.g,
+                                   g_lights[i].color.color.b,
+                                   1.0f);
+            if (variant->u_point_pos[point_idx] != -1)
+                C89GL_glUniform4fv(variant->u_point_pos[point_idx], 1, (float*)&pos);
+            if (variant->u_point_col[point_idx] != -1)
+                C89GL_glUniform4fv(variant->u_point_col[point_idx], 1, (float*)&col);
+            if (variant->u_point_range[point_idx] != -1)
+                C89GL_glUniform1f(variant->u_point_range[point_idx], g_lights[i].range);
+            point_idx++;
+        }
+    }
+    for (; point_idx < MAX_EXTRA_POINT_LIGHTS; point_idx++) {
+        if (variant->u_point_pos[point_idx] != -1)
+            C89GL_glUniform4fv(variant->u_point_pos[point_idx], 1, (float*)&zero);
+        if (variant->u_point_col[point_idx] != -1)
+            C89GL_glUniform4fv(variant->u_point_col[point_idx], 1, (float*)&zero);
+        if (variant->u_point_range[point_idx] != -1)
+            C89GL_glUniform1f(variant->u_point_range[point_idx], 0.0f);
+    }
+
+    /* ===== Spot lights ===== */
+    spot_count = 0;
+    for (i = 0; i < g_light_count && spot_count < MAX_EXTRA_SPOT_LIGHTS; i++) {
+        if (g_lights[i].enabled && g_lights[i].type == LIGHT_SPOT)
+            spot_count++;
+    }
+    if (variant->u_num_spot_lights != -1)
+        C89GL_glUniform1i(variant->u_num_spot_lights, spot_count);
+
+    spot_idx = 0;
+    for (i = 0; i < g_light_count && spot_idx < MAX_EXTRA_SPOT_LIGHTS; i++) {
+        if (g_lights[i].enabled && g_lights[i].type == LIGHT_SPOT) {
+            pos = vec4_init_from_4(g_lights[i].position.position.x,
+                                   g_lights[i].position.position.y,
+                                   g_lights[i].position.position.z,
+                                   1.0f);
+            dir = vec4_init_from_4(g_lights[i].direction.position.x,
+                                   g_lights[i].direction.position.y,
+                                   g_lights[i].direction.position.z,
+                                   0.0f);
+            col = vec4_init_from_4(g_lights[i].color.color.r,
+                                   g_lights[i].color.color.g,
+                                   g_lights[i].color.color.b,
+                                   1.0f);
+            if (variant->u_spot_pos[spot_idx] != -1)
+                C89GL_glUniform4fv(variant->u_spot_pos[spot_idx], 1, (float*)&pos);
+            if (variant->u_spot_dir[spot_idx] != -1)
+                C89GL_glUniform4fv(variant->u_spot_dir[spot_idx], 1, (float*)&dir);
+            if (variant->u_spot_col[spot_idx] != -1)
+                C89GL_glUniform4fv(variant->u_spot_col[spot_idx], 1, (float*)&col);
+            if (variant->u_spot_range[spot_idx] != -1)
+                C89GL_glUniform1f(variant->u_spot_range[spot_idx], g_lights[i].range);
+            if (variant->u_spot_inner_cos[spot_idx] != -1)
+                C89GL_glUniform1f(variant->u_spot_inner_cos[spot_idx], (float)cos(g_lights[i].spot_inner_angle));
+            if (variant->u_spot_outer_cos[spot_idx] != -1)
+                C89GL_glUniform1f(variant->u_spot_outer_cos[spot_idx], (float)cos(g_lights[i].spot_outer_angle));
+            if (variant->u_spot_falloff[spot_idx] != -1)
+                C89GL_glUniform1f(variant->u_spot_falloff[spot_idx], g_lights[i].spot_falloff);
+            spot_idx++;
+        }
+    }
+    for (; spot_idx < MAX_EXTRA_SPOT_LIGHTS; spot_idx++) {
+        if (variant->u_spot_pos[spot_idx] != -1)
+            C89GL_glUniform4fv(variant->u_spot_pos[spot_idx], 1, (float*)&zero);
+        if (variant->u_spot_dir[spot_idx] != -1)
+            C89GL_glUniform4fv(variant->u_spot_dir[spot_idx], 1, (float*)&zero);
+        if (variant->u_spot_col[spot_idx] != -1)
+            C89GL_glUniform4fv(variant->u_spot_col[spot_idx], 1, (float*)&zero);
+        if (variant->u_spot_range[spot_idx] != -1)
+            C89GL_glUniform1f(variant->u_spot_range[spot_idx], 0.0f);
+        if (variant->u_spot_inner_cos[spot_idx] != -1)
+            C89GL_glUniform1f(variant->u_spot_inner_cos[spot_idx], 1.0f);
+        if (variant->u_spot_outer_cos[spot_idx] != -1)
+            C89GL_glUniform1f(variant->u_spot_outer_cos[spot_idx], 0.0f);
+        if (variant->u_spot_falloff[spot_idx] != -1)
+            C89GL_glUniform1f(variant->u_spot_falloff[spot_idx], 1.0f);
+    }
 }
 
 /* ---- Transparent sort comparator ---- */
@@ -762,7 +960,7 @@ static int transparent_compare(const void* a, const void* b) {
     return (ta->id < tb->id) ? -1 : (ta->id > tb->id) ? 1 : 0;
 }
 
-/* ---- Flush transparent batches (indexed) ---- */
+/* ---- Flush transparent batches ---- */
 static void flush_transparent_batches(void) {
     if (gl_transparent_count == 0) return;
     qsort(gl_transparent_tris, gl_transparent_count, sizeof(transparent_tri_t), transparent_compare);
@@ -876,7 +1074,8 @@ static void draw_triangle_indexed(
     }
 
     int batch_idx = -1;
-    for (int i = 0; i < gl_batch_count; i++) {
+    int i;
+    for (i = 0; i < gl_batch_count; i++) {
         if (gl_batches[i].mat == mat && gl_batches[i].mode == mode) {
             batch_idx = i;
             break;
@@ -948,7 +1147,8 @@ static void draw_entity_with_model_index(const struct entity_definition *ent, in
         entity_depth = -c.position.z;
     }
 
-    for (u32 p = 0; p < mod->primitives.count; ++p) {
+    u32 p, t;
+    for (p = 0; p < mod->primitives.count; ++p) {
         model_primitive *prim = TAG_BLOCK_GET_ELEMENT(&mod->primitives, p, model_primitive);
         if (prim->vertices.count == 0 || prim->indices.count == 0) continue;
 
@@ -967,7 +1167,7 @@ static void draw_entity_with_model_index(const struct entity_definition *ent, in
         model_vertex *verts = (model_vertex*)prim->vertices.address;
         u16 *indices = (u16*)prim->indices.address;
         u32 tri_count = prim->indices.count / 3;
-        for (u32 t = 0; t < tri_count; ++t) {
+        for (t = 0; t < tri_count; ++t) {
             u16 i0 = indices[t*3+0], i1 = indices[t*3+1], i2 = indices[t*3+2];
             vec3 local_v0 = verts[i0].position;
             vec3 local_v1 = verts[i1].position;
@@ -1043,7 +1243,6 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBufferData(GL_ELEMENT_ARRAY_BUFFER, 1, NULL, GL_STREAM_DRAW);
     gl_ibo_capacity_bytes = 0;
 
-    /* Vertex attributes: stride = VERTEX_STRIDE_BYTES */
     C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)0);
     C89GL_glEnableVertexAttribArray(0);
     C89GL_glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(3 * sizeof(float)));
@@ -1124,7 +1323,8 @@ void render_shutdown(void) {
     if (gl_vertex_pool) { free(gl_vertex_pool); gl_vertex_pool = NULL; }
     if (gl_index_pool) { free(gl_index_pool); gl_index_pool = NULL; }
     if (gl_shader_cache) {
-        for (int i = 0; i < gl_shader_cache_size; i++)
+        int i;
+        for (i = 0; i < gl_shader_cache_size; i++)
             if (gl_shader_cache[i].program)
                 C89GL_glDeleteProgram(gl_shader_cache[i].program);
         free(gl_shader_cache);
@@ -1142,8 +1342,8 @@ void render_shutdown(void) {
 void render_draw_entities(struct entity_definition **entities, int count) {
     if (!entities || count <= 0) return;
 
+    int i, valid_count;
     gl_model_count = 0;
-    int i;
     for (i = 0; i < count && gl_model_count < MAX_MODEL_MATRICES; i++) {
         entity_definition *ent = entities[i];
         if (!ent || ent->model.handle < 0) continue;
@@ -1154,7 +1354,7 @@ void render_draw_entities(struct entity_definition **entities, int count) {
 
     entity_sort_t *sorted = (entity_sort_t*)malloc(count * sizeof(entity_sort_t));
     if (!sorted) return;
-    int valid_count = 0;
+    valid_count = 0;
     for (i = 0; i < count; i++) {
         if (!entities[i] || entities[i]->model.handle < 0) continue;
         sorted[valid_count].ent = entities[i];
@@ -1260,7 +1460,6 @@ static void render_particle_system_draw_internal(void);
 
 /* ---- render_finish (indexed, with per‑batch culling and depth handling) ---- */
 void render_finish(void) {
-    /* ---- Ensure correct depth state for all geometry ---- */
     C89GL_glEnable(GL_DEPTH_TEST);
     C89GL_glDepthFunc(GL_LESS);
     C89GL_glDepthMask(GL_TRUE);
@@ -1289,12 +1488,9 @@ void render_finish(void) {
         }
         C89GL_glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idx_bytes, gl_index_pool);
 
-        /* Ensure we render into our offscreen FBO */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-
         C89GL_glBindVertexArray(gl_vao);
 
-        /* First pass: draw opaque batches (depth writes ON, blending OFF) */
         GLuint current_program = 0;
         int i;
         for (i = 0; i < gl_batch_count; i++) {
@@ -1326,16 +1522,10 @@ void render_finish(void) {
             }
         }
 
-        /* Draw particles AFTER opaque geometry but BEFORE transparent geometry
-           so transparent objects blend correctly over particles that are behind them. */
         if (current_program) C89GL_glUseProgram(0);
         C89GL_glBindVertexArray(0);
         render_particle_system_draw_internal();
 
-        /* Second pass: draw transparent batches (blending ON, depth writes OFF)
-           Transparent batches should be drawn back-to-front per-triangle; the
-           flush_transparent_batches() call ensures triangles inside batches
-           are depth-sorted. We draw batches in their current order. */
         C89GL_glBindVertexArray(gl_vao);
         current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
@@ -1375,16 +1565,9 @@ void render_finish(void) {
         C89GL_glEnable(GL_CULL_FACE);
     }
 
-    /* ---- Ensure FBO is bound for particle rendering ---- */
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-
-    /* ---- Draw particles AFTER all geometry, with depth test enabled ---- */
     render_particle_system_draw_internal();
 
-    /* ---- Optional debug: read depth before particles ---- */
-    /* float depth; C89GL_glReadPixels(gl_render_width/2, gl_render_height/2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth); printf("Depth before particles: %f\n", depth); */
-
-    /* Blit and swap */
     C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
     C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
     C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
@@ -1489,7 +1672,6 @@ void render_particle_system_init(int max_particles) {
     C89GL_glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE,
                                 sizeof(particle_instance_t), (void*)offsetof(particle_instance_t, size));
     C89GL_glEnableVertexAttribArray(2);
-    /* Attributes are per-instance (we expand each instance into 6 vertices in the VS using gl_VertexID) */
     C89GL_glVertexAttribDivisor(0, 1);
     C89GL_glVertexAttribDivisor(1, 1);
     C89GL_glVertexAttribDivisor(2, 1);
@@ -1581,7 +1763,8 @@ void render_particle_system_update(float dt) {
     } else {
         if (!g_burst_done) {
             int burst = (int)(g_emission_rate * 0.5f);
-            for (int i = 0; i < burst; ++i) spawn_particle();
+            int i;
+            for (i = 0; i < burst; ++i) spawn_particle();
             g_burst_done = 1;
         }
     }
@@ -1610,7 +1793,6 @@ void render_particle_system_update(float dt) {
     }
 }
 
-/* ---- Public: set camera for particle rendering (called from runtime) ---- */
 void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up) {
     g_particle_view_proj = *view_proj;
     g_particle_cam_right = cam_right;
@@ -1618,7 +1800,6 @@ void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, ve
     g_particle_cam_valid = 1;
 }
 
-/* ---- Internal draw function (called from render_finish) ---- */
 static void render_particle_system_draw_internal(void) {
     if (g_particle_count == 0 || !g_particle_program) return;
 
@@ -1627,13 +1808,10 @@ static void render_particle_system_draw_internal(void) {
                        g_particle_count * sizeof(particle_instance_t),
                        g_particles, GL_STREAM_DRAW);
 
-    /* ---- Depth test enabled; particles do NOT write depth ---- */
     C89GL_glEnable(GL_DEPTH_TEST);
     C89GL_glDepthFunc(GL_LESS);
     C89GL_glDepthMask(GL_FALSE);
 
-    /* If the particle camera wasn't explicitly set, derive it from the main view/proj so
-       particles always face the current camera when scripts forget to set it. */
     if (!g_particle_cam_valid) {
         g_particle_view_proj = gl_view_proj;
         g_particle_cam_right = vec3_init_from_3(gl_view.transpose[0][0], gl_view.transpose[0][1], gl_view.transpose[0][2]);
@@ -1642,10 +1820,8 @@ static void render_particle_system_draw_internal(void) {
     }
 
     C89GL_glUseProgram(g_particle_program);
-    /* Other renderer code uploads row-major matrices with transpose=GL_TRUE; match that here. */
     C89GL_glUniformMatrix4fv(g_particle_u_view_proj, 1, GL_TRUE, (float*)&g_particle_view_proj);
 
-    /* Correct cam right for render aspect so quads stay square in screen space. */
     float aspect = (gl_render_width > 0 && gl_render_height > 0) ? ((float)gl_render_width / (float)gl_render_height) : 1.0f;
     vec3 cam_right_scaled = vec3_mul_scalar(g_particle_cam_right, 1.0f / aspect);
     C89GL_glUniform3fv(g_particle_u_cam_right, 1, (float*)&cam_right_scaled);
@@ -1655,7 +1831,6 @@ static void render_particle_system_draw_internal(void) {
     C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     C89GL_glBindVertexArray(g_particle_vao);
-    /* Draw 6 vertices per particle (two triangles) with instancing */
     C89GL_glDrawArraysInstanced(GL_TRIANGLES, 0, 6, g_particle_count);
     C89GL_glBindVertexArray(0);
 
@@ -1665,10 +1840,10 @@ static void render_particle_system_draw_internal(void) {
     C89GL_glEnable(GL_DEPTH_TEST);
 }
 
-/* ---- Public: emit a burst of particles immediately (for Lua) ---- */
 void render_particle_system_emit_burst(int count) {
     if (!g_particles) return;
-    for (int i = 0; i < count; ++i) {
+    int i;
+    for (i = 0; i < count; ++i) {
         spawn_particle();
     }
 }

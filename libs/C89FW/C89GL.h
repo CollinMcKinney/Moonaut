@@ -160,9 +160,9 @@ typedef float GLclampf;
 #define GL_DRAW_BUFFER0                             0x8825
 #define GL_SAMPLER_BINDING                          0x8919
 #define GL_NUM_EXTENSIONS                           0x821D
-#define GL_VENDOR                                  0x1F00
-#define GL_RENDERER                                0x1F01
-#define GL_VERSION                                 0x1F02
+#define GL_VENDOR                                   0x1F00
+#define GL_RENDERER                                 0x1F01
+#define GL_VERSION                                  0x1F02
 
 #define GL_FRAMEBUFFER_BINDING           0x8CA6
 #define GL_READ_FRAMEBUFFER              0x8CA8
@@ -170,7 +170,12 @@ typedef float GLclampf;
 #define GL_RGBA8                         0x8058
 
 /* ---- UBO support ---- */
+#define GL_BUFFER_SIZE                    0x8764
 #define GL_UNIFORM_BUFFER                 0x8A11
+#define GL_UNIFORM_BUFFER_BINDING         0x8A28
+#define GL_UNIFORM_BLOCK_DATA_SIZE        0x8A3C
+#define GL_UNIFORM_OFFSET                 0x8A3D
+#define GL_UNIFORM_BLOCK_BINDING          0x8A3F
 #define GL_INVALID_INDEX                  0xFFFFFFFFu
 
 /* ---------- Additional common enums ---------- */
@@ -248,6 +253,7 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glBufferData)(unsigned int target, long 
 typedef void (C89GL_APIENTRY *C89GL_PFN_glBufferSubData)(unsigned int target, long long offset, long long size, const void* data);
 typedef void* (C89GL_APIENTRY *C89GL_PFN_glMapBuffer)(unsigned int target, unsigned int access);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUnmapBuffer)(unsigned int target);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glGetBufferParameteriv)(unsigned int target, unsigned int pname, int* params);
 
 /* 2.0 Shaders & Uniforms */
 typedef unsigned int (C89GL_APIENTRY *C89GL_PFN_glCreateProgram)(void);
@@ -314,6 +320,10 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glDrawElementsBaseVertex)(unsigned int m
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetActiveUniformBlockiv)(unsigned int program, unsigned int uniformBlockIndex, unsigned int pname, int* params);
 typedef unsigned int (C89GL_APIENTRY *C89GL_PFN_glGetUniformBlockIndex)(unsigned int program, const char* uniformBlockName);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformBlockBinding)(unsigned int program, unsigned int uniformBlockIndex, unsigned int uniformBlockBinding);
+
+/* 3.1 Uniform Queries (new) */
+typedef void (C89GL_APIENTRY *C89GL_PFN_glGetUniformIndices)(unsigned int program, int count, const char** names, unsigned int* indices);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glGetActiveUniformsiv)(unsigned int program, int count, const unsigned int* indices, unsigned int pname, int* params);
 
 /* 3.2 Geometry Shader query */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetIntegeri_v)(unsigned int target, unsigned int index, int* data);
@@ -416,6 +426,7 @@ extern C89GL_PFN_glBufferData C89GL_glBufferData;
 extern C89GL_PFN_glBufferSubData C89GL_glBufferSubData;
 extern C89GL_PFN_glMapBuffer C89GL_glMapBuffer;
 extern C89GL_PFN_glUnmapBuffer C89GL_glUnmapBuffer;
+extern C89GL_PFN_glGetBufferParameteriv C89GL_glGetBufferParameteriv;
 
 /* 2.0 */
 extern C89GL_PFN_glCreateProgram C89GL_glCreateProgram;
@@ -480,6 +491,8 @@ extern C89GL_PFN_glDrawElementsBaseVertex C89GL_glDrawElementsBaseVertex;
 extern C89GL_PFN_glGetActiveUniformBlockiv C89GL_glGetActiveUniformBlockiv;
 extern C89GL_PFN_glGetUniformBlockIndex C89GL_glGetUniformBlockIndex;
 extern C89GL_PFN_glUniformBlockBinding C89GL_glUniformBlockBinding;
+extern C89GL_PFN_glGetUniformIndices C89GL_glGetUniformIndices;
+extern C89GL_PFN_glGetActiveUniformsiv C89GL_glGetActiveUniformsiv;
 
 /* 3.2 */
 extern C89GL_PFN_glGetIntegeri_v C89GL_glGetIntegeri_v;
@@ -648,6 +661,7 @@ C89GL_PFN_glBufferData C89GL_glBufferData = NULL;
 C89GL_PFN_glBufferSubData C89GL_glBufferSubData = NULL;
 C89GL_PFN_glMapBuffer C89GL_glMapBuffer = NULL;
 C89GL_PFN_glUnmapBuffer C89GL_glUnmapBuffer = NULL;
+C89GL_PFN_glGetBufferParameteriv C89GL_glGetBufferParameteriv = NULL;
 
 /* 2.0 */
 C89GL_PFN_glCreateProgram C89GL_glCreateProgram = NULL;
@@ -712,6 +726,8 @@ C89GL_PFN_glDrawElementsBaseVertex C89GL_glDrawElementsBaseVertex = NULL;
 C89GL_PFN_glGetActiveUniformBlockiv C89GL_glGetActiveUniformBlockiv = NULL;
 C89GL_PFN_glGetUniformBlockIndex C89GL_glGetUniformBlockIndex = NULL;
 C89GL_PFN_glUniformBlockBinding C89GL_glUniformBlockBinding = NULL;
+C89GL_PFN_glGetUniformIndices C89GL_glGetUniformIndices = NULL;
+C89GL_PFN_glGetActiveUniformsiv C89GL_glGetActiveUniformsiv = NULL;
 
 /* 3.2 */
 C89GL_PFN_glGetIntegeri_v C89GL_glGetIntegeri_v = NULL;
@@ -800,6 +816,7 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glBufferSubData, "glBufferSubData");
     C89GL_LOAD_FUNC(C89GL_glMapBuffer, "glMapBuffer");
     C89GL_LOAD_FUNC(C89GL_glUnmapBuffer, "glUnmapBuffer");
+    C89GL_LOAD_FUNC(C89GL_glGetBufferParameteriv, "glGetBufferParameteriv");
 
     /* 2.0 */
     C89GL_LOAD_FUNC(C89GL_glCreateProgram, "glCreateProgram");
@@ -864,6 +881,8 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glGetActiveUniformBlockiv, "glGetActiveUniformBlockiv");
     C89GL_LOAD_FUNC(C89GL_glGetUniformBlockIndex, "glGetUniformBlockIndex");
     C89GL_LOAD_FUNC(C89GL_glUniformBlockBinding, "glUniformBlockBinding");
+    C89GL_LOAD_FUNC(C89GL_glGetUniformIndices, "glGetUniformIndices");
+    C89GL_LOAD_FUNC(C89GL_glGetActiveUniformsiv, "glGetActiveUniformsiv");
 
     /* 3.2 */
     C89GL_LOAD_FUNC(C89GL_glGetIntegeri_v, "glGetIntegeri_v");

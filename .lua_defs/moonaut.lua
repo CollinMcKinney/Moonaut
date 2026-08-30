@@ -99,6 +99,48 @@ function light_ambient(r, g, b) end
 ---@param b number
 function clear_color(r, g, b) end
 
+-- --------------------------------------------------------
+-- Extra light API (per-index)
+-- --------------------------------------------------------
+---@param index number
+function light_clear() end
+
+---@param index number
+---@param type number
+function light_set_type(index, type) end
+
+---@param index number
+---@param x number
+---@param y number
+---@param z number
+function light_set_position(index, x, y, z) end
+
+---@param index number
+---@param r number
+---@param g number
+---@param b number
+function light_set_color(index, r, g, b) end
+
+---@param index number
+---@param x number
+---@param y number
+---@param z number
+function light_set_direction(index, x, y, z) end
+
+---@param index number
+---@param range number
+function light_set_range(index, range) end
+
+---@param index number
+---@param inner number
+---@param outer number
+---@param falloff number
+function light_set_spot_params(index, inner, outer, falloff) end
+
+---@param index number
+---@param enabled boolean
+function light_set_enabled(index, enabled) end
+
 ---@overload fun(v: vec3)
 
 ---@param name string
@@ -167,3 +209,8 @@ TAG_scenario = 0
 TAG_globals = 0
 TAG_camera = 0
 TAG_lua_script = 0
+TAG_light = 0
+
+LIGHT_DIRECTIONAL = 0
+LIGHT_POINT = 1
+LIGHT_SPOT = 2

@@ -4,6 +4,108 @@ local scenario_handle = load_scenario("default_scenario")
 -- Over-ride the background/clear-color of the scene.
 clear_color(0, 32, 64)
 
+-- --------------------------------------------------------
+-- Extra lights (point, spot, directional)
+-- --------------------------------------------------------
+light_clear()
+
+-- Point light 0: blue, follows sphere (updated in update())
+light_set_type(0, LIGHT_POINT)
+light_set_position(0, 0, 5, 0)
+light_set_color(0, 0, 0, 20)
+light_set_range(0, 7)
+light_set_enabled(0, true)
+
+-- Point light 1: red, at (0,5,0)
+light_set_type(1, LIGHT_POINT)
+light_set_position(1, 0, 5, 2)
+light_set_color(1, 20, 0, 0)          
+light_set_range(1, 7)
+light_set_enabled(1, true)
+
+-- Point light 2: green, at (0,5,10)
+light_set_type(2, LIGHT_POINT)
+light_set_position(2, 0, 5, 10)
+light_set_color(2, 0, 20, 0)           -- intense green
+light_set_range(2, 7)
+light_set_enabled(2, true)
+
+-- Point light 3: blue, at (0,5,-6)
+light_set_type(3, LIGHT_POINT)
+light_set_position(3, 0, 5, -6)
+light_set_color(3, 0, 0, 20)          -- intense blue
+light_set_range(3, 10)
+light_set_enabled(3, true)
+
+-- Spot light 4: magenta, at (10,5,1) pointing toward origin
+light_set_type(4, LIGHT_SPOT)
+light_set_position(4, 10, 5, 1)
+light_set_color(4, 20, 0, 20)
+light_set_direction(4, 0, -1, 0)
+light_set_range(4, 30)
+light_set_spot_params(4, 0.25, 0.5, 2.0)
+light_set_enabled(4, true)
+
+-- Spot light 5: yellow, at (-10,5,1) pointing toward origin
+light_set_type(5, LIGHT_SPOT)
+light_set_position(5, -10, 5, 1)
+light_set_color(5, 20, 20, 0)
+light_set_direction(5, 0, -1, 0)
+light_set_range(5, 30)
+light_set_spot_params(5, 0.25, 0.5, 2.0)
+light_set_enabled(5, true)
+
+-- Spot light 6: cyan, at (10,5,-6) pointing toward origin
+light_set_type(6, LIGHT_SPOT)
+light_set_position(6, 10, 5, -6)
+light_set_color(6, 0, 20, 20)
+light_set_direction(6, 0, -1, 0)
+light_set_range(6, 30)
+light_set_spot_params(6, 0.25, 0.5, 2.0)
+light_set_enabled(6, true)
+
+-- Spot light 7: yellow, at (10,5,10) pointing toward origin
+light_set_type(7, LIGHT_SPOT)
+light_set_position(7, 10, 5, 10)
+light_set_color(7, 20, 20, 0)
+light_set_direction(7, 0, -1, 0)
+light_set_range(7, 30)
+light_set_spot_params(7, 0.25, 0.5, 2.0)
+light_set_enabled(7, true)
+
+-- Spot light 8: magenta, at (-10,5,-6) pointing toward origin
+light_set_type(8, LIGHT_SPOT)
+light_set_position(8, -10, 5, -6)
+light_set_color(8, 20, 0, 20)
+light_set_direction(8, 0, -1, 0)
+light_set_range(8, 30)
+light_set_spot_params(8, 0.25, 0.5, 2.0)
+light_set_enabled(8, true)
+
+-- Spot light 9: cyan, at (-10,5,10) pointing toward origin
+light_set_type(9, LIGHT_SPOT)
+light_set_position(9, -10, 5, 10)
+light_set_color(9, 0, 20, 20)
+light_set_direction(9, 0, -1, 0)
+light_set_range(9, 30)
+light_set_spot_params(9, 0.25, 0.5, 2.0)
+light_set_enabled(9, true)
+
+-- Directional light 10: upward fill (from below)
+light_set_type(10, LIGHT_DIRECTIONAL)
+light_set_direction(10, 0, -1, 0)          -- pointing up
+light_set_color(10, 0.25,0.5,0.25)    
+light_set_enabled(10, true)
+
+-- --------------------------------------------------------
+-- White spot light that follows the camera
+-- --------------------------------------------------------
+light_set_type(11, LIGHT_SPOT)
+light_set_color(11, 2,2,2)               -- white
+light_set_range(11, 100)
+light_set_spot_params(11, 0.25, 0.5, 2.0)   -- inner cone 0.25 rad, outer 0.5 rad, falloff 2
+light_set_enabled(11, true)
+
 -- Load a particle emitter tag
 local emitter = particle_load_emitter("default_particle_emitter")
 
@@ -11,40 +113,28 @@ local emitter = particle_load_emitter("default_particle_emitter")
 particle_set_position(0, 5, 0)
 particle_set_color(1, 0.5, 1)
 particle_set_alpha(1)
-particle_set_rate(1000)
+particle_set_rate(4096)
 
 -- Two separate material pools – both contain the same list initially
 local sphere_material_pool = {
-    "default_material_wireframe",
-    "default_material_water",
     "default_material_grass",
     "default_material_cloth",
     "default_material_wood",
     "default_material_metal",
-    "default_material_glass",
     "default_material_skin",
     "default_material_rubber",
-    "default_material_ice",
     "default_material_stone",
-    "default_material_lava",
-    "default_material_toon",
-    "default_material_hologram",
-    "default_material_iridescent",
     "default_material_plastic",
     "default_material_brick",
     "default_material_leather",
     "default_material_gold",
     "default_material_snow",
     "default_material_dirt",
-    "default_material_neon",
     "default_material_velvet",
     "default_material_marble",
-    "default_material_wax",
     "default_material_pearl",
     "default_material_ceramic",
     "default_material_chalk",
-    "default_material_posterized",
-    "default_material_frost",
     "default_material_rust",
     "default_material_carbon",
     "default_material_chrome",
@@ -53,36 +143,24 @@ local sphere_material_pool = {
 }
 
 local station_material_pool = {
-    "default_material_wireframe",
-    "default_material_water",
     "default_material_grass",
     "default_material_cloth",
     "default_material_wood",
     "default_material_metal",
-    "default_material_glass",
     "default_material_skin",
     "default_material_rubber",
-    "default_material_ice",
     "default_material_stone",
-    "default_material_lava",
-    "default_material_toon",
-    "default_material_hologram",
-    "default_material_iridescent",
     "default_material_plastic",
     "default_material_brick",
-    "default_material_leather",
+    "default_material_leather", 
     "default_material_gold",
     "default_material_snow",
     "default_material_dirt",
-    "default_material_neon",
     "default_material_velvet",
     "default_material_marble",
-    "default_material_wax",
     "default_material_pearl",
     "default_material_ceramic",
     "default_material_chalk",
-    "default_material_posterized",
-    "default_material_frost",
     "default_material_rust",
     "default_material_carbon",
     "default_material_chrome",
@@ -147,26 +225,40 @@ function update(dt)
 
     -- Orbit camera around (0,0,0)
     local cam_angle = (total_time / cam_cycle_time) * 2 * math.pi
-    local radius = 10
-    local height = 7
+    local radius = 12
+    local height = 2
     local cam_x = radius * math.cos(cam_angle)
     local cam_z = radius * math.sin(cam_angle)
     camera_eye(cam_x, height, cam_z)
     camera_lookat(0, 0, 0, 0, 1, 0)
 
-    -- Cycle light direction (orbit faster)
-    local light_angle = (total_time / light_dir_cycle_time) * 8 * math.pi
-    local light_x = math.sin(light_angle)
-    local light_y = math.tan(light_angle) * math.tan(light_angle)
-    local light_z = math.cos(light_angle)
-    light_direction(light_x, light_y, light_z)
+    -- ---- Update global (main) directional light ----
+    light_direction(0, 1, 0)
+    light_color(0.5,0.5,1)          -- blue (you can change)
+    --light_ambient(0.0, 0.0, 0.0)
 
-    -- Cycle light color (hue shift)
-    local hue = (total_time / light_col_cycle_time) * 360  -- degrees
-    local r = (math.sin(hue * math.pi / 180) + 1) 
-    local g = (math.sin((hue + 120) * math.pi / 180) + 1)
-    local b = (math.sin((hue + 240) * math.pi / 180) + 1)
-    light_color(1, 1, 1)
+    -- ---- Update camera‑following spotlight ----
+    local eye_pos = vec3(cam_x, height, cam_z)
+    light_set_position(11, eye_pos.x, eye_pos.y, eye_pos.z)
+    -- Point slightly downwards: target (0, -2, 0) instead of (0,0,0)
+    local target_x = 0
+    local target_y = 0   -- slightly below origin
+    local target_z = 0
+    local dx = target_x - eye_pos.x
+    local dy = target_y - eye_pos.y
+    local dz = target_z - eye_pos.z
+    local len = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if len > 0 then
+        light_set_direction(11, dx/len, dy/len, dz/len)
+    end
+
+    -- ---- Update sphere‑following point light (index 0) ----
+    if sphere_entity_handle then
+        local pos = tag_get_field(sphere_entity_handle, "position")
+        if pos then
+            light_set_position(0, pos.x, pos.y, pos.z)
+        end
+    end
 
     -- --------------------------------------------------------
     -- 1. Update sphere material (uses sphere_handles)
@@ -242,8 +334,8 @@ function update(dt)
     if sphere_entity_handle then
         local pos = tag_get_field(sphere_entity_handle, "position")
         if pos then
-            -- pos is a vec3-like table with x,y,z fields
             particle_set_position(pos.x, pos.y, pos.z)
+            light_set_position(0, pos.x, pos.y, pos.z)
         end
     end
 end
