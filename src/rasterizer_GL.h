@@ -591,8 +591,8 @@ static shader_variant_t* get_program_for_method(render_method key) {
     }
     printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
     generate_defines(key, defines, sizeof(defines));
-    vs = compile_shader_with_defines(GL_VERTEX_SHADER,   "material2.vert", defines);
-    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material2.frag", defines);
+    vs = compile_shader_with_defines(GL_VERTEX_SHADER,   "material3.vert", defines);
+    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material3.frag", defines);
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
         if (fs) C89GL_glDeleteShader(fs);
