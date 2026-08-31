@@ -1,0 +1,68 @@
+#version 430 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+uniform sampler2D uDepthTex;
+uniform int uNumLights;
+uniform int uTileSize;
+uniform int uNumTilesX;
+uniform int uNumTilesY;
+uniform int uDepthSlices;
+uniform float uNear;
+uniform float uFar;
+
+struct Light {
+    vec4 pos;
+    vec4 dir;
+    vec4 color;
+    float range;
+    float inner_cos;
+    float outer_cos;
+    float falloff;
+};
+
+layout(std430, binding = 0) buffer LightBuffer { Light lights[]; };
+layout(std430, binding = 1) buffer ClusterBuffer { uint clusterLights[]; };
+layout(std430, binding = 2) buffer ClusterOffsetBuffer { uint clusterOffsets[]; };
+
+#define MAX_LIGHTS_PER_CLUSTER 64
+
+void main() {
+    ivec2 tile = ivec2(gl_GlobalInvocationID.xy);
+    if (tile.x >= uNumTilesX || tile.y >= uNumTilesY) return;
+
+    // Get tile depth bounds
+    float minDepth = 1.0;
+    float maxDepth = 0.0;
+    for (int y = 0; y < uTileSize; y++) {
+        for (int x = 0; x < uTileSize; x++) {
+            ivec2 coord = tile * uTileSize + ivec2(x, y);
+            float d = texelFetch(uDepthTex, coord, 0).r;
+            minDepth = min(minDepth, d);
+            maxDepth = max(maxDepth, d);
+        }
+    }
+
+    // Convert to view‑space (linear) depth
+    float near = uNear;
+    float far = uFar;
+    float minZ = (2.0 * near * far) / (far + near - (2.0 * minDepth - 1.0) * (far - near));
+    float maxZ = (2.0 * near * far) / (far + near - (2.0 * maxDepth - 1.0) * (far - near));
+    minZ = clamp(minZ, near, far);
+    maxZ = clamp(maxZ, near, far);
+
+    uint clusterBase = tile.y * uNumTilesX + tile.x;
+    uint count = 0;
+    for (uint i = 0; i < uNumLights; i++) {
+        // Write the same light to every depth slice for this tile
+        for (int s = 0; s < uDepthSlices; s++) {
+            uint idx = (clusterBase * uDepthSlices + s) * MAX_LIGHTS_PER_CLUSTER + count;
+            clusterLights[idx] = i;
+        }
+        count++;
+        if (count >= MAX_LIGHTS_PER_CLUSTER) break;
+    }
+    for (int s = 0; s < uDepthSlices; s++) {
+        clusterOffsets[clusterBase * uDepthSlices + s] = count;
+    }
+}

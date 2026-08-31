@@ -1,46 +1,23 @@
 /*
- * rasterizer_GL.h - GPU‑accelerated renderer (OpenGL 3.3+) with batching
+ * rasterizer_GL.h – GPU‑accelerated forward renderer with clustered lighting
  *
- * Supports: Wireframe, Flat, Gouraud, Phong, Quadratic, Cubic.
- * All shading modes run on the GPU, including Quadratic/Cubic.
+ * Requires OpenGL 4.3+ (compute shaders, SSBOs).
+ * Uses depth pre‑pass + compute light culling + per‑pixel shading.
  *
- * FEATURES:
- *   - Frustum culling (CPU)
- *   - Backface culling (GPU, per‑batch - toggled via GL_CULL_FACE)
- *   - Transparent sorting (CPU buffer, back‑to‑front) + batching by material
- *   - **Upscaling** - render at a lower internal resolution
- *     and stretch to the window with nearest‑neighbour filtering.
- *   - **Batching** - one draw call per material, not per triangle.
- *   - **No geometry shader** - uses dFdx/dFdy for flat shading.
- *   - **Entity‑level sorting** for transparent objects - eliminates flicker.
- *   - **Shader variants** - compiles specialised shaders per material key.
- *   - **Hash table cache** - O(1) average lookup for thousands of variants.
- *   - **Uniform Buffer Objects** - reduces per‑draw uniform upload overhead.
- *
- * OPTIMISATIONS (WebGL‑friendly):
- *   - GPU vertex transforms (model matrix UBO + per‑vertex index)
- *   - Indexed rendering (glDrawElements)
- *   - Buffer orphaning for dynamic VBO
- *   - GL_STREAM_DRAW for streaming buffers
- *   - Batch sorting by shader variant to reduce program switches
- *   - Backface culling on GPU (GL_CULL_FACE), toggled per material
- *   - Opaque before transparent draw order
- *   - Depth writes disabled for transparent objects
- *
- * Shaders are loaded from external files:
- *   - material.vert  (vertex shader)
- *   - material.frag  (fragment shader)
- *   - particle.vert  (particle vertex shader)
- *   - particle.frag  (particle fragment shader)
+ * Shader files (read from disk):
+ *   material.vert    – vertex shader (same for depth and colour passes)
+ *   material.frag    – fragment shader with #ifdef DEPTH_ONLY guard
+ *   cluster.comp     – compute shader for light culling
+ *   particle.vert    – particle vertex shader
+ *   particle.frag    – particle fragment shader
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
  *   #include "rasterizer_GL.h"
- *
- *   render_init(window_width, window_height);
+ *   render_init(win_w, win_h);
  *   render_set_render_resolution(512, 288);
  *   ... draw ...
- *   render_finish();  // automatically upscales and swaps buffers
+ *   render_finish();  // does depth pre‑pass, compute, colour pass, upscale & swap
  */
 
 #ifndef RASTERIZER_GL_H
@@ -69,12 +46,10 @@ void render_set_fog(vec3 color, real start, real end);
 void render_set_time(real t);
 void render_clear(u8 r, u8 g, u8 b);
 void render_clear_color(real r, real g, real b);
-void draw_triangle_shaded(
-    vec3 v0, vec3 v1, vec3 v2,
-    vec3 n0, vec3 n1, vec3 n2,
-    vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat
-);
+void draw_triangle_shaded( vec3 v0, vec3 v1, vec3 v2,
+                           vec3 n0, vec3 n1, vec3 n2,
+                           vec3 l0, vec3 l1, vec3 l2,
+                           const struct material_definition *mat );
 void render_draw_entity(const struct entity_definition *ent);
 void render_draw_entities(struct entity_definition **entities, int count);
 void render_finish(void);
@@ -85,6 +60,7 @@ i32 render_get_render_width(void);
 i32 render_get_render_height(void);
 static INLINE u8 color_to_u8(real x);
 
+/* Particle system */
 void render_particle_system_init(int max_particles);
 void render_particle_system_shutdown(void);
 void render_particle_system_set_emitter(const struct particle_emitter_definition *def);
@@ -92,8 +68,12 @@ void render_particle_system_update(float dt);
 void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up);
 void render_particle_system_emit_burst(int count);
 
+/* Lights */
 void render_clear_lights(void);
 void render_set_light_at_index(int index, const struct light_definition *def);
+
+/* ---- Public constants ---- */
+#define RENDER_MAX_LIGHTS (MAX_EXTRA_DIR_LIGHTS + MAX_EXTRA_POINT_LIGHTS + MAX_EXTRA_SPOT_LIGHTS)
 
 #ifdef __cplusplus
 }
@@ -111,26 +91,30 @@ void render_set_light_at_index(int index, const struct light_definition *def);
 #include <stdio.h>
 #include <math.h>
 
-/* ---- Extra light limits (must match shader) ---- */
+/* ---- Light limits (must match shader) ---- */
 #define MAX_EXTRA_DIR_LIGHTS   16
 #define MAX_EXTRA_POINT_LIGHTS 64
 #define MAX_EXTRA_SPOT_LIGHTS  64
+#define MAX_LIGHTS             (MAX_EXTRA_DIR_LIGHTS + MAX_EXTRA_POINT_LIGHTS + MAX_EXTRA_SPOT_LIGHTS)
 
-#ifndef GL_UNIFORM_BLOCK_DATA_SIZE
-#define GL_UNIFORM_BLOCK_DATA_SIZE 0x8A3C
-#endif
-#ifndef GL_UNIFORM_BLOCK_BINDING
-#define GL_UNIFORM_BLOCK_BINDING 0x8A3F
-#endif
-#ifndef GL_UNIFORM_OFFSET
-#define GL_UNIFORM_OFFSET 0x8A3D
-#endif
+/* ---- Clustered constants ---- */
+#define CLUSTER_TILE_SIZE       16
+#define CLUSTER_DEPTH_SLICES    24
+#define CLUSTER_MAX_LIGHTS_PER  64
 
-/* ---------------------------------------------------------------------------
-   Internal state
-   --------------------------------------------------------------------------- */
+/* ---- GPU light structure (matches shader) ---- */
+typedef struct {
+    float pos[4];      // .xyz = position, .w = type (0=dir,1=point,2=spot)
+    float dir[4];      // .xyz = direction (normalised)
+    float color[4];    // .rgb = colour, .w = intensity scale (unused)
+    float range;
+    float inner_cos;
+    float outer_cos;
+    float falloff;
+} gpu_light_t;
+
+/* ---- Internal state ---- */
 static C89GL_Context gl_ctx;
-
 static i32 gl_win_width  = 0;
 static i32 gl_win_height = 0;
 static i32 gl_render_width  = 0;
@@ -141,61 +125,39 @@ static i32 gl_render_height = 0;
 
 /* ---- Material UBO (std140) ---- */
 typedef struct {
-    float uMatColor[3];
-    float _pad0;
-    float uMatTint[3];
-    float uMatAlpha;
-    float uMatEmissiveColor[3];
-    float uMatEmissivePulseAmplitude;
-    float uMatEmissivePulseFrequency;
-    float uMatEmissivePulsePhase;
-    float uMatSpecularExponent;
-    float _pad1;
-    float uMatSpecularColor[3];
-    float uMatSpecularThreshold;
-    float uMatRimColor[3];
-    float uMatRimExponent;
-    float uMatFresnelColor[3];
-    float uMatFresnelExponent;
-    float uMatGoochCool[3];
-    float _pad2;
-    float uMatGoochWarm[3];
-    float uMatAmbientLightFactor;
-    float uMatOrenNayarSigma;
-    float uMatMinnaertK;
-    float uMatSaturation;
-    float uMatIridescenceStrength;
-    float uMatBackGlowColor[3];
-    float uMatBumpAmplitude;
-    float uMatBumpFrequency;
-    float uMatBumpSpeed;
-    float uMatRoughness;
-    float uMatFringeIntensity;
-    int   uMatCelBands;
-    float uMatGlitchIntensity;
-    int   uMatPosterizeLevels;
-    float _pad3;
-    float uMatStrobeColor[3];
-    float uMatStrobeFrequency;
-    float uMatStrobePhase;
-    float _pad4[3];
-    float uClearcoatColor[3];
-    float uClearcoatExponent;
-    float uClearcoatStrength;
-    float _pad5[3];
-    float uSheenColor[3];
-    float uSheenExponent;
-    float uSheenStrength;
-    float _pad6[3];
+    float uMatColor[3];             float _pad0;
+    float uMatTint[3];              float uMatAlpha;
+    float uMatEmissiveColor[3];     float uMatEmissivePulseAmplitude;
+    float uMatEmissivePulseFrequency; float uMatEmissivePulsePhase;
+    float uMatSpecularExponent;     float _pad1;
+    float uMatSpecularColor[3];     float uMatSpecularThreshold;
+    float uMatRimColor[3];          float uMatRimExponent;
+    float uMatFresnelColor[3];      float uMatFresnelExponent;
+    float uMatGoochCool[3];         float _pad2;
+    float uMatGoochWarm[3];         float uMatAmbientLightFactor;
+    float uMatOrenNayarSigma;       float uMatMinnaertK;
+    float uMatSaturation;           float uMatIridescenceStrength;
+    float uMatBackGlowColor[3];     float uMatBumpAmplitude;
+    float uMatBumpFrequency;        float uMatBumpSpeed;
+    float uMatRoughness;            float uMatFringeIntensity;
+    int   uMatCelBands;             float uMatGlitchIntensity;
+    int   uMatPosterizeLevels;      float _pad3;
+    float uMatStrobeColor[3];       float uMatStrobeFrequency;
+    float uMatStrobePhase;          float _pad4[3];
+    float uClearcoatColor[3];       float uClearcoatExponent;
+    float uClearcoatStrength;       float _pad5[3];
+    float uSheenColor[3];           float uSheenExponent;
+    float uSheenStrength;           float _pad6[3];
 } material_ubo_t;
 
 #define MAX_MODEL_MATRICES 1024
 
-/* ---- Shader variant cache ---- */
+/* ---- Shader variant cache (for different material render methods) ---- */
 typedef struct {
     render_method key;
     GLuint program;
-    int hit_logged;
+    int   is_depth;              // 1 for depth‑only variant
+    int   hit_logged;
     GLint u_view_proj;
     GLint u_light_dir;
     GLint u_light_col;
@@ -205,27 +167,13 @@ typedef struct {
     GLint u_fog_color;
     GLint u_fog_start;
     GLint u_fog_end;
-
-    /* Directional */
-    GLint u_num_dir_lights;
-    GLint u_dir_dir[MAX_EXTRA_DIR_LIGHTS];
-    GLint u_dir_col[MAX_EXTRA_DIR_LIGHTS];
-
-    /* Point */
-    GLint u_num_point_lights;
-    GLint u_point_pos[MAX_EXTRA_POINT_LIGHTS];
-    GLint u_point_col[MAX_EXTRA_POINT_LIGHTS];
-    GLint u_point_range[MAX_EXTRA_POINT_LIGHTS];
-
-    /* Spot */
-    GLint u_num_spot_lights;
-    GLint u_spot_pos[MAX_EXTRA_SPOT_LIGHTS];
-    GLint u_spot_dir[MAX_EXTRA_SPOT_LIGHTS];
-    GLint u_spot_col[MAX_EXTRA_SPOT_LIGHTS];
-    GLint u_spot_range[MAX_EXTRA_SPOT_LIGHTS];
-    GLint u_spot_inner_cos[MAX_EXTRA_SPOT_LIGHTS];
-    GLint u_spot_outer_cos[MAX_EXTRA_SPOT_LIGHTS];
-    GLint u_spot_falloff[MAX_EXTRA_SPOT_LIGHTS];
+    GLint u_gouraud_blend;
+    /* Uniforms for clustered */
+    GLint u_depth_tex;
+    GLint u_screen_size;
+    GLint u_num_lights;
+    GLint u_num_tiles_x;
+    GLint u_num_tiles_y;
 } shader_variant_t;
 
 #define SHADER_CACHE_INITIAL_SIZE 64
@@ -249,6 +197,7 @@ typedef struct {
 static frustum_plane_t gl_frustum[FRUSTUM_PLANES];
 static mat4 gl_view, gl_proj, gl_view_proj;
 static vec3 gl_cam_eye;
+static float gl_near = 0.05f, gl_far = 1000.0f;
 
 /* ---- Lighting and environment ---- */
 static vec3 gl_light_dir;
@@ -259,12 +208,11 @@ static real gl_fog_start;
 static real gl_fog_end;
 static real gl_time;
 
-/* ---- Global light list (for Lua) ---- */
-#define RENDER_MAX_LIGHTS (MAX_EXTRA_DIR_LIGHTS + MAX_EXTRA_POINT_LIGHTS + MAX_EXTRA_SPOT_LIGHTS)
-static light_definition g_lights[RENDER_MAX_LIGHTS];
+/* ---- Global light list ---- */
+static light_definition g_lights[MAX_LIGHTS];
 static int g_light_count = 0;
 
-/* ---- VAO / VBO ---- */
+/* ---- VAO / VBO (indexed) ---- */
 static GLuint gl_vao = 0;
 static GLuint gl_vertex_vbo = 0;
 static GLuint gl_index_vbo = 0;
@@ -274,7 +222,7 @@ static size_t gl_ibo_capacity_bytes = 0;
 /* ---- FBO (upscaling) ---- */
 static GLuint gl_fbo = 0;
 static GLuint gl_color_tex = 0;
-static GLuint gl_depth_rb = 0;
+static GLuint gl_depth_tex = 0;      // depth texture (sampled in compute)
 static GLint gl_default_fbo = 0;
 
 /* ---- Batching state ---- */
@@ -323,7 +271,26 @@ static i32 gl_transparent_triangle_id = 0;
 static mat4 gl_model_matrices[MAX_MODEL_MATRICES];
 static int gl_model_count = 0;
 
-/* ---- Particle system ---- */
+/* ---- Cluster SSBOs ---- */
+static GLuint gl_light_ssbo = 0;
+static GLuint gl_cluster_ssbo = 0;
+static GLuint gl_cluster_offset_ssbo = 0;
+static GLuint gl_cluster_program = 0;
+static int gl_num_tiles_x = 0;
+static int gl_num_tiles_y = 0;
+static int gl_num_clusters = 0;
+
+/* ---- Uniform locations for cluster compute ---- */
+static GLint cluster_u_depth_tex = -1;
+static GLint cluster_u_num_lights = -1;
+static GLint cluster_u_tile_size = -1;
+static GLint cluster_u_num_tiles_x = -1;
+static GLint cluster_u_num_tiles_y = -1;
+static GLint cluster_u_depth_slices = -1;
+static GLint cluster_u_near = -1;
+static GLint cluster_u_far = -1;
+
+/* ---- Particle system (unchanged) ---- */
 typedef struct {
     vec3 center;
     vec4 color;
@@ -400,8 +367,7 @@ static void extract_frustum_planes(void) {
     vec4 c1 = gl_view_proj.columns[1];
     vec4 c2 = gl_view_proj.columns[2];
     vec4 c3 = gl_view_proj.columns[3];
-    i32 i;
-
+    int i;
     gl_frustum[0].normal = vec3_add(
         vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
         vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
@@ -437,11 +403,11 @@ static void extract_frustum_planes(void) {
 }
 
 static INLINE i32 triangle_outside_frustum(vec3 v0, vec3 v1, vec3 v2) {
-    i32 i;
+    int i;
     for (i = 0; i < FRUSTUM_PLANES; i++) {
-        i32 o0 = (vec3_dot(gl_frustum[i].normal, v0) + gl_frustum[i].d) < 0.0f;
-        i32 o1 = (vec3_dot(gl_frustum[i].normal, v1) + gl_frustum[i].d) < 0.0f;
-        i32 o2 = (vec3_dot(gl_frustum[i].normal, v2) + gl_frustum[i].d) < 0.0f;
+        int o0 = (vec3_dot(gl_frustum[i].normal, v0) + gl_frustum[i].d) < 0.0f;
+        int o1 = (vec3_dot(gl_frustum[i].normal, v1) + gl_frustum[i].d) < 0.0f;
+        int o2 = (vec3_dot(gl_frustum[i].normal, v2) + gl_frustum[i].d) < 0.0f;
         if (o0 && o1 && o2) return 1;
     }
     return 0;
@@ -495,16 +461,22 @@ static GLuint compile_shader_with_defines(GLenum type, const char* filename, con
     return shader;
 }
 
-static void generate_defines(render_method key, char* out, size_t out_size) {
+/* ---- Generate defines for material variant (mode + effects) ---- */
+static void generate_defines(render_method key, int is_depth, char* out, size_t out_size) {
     char* p = out;
     size_t remaining = out_size;
     int n;
 
-    n = snprintf(p, remaining, "#version 330 core\n");
+    n = snprintf(p, remaining, "#version 430 core\n");
     p += n; remaining -= n;
 
     n = snprintf(p, remaining, "#define USE_MODEL_UBO 1\n");
     p += n; remaining -= n;
+
+    if (is_depth) {
+        n = snprintf(p, remaining, "#define DEPTH_ONLY 1\n");
+        p += n; remaining -= n;
+    }
 
     u32 mode = (u32)key & 0x7;
     switch (mode) {
@@ -564,41 +536,52 @@ static void shader_cache_resize(int new_size) {
     free(old_cache);
 }
 
-static shader_variant_t* get_program_for_method(render_method key) {
+/* ---- Get shader variant for a given material key (and depth flag) ---- */
+static shader_variant_t* get_program_for_method(render_method key, int is_depth) {
     shader_variant_t *entry;
     GLuint vs, fs, prog;
-    int index, link_status, blockIndex, modelBlock, i;
+    int index, link_status, blockIndex, modelBlock;
     char defines[4096];
     char name[32];
     GLint len;
     char log[512];
+    int i;   // declared at top for C89
 
     if (!gl_shader_cache) {
         gl_shader_cache_size = SHADER_CACHE_INITIAL_SIZE;
         gl_shader_cache = (shader_variant_t*)calloc(gl_shader_cache_size, sizeof(shader_variant_t));
         gl_shader_cache_count = 0;
     }
-    index = (unsigned)key % gl_shader_cache_size;
+
+    // Compute cache key: include depth flag in the key (high bit)
+    render_method cache_key = key | (is_depth ? (1u << 31) : 0);
+
+    index = (unsigned)cache_key % gl_shader_cache_size;
     while (gl_shader_cache[index].program != 0) {
-        if (gl_shader_cache[index].key == key) {
+        if (gl_shader_cache[index].key == cache_key) {
             if (!gl_shader_cache[index].hit_logged) {
-                printf("[SHADER CACHE] Hit for key 0x%x (program %u)\n", (unsigned)key, gl_shader_cache[index].program);
+                printf("[SHADER CACHE] Hit for key 0x%x (program %u)\n", (unsigned)cache_key, gl_shader_cache[index].program);
                 gl_shader_cache[index].hit_logged = 1;
             }
             return &gl_shader_cache[index];
         }
         index = (index + 1) % gl_shader_cache_size;
     }
-    printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)key);
-    generate_defines(key, defines, sizeof(defines));
-    vs = compile_shader_with_defines(GL_VERTEX_SHADER,   "material3.vert", defines);
-    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material3.frag", defines);
+
+    printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)cache_key);
+    generate_defines(key, is_depth, defines, sizeof(defines));
+
+    // Vertex shader is the same for all
+    vs = compile_shader_with_defines(GL_VERTEX_SHADER, "material.vert", defines);
+    // Fragment shader: same file, DEPTH_ONLY controls behaviour
+    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material.frag", defines);
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
         if (fs) C89GL_glDeleteShader(fs);
-        printf("[SHADER CACHE] ERROR: Failed to compile shaders for key 0x%x\n", (unsigned)key);
+        printf("[SHADER CACHE] ERROR: Failed to compile shaders for key 0x%x\n", (unsigned)cache_key);
         return NULL;
     }
+
     prog = C89GL_glCreateProgram();
     C89GL_glAttachShader(prog, vs);
     C89GL_glAttachShader(prog, fs);
@@ -606,7 +589,7 @@ static shader_variant_t* get_program_for_method(render_method key) {
     C89GL_glGetProgramiv(prog, GL_LINK_STATUS, &link_status);
     if (!link_status) {
         C89GL_glGetProgramInfoLog(prog, sizeof(log), NULL, log);
-        printf("[SHADER CACHE] ERROR: Program link failed for key 0x%x:\n%s\n", (unsigned)key, log);
+        printf("[SHADER CACHE] ERROR: Program link failed for key 0x%x:\n%s\n", (unsigned)cache_key, log);
         C89GL_glDeleteProgram(prog);
         C89GL_glDeleteShader(vs);
         C89GL_glDeleteShader(fs);
@@ -623,8 +606,9 @@ static shader_variant_t* get_program_for_method(render_method key) {
         C89GL_glUniformBlockBinding(prog, modelBlock, MODEL_UBO_BINDING);
 
     entry = &gl_shader_cache[index];
-    entry->key = key;
+    entry->key = cache_key;
     entry->program = prog;
+    entry->is_depth = is_depth;
     entry->hit_logged = 0;
     entry->u_view_proj = C89GL_glGetUniformLocation(prog, "uViewProj");
     entry->u_light_dir = C89GL_glGetUniformLocation(prog, "uLightDir");
@@ -635,59 +619,26 @@ static shader_variant_t* get_program_for_method(render_method key) {
     entry->u_fog_color = C89GL_glGetUniformLocation(prog, "uFogColor");
     entry->u_fog_start = C89GL_glGetUniformLocation(prog, "uFogStart");
     entry->u_fog_end = C89GL_glGetUniformLocation(prog, "uFogEnd");
-
-    /* Directional */
-    entry->u_num_dir_lights = C89GL_glGetUniformLocation(prog, "uNumDirLights");
-    for (i = 0; i < MAX_EXTRA_DIR_LIGHTS; i++) {
-        snprintf(name, sizeof(name), "uDirDir[%d]", i);
-        entry->u_dir_dir[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uDirCol[%d]", i);
-        entry->u_dir_col[i] = C89GL_glGetUniformLocation(prog, name);
-    }
-
-    /* Point */
-    entry->u_num_point_lights = C89GL_glGetUniformLocation(prog, "uNumPointLights");
-    for (i = 0; i < MAX_EXTRA_POINT_LIGHTS; i++) {
-        snprintf(name, sizeof(name), "uPointPos[%d]", i);
-        entry->u_point_pos[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uPointCol[%d]", i);
-        entry->u_point_col[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uPointRange[%d]", i);
-        entry->u_point_range[i] = C89GL_glGetUniformLocation(prog, name);
-    }
-
-    /* Spot */
-    entry->u_num_spot_lights = C89GL_glGetUniformLocation(prog, "uNumSpotLights");
-    for (i = 0; i < MAX_EXTRA_SPOT_LIGHTS; i++) {
-        snprintf(name, sizeof(name), "uSpotPos[%d]", i);
-        entry->u_spot_pos[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uSpotDir[%d]", i);
-        entry->u_spot_dir[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uSpotCol[%d]", i);
-        entry->u_spot_col[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uSpotRange[%d]", i);
-        entry->u_spot_range[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uSpotInnerCos[%d]", i);
-        entry->u_spot_inner_cos[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uSpotOuterCos[%d]", i);
-        entry->u_spot_outer_cos[i] = C89GL_glGetUniformLocation(prog, name);
-        snprintf(name, sizeof(name), "uSpotFalloff[%d]", i);
-        entry->u_spot_falloff[i] = C89GL_glGetUniformLocation(prog, name);
-    }
+    entry->u_gouraud_blend = C89GL_glGetUniformLocation(prog, "uGouraudBlend");
+    entry->u_depth_tex = C89GL_glGetUniformLocation(prog, "uDepthTex");
+    entry->u_screen_size = C89GL_glGetUniformLocation(prog, "uScreenSize");
+    entry->u_num_lights = C89GL_glGetUniformLocation(prog, "uNumLights");
+    entry->u_num_tiles_x = C89GL_glGetUniformLocation(prog, "uNumTilesX");
+    entry->u_num_tiles_y = C89GL_glGetUniformLocation(prog, "uNumTilesY");
 
     C89GL_glDeleteShader(vs);
     C89GL_glDeleteShader(fs);
 
     if ((float)(gl_shader_cache_count + 1) / gl_shader_cache_size > SHADER_CACHE_MAX_LOAD_FACTOR) {
         shader_cache_resize(gl_shader_cache_size * 2);
-        index = (unsigned)key % gl_shader_cache_size;
+        index = (unsigned)cache_key % gl_shader_cache_size;
         while (gl_shader_cache[index].program != 0) index = (index + 1) % gl_shader_cache_size;
     }
     gl_shader_cache[index] = *entry;
     gl_shader_cache_count++;
     gl_shader_compilations++;
     printf("[SHADER CACHE] Compiled new variant #%d for key 0x%x (program %u)\n",
-           gl_shader_compilations, (unsigned)key, prog);
+           gl_shader_compilations, (unsigned)cache_key, prog);
     return &gl_shader_cache[index];
 }
 
@@ -775,24 +726,140 @@ static void update_model_ubo(void) {
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
-/* ---- Public Light Management API ---- */
+/* ---- Upload lights to SSBO ---- */
+static void upload_lights_to_ssbo(void) {
+    gpu_light_t gpu_lights[MAX_LIGHTS];
+    int count = 0;
+    int i;
+    for (i = 0; i < g_light_count && count < MAX_LIGHTS; i++) {
+        if (!g_lights[i].enabled) continue;
+        gpu_lights[count].pos[0] = g_lights[i].position.position.x;
+        gpu_lights[count].pos[1] = g_lights[i].position.position.y;
+        gpu_lights[count].pos[2] = g_lights[i].position.position.z;
+        gpu_lights[count].pos[3] = (float)g_lights[i].type;
+        gpu_lights[count].dir[0] = g_lights[i].direction.position.x;
+        gpu_lights[count].dir[1] = g_lights[i].direction.position.y;
+        gpu_lights[count].dir[2] = g_lights[i].direction.position.z;
+        gpu_lights[count].dir[3] = 0.0f;
+        gpu_lights[count].color[0] = g_lights[i].color.position.x;
+        gpu_lights[count].color[1] = g_lights[i].color.position.y;
+        gpu_lights[count].color[2] = g_lights[i].color.position.z;
+        gpu_lights[count].color[3] = 1.0f;
+        gpu_lights[count].range = g_lights[i].range;
+        gpu_lights[count].inner_cos = (float)cos(g_lights[i].spot_inner_angle);
+        gpu_lights[count].outer_cos = (float)cos(g_lights[i].spot_outer_angle);
+        gpu_lights[count].falloff = g_lights[i].spot_falloff;
+        count++;
+    }
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_light_ssbo);
+    C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, count * sizeof(gpu_light_t), gpu_lights);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+/* ---- Dispatch compute shader ---- */
+static void dispatch_cluster_build(void) {
+    if (!gl_cluster_program) return;
+    upload_lights_to_ssbo();
+
+    C89GL_glActiveTexture(GL_TEXTURE0);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
+
+    C89GL_glUseProgram(gl_cluster_program);
+    C89GL_glUniform1i(cluster_u_depth_tex, 0);
+    C89GL_glUniform1i(cluster_u_num_lights, g_light_count);
+    C89GL_glUniform1i(cluster_u_tile_size, CLUSTER_TILE_SIZE);
+    C89GL_glUniform1i(cluster_u_num_tiles_x, gl_num_tiles_x);
+    C89GL_glUniform1i(cluster_u_num_tiles_y, gl_num_tiles_y);
+    C89GL_glUniform1i(cluster_u_depth_slices, CLUSTER_DEPTH_SLICES);
+    C89GL_glUniform1f(cluster_u_near, gl_near);
+    C89GL_glUniform1f(cluster_u_far, gl_far);
+
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_light_ssbo);
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl_cluster_ssbo);
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_cluster_offset_ssbo);
+
+    GLuint groups_x = (gl_num_tiles_x + 15) / 16;
+    GLuint groups_y = (gl_num_tiles_y + 15) / 16;
+    C89GL_glDispatchCompute(groups_x, groups_y, 1);
+
+    C89GL_glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    C89GL_glUseProgram(0);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    C89GL_glActiveTexture(GL_TEXTURE0);
+}
+
+/* ---- Init compute shader and SSBOs ---- */
+static void init_cluster_resources(void) {
+    // Compile compute shader
+    GLuint cs = compile_shader_with_defines(GL_COMPUTE_SHADER, "cluster.comp", "#version 430 core\n");
+    if (!cs) {
+        printf("ERROR: Failed to compile cluster compute shader.\n");
+        return;
+    }
+    gl_cluster_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(gl_cluster_program, cs);
+    C89GL_glLinkProgram(gl_cluster_program);
+    GLint link_status;
+    C89GL_glGetProgramiv(gl_cluster_program, GL_LINK_STATUS, &link_status);
+    if (!link_status) {
+        char log[512];
+        C89GL_glGetProgramInfoLog(gl_cluster_program, sizeof(log), NULL, log);
+        printf("Cluster program link error:\n%s\n", log);
+        C89GL_glDeleteProgram(gl_cluster_program);
+        gl_cluster_program = 0;
+        C89GL_glDeleteShader(cs);
+        return;
+    }
+    C89GL_glDeleteShader(cs);
+
+    cluster_u_depth_tex = C89GL_glGetUniformLocation(gl_cluster_program, "uDepthTex");
+    cluster_u_num_lights = C89GL_glGetUniformLocation(gl_cluster_program, "uNumLights");
+    cluster_u_tile_size = C89GL_glGetUniformLocation(gl_cluster_program, "uTileSize");
+    cluster_u_num_tiles_x = C89GL_glGetUniformLocation(gl_cluster_program, "uNumTilesX");
+    cluster_u_num_tiles_y = C89GL_glGetUniformLocation(gl_cluster_program, "uNumTilesY");
+    cluster_u_depth_slices = C89GL_glGetUniformLocation(gl_cluster_program, "uDepthSlices");
+    cluster_u_near = C89GL_glGetUniformLocation(gl_cluster_program, "uNear");
+    cluster_u_far = C89GL_glGetUniformLocation(gl_cluster_program, "uFar");
+
+    // SSBOs
+    C89GL_glGenBuffers(1, &gl_light_ssbo);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_light_ssbo);
+    C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_LIGHTS * sizeof(gpu_light_t), NULL, GL_DYNAMIC_DRAW);
+
+    gl_num_tiles_x = (gl_render_width + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
+    gl_num_tiles_y = (gl_render_height + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
+    gl_num_clusters = gl_num_tiles_x * gl_num_tiles_y * CLUSTER_DEPTH_SLICES;
+
+    size_t cluster_list_size = gl_num_clusters * CLUSTER_MAX_LIGHTS_PER * sizeof(GLuint);
+    C89GL_glGenBuffers(1, &gl_cluster_ssbo);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_cluster_ssbo);
+    C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, cluster_list_size, NULL, GL_DYNAMIC_DRAW);
+
+    size_t offset_size = gl_num_clusters * sizeof(GLuint);
+    C89GL_glGenBuffers(1, &gl_cluster_offset_ssbo);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_cluster_offset_ssbo);
+    C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, offset_size, NULL, GL_DYNAMIC_DRAW);
+
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    printf("Clustered rendering initialised: tiles=%dx%d, clusters=%d\n",
+           gl_num_tiles_x, gl_num_tiles_y, gl_num_clusters);
+}
+
+/* ---- Public API: Light management ---- */
 void render_clear_lights(void) {
     g_light_count = 0;
 }
 
 void render_set_light_at_index(int index, const light_definition *def) {
-    if (index < 0 || index >= RENDER_MAX_LIGHTS) return;
+    if (index < 0 || index >= MAX_LIGHTS) return;
     g_lights[index] = *def;
     if (index + 1 > g_light_count) g_light_count = index + 1;
 }
 
-/* ---- Set non‑material uniforms (including all extra lights) ---- */
-static void set_uniforms_for_variant(shader_variant_t* variant) {
-    int i, dir_count, point_count, spot_count;
-    int dir_idx, point_idx, spot_idx;
-    vec4 zero, dir, col, pos;
-
-    /* ---- Standard uniforms ---- */
+/* ---- Set uniforms for a shader variant ---- */
+static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pass) {
+    if (!variant) return;
     if (variant->u_view_proj != -1)
         C89GL_glUniformMatrix4fv(variant->u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
     if (variant->u_light_dir != -1)
@@ -811,140 +878,34 @@ static void set_uniforms_for_variant(shader_variant_t* variant) {
         C89GL_glUniform1f(variant->u_fog_start, gl_fog_start);
     if (variant->u_fog_end != -1)
         C89GL_glUniform1f(variant->u_fog_end, gl_fog_end);
+    if (variant->u_gouraud_blend != -1)
+        C89GL_glUniform1f(variant->u_gouraud_blend, 0.0f); // default to Phong
+
+    if (!is_depth_pass) {
+        // Bind depth texture for cluster lookups
+        if (variant->u_depth_tex != -1) {
+            C89GL_glActiveTexture(GL_TEXTURE1);
+            C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
+            C89GL_glUniform1i(variant->u_depth_tex, 1);
+            C89GL_glActiveTexture(GL_TEXTURE0);
+        }
+        if (variant->u_screen_size != -1)
+            C89GL_glUniform2f(variant->u_screen_size, (float)gl_render_width, (float)gl_render_height);
+        if (variant->u_num_lights != -1)
+            C89GL_glUniform1i(variant->u_num_lights, g_light_count);
+        if (variant->u_num_tiles_x != -1)
+            C89GL_glUniform1i(variant->u_num_tiles_x, gl_num_tiles_x);
+        if (variant->u_num_tiles_y != -1)
+            C89GL_glUniform1i(variant->u_num_tiles_y, gl_num_tiles_y);
+
+        // Bind SSBOs for light and cluster data
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_light_ssbo);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl_cluster_ssbo);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_cluster_offset_ssbo);
+    }
 
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MATERIAL_UBO_BINDING, gl_material_ubo);
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MODEL_UBO_BINDING, gl_model_ubo);
-
-    /* ===== Directional lights ===== */
-    dir_count = 0;
-    for (i = 0; i < g_light_count && dir_count < MAX_EXTRA_DIR_LIGHTS; i++) {
-        if (g_lights[i].enabled && g_lights[i].type == LIGHT_DIRECTIONAL)
-            dir_count++;
-    }
-    if (variant->u_num_dir_lights != -1)
-        C89GL_glUniform1i(variant->u_num_dir_lights, dir_count);
-
-    dir_idx = 0;
-    for (i = 0; i < g_light_count && dir_idx < MAX_EXTRA_DIR_LIGHTS; i++) {
-        if (g_lights[i].enabled && g_lights[i].type == LIGHT_DIRECTIONAL) {
-            dir = vec4_init_from_4(g_lights[i].direction.position.x,
-                                   g_lights[i].direction.position.y,
-                                   g_lights[i].direction.position.z,
-                                   0.0f);
-            col = vec4_init_from_4(g_lights[i].color.color.r,
-                                   g_lights[i].color.color.g,
-                                   g_lights[i].color.color.b,
-                                   1.0f);
-            if (variant->u_dir_dir[dir_idx] != -1)
-                C89GL_glUniform4fv(variant->u_dir_dir[dir_idx], 1, (float*)&dir);
-            if (variant->u_dir_col[dir_idx] != -1)
-                C89GL_glUniform4fv(variant->u_dir_col[dir_idx], 1, (float*)&col);
-            dir_idx++;
-        }
-    }
-    zero = vec4_init_from_4(0.0f, 0.0f, 0.0f, 0.0f);
-    for (; dir_idx < MAX_EXTRA_DIR_LIGHTS; dir_idx++) {
-        if (variant->u_dir_dir[dir_idx] != -1)
-            C89GL_glUniform4fv(variant->u_dir_dir[dir_idx], 1, (float*)&zero);
-        if (variant->u_dir_col[dir_idx] != -1)
-            C89GL_glUniform4fv(variant->u_dir_col[dir_idx], 1, (float*)&zero);
-    }
-
-    /* ===== Point lights ===== */
-    point_count = 0;
-    for (i = 0; i < g_light_count && point_count < MAX_EXTRA_POINT_LIGHTS; i++) {
-        if (g_lights[i].enabled && g_lights[i].type == LIGHT_POINT)
-            point_count++;
-    }
-    if (variant->u_num_point_lights != -1)
-        C89GL_glUniform1i(variant->u_num_point_lights, point_count);
-
-    point_idx = 0;
-    for (i = 0; i < g_light_count && point_idx < MAX_EXTRA_POINT_LIGHTS; i++) {
-        if (g_lights[i].enabled && g_lights[i].type == LIGHT_POINT) {
-            pos = vec4_init_from_4(g_lights[i].position.position.x,
-                                   g_lights[i].position.position.y,
-                                   g_lights[i].position.position.z,
-                                   1.0f);
-            col = vec4_init_from_4(g_lights[i].color.color.r,
-                                   g_lights[i].color.color.g,
-                                   g_lights[i].color.color.b,
-                                   1.0f);
-            if (variant->u_point_pos[point_idx] != -1)
-                C89GL_glUniform4fv(variant->u_point_pos[point_idx], 1, (float*)&pos);
-            if (variant->u_point_col[point_idx] != -1)
-                C89GL_glUniform4fv(variant->u_point_col[point_idx], 1, (float*)&col);
-            if (variant->u_point_range[point_idx] != -1)
-                C89GL_glUniform1f(variant->u_point_range[point_idx], g_lights[i].range);
-            point_idx++;
-        }
-    }
-    for (; point_idx < MAX_EXTRA_POINT_LIGHTS; point_idx++) {
-        if (variant->u_point_pos[point_idx] != -1)
-            C89GL_glUniform4fv(variant->u_point_pos[point_idx], 1, (float*)&zero);
-        if (variant->u_point_col[point_idx] != -1)
-            C89GL_glUniform4fv(variant->u_point_col[point_idx], 1, (float*)&zero);
-        if (variant->u_point_range[point_idx] != -1)
-            C89GL_glUniform1f(variant->u_point_range[point_idx], 0.0f);
-    }
-
-    /* ===== Spot lights ===== */
-    spot_count = 0;
-    for (i = 0; i < g_light_count && spot_count < MAX_EXTRA_SPOT_LIGHTS; i++) {
-        if (g_lights[i].enabled && g_lights[i].type == LIGHT_SPOT)
-            spot_count++;
-    }
-    if (variant->u_num_spot_lights != -1)
-        C89GL_glUniform1i(variant->u_num_spot_lights, spot_count);
-
-    spot_idx = 0;
-    for (i = 0; i < g_light_count && spot_idx < MAX_EXTRA_SPOT_LIGHTS; i++) {
-        if (g_lights[i].enabled && g_lights[i].type == LIGHT_SPOT) {
-            pos = vec4_init_from_4(g_lights[i].position.position.x,
-                                   g_lights[i].position.position.y,
-                                   g_lights[i].position.position.z,
-                                   1.0f);
-            dir = vec4_init_from_4(g_lights[i].direction.position.x,
-                                   g_lights[i].direction.position.y,
-                                   g_lights[i].direction.position.z,
-                                   0.0f);
-            col = vec4_init_from_4(g_lights[i].color.color.r,
-                                   g_lights[i].color.color.g,
-                                   g_lights[i].color.color.b,
-                                   1.0f);
-            if (variant->u_spot_pos[spot_idx] != -1)
-                C89GL_glUniform4fv(variant->u_spot_pos[spot_idx], 1, (float*)&pos);
-            if (variant->u_spot_dir[spot_idx] != -1)
-                C89GL_glUniform4fv(variant->u_spot_dir[spot_idx], 1, (float*)&dir);
-            if (variant->u_spot_col[spot_idx] != -1)
-                C89GL_glUniform4fv(variant->u_spot_col[spot_idx], 1, (float*)&col);
-            if (variant->u_spot_range[spot_idx] != -1)
-                C89GL_glUniform1f(variant->u_spot_range[spot_idx], g_lights[i].range);
-            if (variant->u_spot_inner_cos[spot_idx] != -1)
-                C89GL_glUniform1f(variant->u_spot_inner_cos[spot_idx], (float)cos(g_lights[i].spot_inner_angle));
-            if (variant->u_spot_outer_cos[spot_idx] != -1)
-                C89GL_glUniform1f(variant->u_spot_outer_cos[spot_idx], (float)cos(g_lights[i].spot_outer_angle));
-            if (variant->u_spot_falloff[spot_idx] != -1)
-                C89GL_glUniform1f(variant->u_spot_falloff[spot_idx], g_lights[i].spot_falloff);
-            spot_idx++;
-        }
-    }
-    for (; spot_idx < MAX_EXTRA_SPOT_LIGHTS; spot_idx++) {
-        if (variant->u_spot_pos[spot_idx] != -1)
-            C89GL_glUniform4fv(variant->u_spot_pos[spot_idx], 1, (float*)&zero);
-        if (variant->u_spot_dir[spot_idx] != -1)
-            C89GL_glUniform4fv(variant->u_spot_dir[spot_idx], 1, (float*)&zero);
-        if (variant->u_spot_col[spot_idx] != -1)
-            C89GL_glUniform4fv(variant->u_spot_col[spot_idx], 1, (float*)&zero);
-        if (variant->u_spot_range[spot_idx] != -1)
-            C89GL_glUniform1f(variant->u_spot_range[spot_idx], 0.0f);
-        if (variant->u_spot_inner_cos[spot_idx] != -1)
-            C89GL_glUniform1f(variant->u_spot_inner_cos[spot_idx], 1.0f);
-        if (variant->u_spot_outer_cos[spot_idx] != -1)
-            C89GL_glUniform1f(variant->u_spot_outer_cos[spot_idx], 0.0f);
-        if (variant->u_spot_falloff[spot_idx] != -1)
-            C89GL_glUniform1f(variant->u_spot_falloff[spot_idx], 1.0f);
-    }
 }
 
 /* ---- Transparent sort comparator ---- */
@@ -962,10 +923,11 @@ static int transparent_compare(const void* a, const void* b) {
 
 /* ---- Flush transparent batches ---- */
 static void flush_transparent_batches(void) {
+    int i, j;
     if (gl_transparent_count == 0) return;
     qsort(gl_transparent_tris, gl_transparent_count, sizeof(transparent_tri_t), transparent_compare);
 
-    int i = 0;
+    i = 0;
     while (i < gl_transparent_count) {
         const material_definition *mat = gl_transparent_tris[i].mat;
         int start = i;
@@ -980,7 +942,7 @@ static void flush_transparent_batches(void) {
             b->index_count = 0;
             b->is_transparent = 1;
 
-            for (int j = start; j < i; j++) {
+            for (j = start; j < i; j++) {
                 transparent_tri_t *t = &gl_transparent_tris[j];
                 if (gl_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > gl_pool_capacity_floats ||
                     gl_index_pool_used + 3 > gl_index_pool_capacity) {
@@ -1188,15 +1150,11 @@ static void draw_triangle_internal_legacy(
     vec3 n0, vec3 n1, vec3 n2,
     vec3 l0, vec3 l1, vec3 l2,
     const struct material_definition *mat,
-    float entity_depth)
-{
-    (void)v0; (void)v1; (void)v2;
-    (void)n0; (void)n1; (void)n2;
-    (void)l0; (void)l1; (void)l2;
-    (void)mat; (void)entity_depth;
-}
+    float entity_depth) { /* empty */ }
 
-/* ---- Public API ---- */
+/* ================================================================
+   PUBLIC API IMPLEMENTATION
+   ================================================================ */
 
 int render_init(i32 window_width, i32 window_height) {
     printf("render_init: width=%d height=%d\n", window_width, window_height);
@@ -1229,7 +1187,7 @@ int render_init(i32 window_width, i32 window_height) {
     printf("OpenGL vendor: %s\n", C89GL_glGetString(GL_VENDOR));
     printf("OpenGL renderer: %s\n", C89GL_glGetString(GL_RENDERER));
 
-    printf("Creating VAO/VBOs...\n");
+    // Create VAO and VBOs
     C89GL_glGenVertexArrays(1, &gl_vao);
     C89GL_glBindVertexArray(gl_vao);
 
@@ -1243,6 +1201,7 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBufferData(GL_ELEMENT_ARRAY_BUFFER, 1, NULL, GL_STREAM_DRAW);
     gl_ibo_capacity_bytes = 0;
 
+    // Vertex attributes (pos, normal, localPos, modelIndex, localFaceNormal, localCentroid)
     C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)0);
     C89GL_glEnableVertexAttribArray(0);
     C89GL_glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(3 * sizeof(float)));
@@ -1260,25 +1219,25 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
     C89GL_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    printf("Creating material UBO...\n");
+    // Create UBOs
     C89GL_glGenBuffers(1, &gl_material_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(material_ubo_t), NULL, GL_DYNAMIC_DRAW);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    printf("Creating model UBO...\n");
     C89GL_glGenBuffers(1, &gl_model_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_model_ubo);
     C89GL_glBufferData(GL_UNIFORM_BUFFER, MAX_MODEL_MATRICES * sizeof(mat4), NULL, GL_STREAM_DRAW);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    printf("Creating FBO...\n");
+    // Create FBO with colour texture and depth texture (instead of renderbuffer)
     gl_default_fbo = 0;
     C89GL_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &gl_default_fbo);
 
     C89GL_glGenFramebuffers(1, &gl_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
 
+    // Colour texture
     C89GL_glGenTextures(1, &gl_color_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -1288,42 +1247,54 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_color_tex, 0);
 
-    C89GL_glGenRenderbuffers(1, &gl_depth_rb);
-    C89GL_glBindRenderbuffer(GL_RENDERBUFFER, gl_depth_rb);
-    C89GL_glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height);
-    C89GL_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, gl_depth_rb);
+    // Depth texture (sampled in compute)
+    C89GL_glGenTextures(1, &gl_depth_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
+                       GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
 
     GLenum fbo_status = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    printf("FBO status: 0x%x\n", fbo_status);
     if (fbo_status != GL_FRAMEBUFFER_COMPLETE) {
-        printf("FBO incomplete!\n");
+        printf("FBO incomplete! status=0x%x\n", fbo_status);
         return 0;
     }
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
 
+    // Enable depth test, blending, culling
     C89GL_glEnable(GL_DEPTH_TEST);
     C89GL_glEnable(GL_BLEND);
     C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     C89GL_glEnable(GL_CULL_FACE);
     C89GL_glFrontFace(GL_CCW);
 
+    // Init cluster resources
+    init_cluster_resources();
+
     printf("render_init returning 1 (success)\n");
     return 1;
 }
 
 void render_shutdown(void) {
+    int i;
+    // Delete VBOs, VAO, FBO, textures, UBOs, SSBOs, programs, etc.
     if (gl_vertex_vbo) { C89GL_glDeleteBuffers(1, &gl_vertex_vbo); gl_vertex_vbo = 0; }
     if (gl_index_vbo) { C89GL_glDeleteBuffers(1, &gl_index_vbo); gl_index_vbo = 0; }
     if (gl_vao) { C89GL_glDeleteVertexArrays(1, &gl_vao); gl_vao = 0; }
     if (gl_fbo) { C89GL_glDeleteFramebuffers(1, &gl_fbo); gl_fbo = 0; }
     if (gl_color_tex) { C89GL_glDeleteTextures(1, &gl_color_tex); gl_color_tex = 0; }
-    if (gl_depth_rb) { C89GL_glDeleteRenderbuffers(1, &gl_depth_rb); gl_depth_rb = 0; }
+    if (gl_depth_tex) { C89GL_glDeleteTextures(1, &gl_depth_tex); gl_depth_tex = 0; }
     if (gl_material_ubo) { C89GL_glDeleteBuffers(1, &gl_material_ubo); gl_material_ubo = 0; }
     if (gl_model_ubo) { C89GL_glDeleteBuffers(1, &gl_model_ubo); gl_model_ubo = 0; }
+    if (gl_light_ssbo) { C89GL_glDeleteBuffers(1, &gl_light_ssbo); gl_light_ssbo = 0; }
+    if (gl_cluster_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_ssbo); gl_cluster_ssbo = 0; }
+    if (gl_cluster_offset_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_offset_ssbo); gl_cluster_offset_ssbo = 0; }
+    if (gl_cluster_program) { C89GL_glDeleteProgram(gl_cluster_program); gl_cluster_program = 0; }
     if (gl_vertex_pool) { free(gl_vertex_pool); gl_vertex_pool = NULL; }
     if (gl_index_pool) { free(gl_index_pool); gl_index_pool = NULL; }
     if (gl_shader_cache) {
-        int i;
         for (i = 0; i < gl_shader_cache_size; i++)
             if (gl_shader_cache[i].program)
                 C89GL_glDeleteProgram(gl_shader_cache[i].program);
@@ -1338,11 +1309,10 @@ void render_shutdown(void) {
     render_particle_system_shutdown();
 }
 
-/* ---- render_draw_entities (GPU transforms + indexed) ---- */
 void render_draw_entities(struct entity_definition **entities, int count) {
+    int i, valid_count;
     if (!entities || count <= 0) return;
 
-    int i, valid_count;
     gl_model_count = 0;
     for (i = 0; i < count && gl_model_count < MAX_MODEL_MATRICES; i++) {
         entity_definition *ent = entities[i];
@@ -1375,27 +1345,13 @@ void render_draw_entities(struct entity_definition **entities, int count) {
     free(sorted);
 }
 
-/* ---- Legacy render_draw_entity (CPU transforms) ---- */
 void render_draw_entity(const struct entity_definition *ent) {
     if (!ent) return;
     struct entity_definition *ents[1] = { (struct entity_definition*)ent };
     render_draw_entities(ents, 1);
 }
 
-/* ---- Legacy draw_triangle_shaded (CPU transforms) ---- */
-void draw_triangle_shaded(
-    vec3 v0, vec3 v1, vec3 v2,
-    vec3 n0, vec3 n1, vec3 n2,
-    vec3 l0, vec3 l1, vec3 l2,
-    const struct material_definition *mat)
-{
-    (void)v0; (void)v1; (void)v2;
-    (void)n0; (void)n1; (void)n2;
-    (void)l0; (void)l1; (void)l2;
-    (void)mat;
-}
-
-/* ---- Other API functions (unchanged) ---- */
+/* ---- Other API functions ---- */
 void render_set_light(vec3 dir, vec3 col, vec3 amb) {
     gl_light_dir = dir; gl_light_col = col; gl_ambient_col = amb;
 }
@@ -1406,6 +1362,8 @@ void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
     gl_proj = mat4_perspective(fov, aspect, 0.05f, 1000.0f);
     gl_view_proj = mat4_mul(gl_proj, gl_view);
     extract_frustum_planes();
+    gl_near = 0.05f;
+    gl_far = 1000.0f;
 }
 
 void render_set_fog(vec3 color, real start, real end) {
@@ -1435,14 +1393,28 @@ void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    C89GL_glBindRenderbuffer(GL_RENDERBUFFER, gl_depth_rb);
-    C89GL_glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
+                       GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+    // Update tile counts
+    gl_num_tiles_x = (gl_render_width + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
+    gl_num_tiles_y = (gl_render_height + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
+    gl_num_clusters = gl_num_tiles_x * gl_num_tiles_y * CLUSTER_DEPTH_SLICES;
+    // Resize cluster SSBOs (if needed)
+    size_t list_size = gl_num_clusters * CLUSTER_MAX_LIGHTS_PER * sizeof(GLuint);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_cluster_ssbo);
+    C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, list_size, NULL, GL_DYNAMIC_DRAW);
+    size_t off_size = gl_num_clusters * sizeof(GLuint);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_cluster_offset_ssbo);
+    C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, off_size, NULL, GL_DYNAMIC_DRAW);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 i32 render_get_render_width(void) { return gl_render_width; }
 i32 render_get_render_height(void) { return gl_render_height; }
 
-/* ---- Batch comparator for sorting by mode and transparency ---- */
+/* ---- Batch comparator ---- */
 static int batch_compare_mode(const void* a, const void* b) {
     const batch_t* ba = (const batch_t*)a;
     const batch_t* bb = (const batch_t*)b;
@@ -1455,14 +1427,12 @@ static int batch_compare_mode(const void* a, const void* b) {
     return 0;
 }
 
-/* Forward declaration for internal particle draw */
 static void render_particle_system_draw_internal(void);
 
-/* ---- render_finish (indexed, with per‑batch culling and depth handling) ---- */
+/* ---- render_finish ---- */
 void render_finish(void) {
-    C89GL_glEnable(GL_DEPTH_TEST);
-    C89GL_glDepthFunc(GL_LESS);
-    C89GL_glDepthMask(GL_TRUE);
+    int i;
+    GLuint current_program = 0;
 
     flush_transparent_batches();
 
@@ -1491,83 +1461,80 @@ void render_finish(void) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glBindVertexArray(gl_vao);
 
-        GLuint current_program = 0;
-        int i;
+        // ---- Depth pre‑pass ----
+        C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        C89GL_glDepthMask(GL_TRUE);
+        current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method(b->mat->render_method);
+            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 1); // depth
             if (!variant) continue;
-
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
                 current_program = variant->program;
             }
-
-            if (b->mat->double_sided) C89GL_glDisable(GL_CULL_FACE); else C89GL_glEnable(GL_CULL_FACE);
-            C89GL_glDisable(GL_BLEND);
-            C89GL_glDepthMask(GL_TRUE);
-
             update_material_ubo(b->mat);
-            set_uniforms_for_variant(variant);
-
-            if (b->mode == MODE_WIREFRAME) {
-                C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-                C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                     (void*)(b->index_offset * sizeof(GLushort)));
-                C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            } else {
-                C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                     (void*)(b->index_offset * sizeof(GLushort)));
-            }
+            set_uniforms_for_variant(variant, 1);
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
+                                 (void*)(b->index_offset * sizeof(GLushort)));
         }
-
         if (current_program) C89GL_glUseProgram(0);
-        C89GL_glBindVertexArray(0);
-        render_particle_system_draw_internal();
 
-        C89GL_glBindVertexArray(gl_vao);
+        // ---- Compute cluster lists ----
+        dispatch_cluster_build();
+
+        // Now use GL_LEQUAL so geometry passes the depth test
+        C89GL_glDepthFunc(GL_LEQUAL);
+
+        // ---- Colour pass (opaque) ----
+        C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        C89GL_glDepthMask(GL_TRUE);
+        current_program = 0;
+        for (i = 0; i < gl_batch_count; i++) {
+            batch_t *b = &gl_batches[i];
+            if (b->is_transparent) continue;
+            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 0);
+            if (!variant) continue;
+            if (current_program != variant->program) {
+                C89GL_glUseProgram(variant->program);
+                current_program = variant->program;
+            }
+            update_material_ubo(b->mat);
+            set_uniforms_for_variant(variant, 0);
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
+                                 (void*)(b->index_offset * sizeof(GLushort)));
+        }
+        if (current_program) C89GL_glUseProgram(0);
+
+        // ---- Transparent pass ----
+        C89GL_glEnable(GL_BLEND);
+        C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        C89GL_glDepthMask(GL_FALSE);
         current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (!b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method(b->mat->render_method);
+            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 0);
             if (!variant) continue;
-
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
                 current_program = variant->program;
             }
-
-            if (b->mat->double_sided) C89GL_glDisable(GL_CULL_FACE); else C89GL_glEnable(GL_CULL_FACE);
-            C89GL_glEnable(GL_BLEND);
-            C89GL_glDepthMask(GL_FALSE);
-
             update_material_ubo(b->mat);
-            set_uniforms_for_variant(variant);
-
-            if (b->mode == MODE_WIREFRAME) {
-                C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-                C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                     (void*)(b->index_offset * sizeof(GLushort)));
-                C89GL_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            } else {
-                C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                     (void*)(b->index_offset * sizeof(GLushort)));
-            }
+            set_uniforms_for_variant(variant, 0);
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
+                                 (void*)(b->index_offset * sizeof(GLushort)));
         }
-
         if (current_program) C89GL_glUseProgram(0);
-        C89GL_glBindVertexArray(0);
-        C89GL_glDepthMask(GL_TRUE);
         C89GL_glDisable(GL_BLEND);
-        C89GL_glEnable(GL_DEPTH_TEST);
-        C89GL_glEnable(GL_CULL_FACE);
+        C89GL_glDepthMask(GL_TRUE);
+
+        C89GL_glBindVertexArray(0);
+        render_particle_system_draw_internal();
     }
 
-    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-    render_particle_system_draw_internal();
-
+    // Upscale and swap
     C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
     C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
     C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
@@ -1585,54 +1552,45 @@ void render_finish(void) {
 }
 
 /* ========================================================================
-   Particle system implementation (OpenGL)
+   Particle system (unchanged from original, with C89 fixes)
    ======================================================================== */
 
-static GLuint compile_particle_shader(GLenum type, const char* filename) {
-    char* source = read_file(filename);
-    if (!source) return 0;
-    GLuint shader = C89GL_glCreateShader(type);
-    C89GL_glShaderSource(shader, 1, (const char**)&source, NULL);
-    C89GL_glCompileShader(shader);
-    free(source);
-    GLint status;
-    C89GL_glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if (!status) {
-        char log[512];
-        C89GL_glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-        printf("Particle shader %s compile error:\n%s\n", filename, log);
-        C89GL_glDeleteShader(shader);
-        return 0;
-    }
-    return shader;
+static INLINE float rand_float(float min, float max) {
+    return min + (max - min) * ((float)rand() / (float)RAND_MAX);
+}
+static INLINE vec3 rand_vec3(float min, float max) {
+    vec3 v = {rand_float(min, max), rand_float(min, max), rand_float(min, max)};
+    return v;
+}
+static INLINE vec3 rand_sphere(float radius) {
+    vec3 v;
+    do { v = rand_vec3(-1.0f, 1.0f); } while (vec3_magnitude(v) > 1.0f);
+    return vec3_mul_scalar(v, radius);
 }
 
-static int init_particle_program(void) {
-    GLuint vs = compile_particle_shader(GL_VERTEX_SHADER, "particle.vert");
-    GLuint fs = compile_particle_shader(GL_FRAGMENT_SHADER, "particle.frag");
-    if (!vs || !fs) {
-        if (vs) C89GL_glDeleteShader(vs);
-        if (fs) C89GL_glDeleteShader(fs);
-        return 0;
-    }
-    g_particle_program = C89GL_glCreateProgram();
-    C89GL_glAttachShader(g_particle_program, vs);
-    C89GL_glAttachShader(g_particle_program, fs);
-    C89GL_glLinkProgram(g_particle_program);
-    GLint status;
-    C89GL_glGetProgramiv(g_particle_program, GL_LINK_STATUS, &status);
-    if (!status) {
-        char log[512];
-        C89GL_glGetProgramInfoLog(g_particle_program, sizeof(log), NULL, log);
-        printf("Particle program link error:\n%s\n", log);
-        C89GL_glDeleteProgram(g_particle_program);
-        C89GL_glDeleteShader(vs);
-        C89GL_glDeleteShader(fs);
-        return 0;
-    }
-    C89GL_glDeleteShader(vs);
-    C89GL_glDeleteShader(fs);
-    return 1;
+static void spawn_particle(void) {
+    int i;
+    if (g_particle_count >= g_particle_capacity) return;
+    particle_instance_t *p = &g_particles[g_particle_count];
+    vec3 *vel = &g_particle_velocities[g_particle_count];
+    float *life = &g_particle_lifetimes[g_particle_count];
+    float *max_life = &g_particle_max_lifetimes[g_particle_count];
+
+    p->center = vec3_add(g_emitter_pos, rand_sphere(0.1f));
+
+    vec3 dir = rand_vec3(-1.0f, 1.0f);
+    dir = vec3_normalize(dir);
+    *vel = vec3_mul_scalar(dir, g_emitter_speed * rand_float(0.5f, 1.5f));
+
+    *max_life = rand_float(g_emitter_lifetime * 0.8f, g_emitter_lifetime * 1.2f);
+    *life = *max_life;
+
+    p->size = rand_float(g_emitter_size * 0.8f, g_emitter_size * 1.2f);
+
+    p->color = vec4_init_from_4(g_emitter_color.position.x, g_emitter_color.position.y,
+                                g_emitter_color.position.z, g_emitter_alpha);
+
+    g_particle_count++;
 }
 
 void render_particle_system_init(int max_particles) {
@@ -1651,18 +1609,41 @@ void render_particle_system_init(int max_particles) {
     g_emission_timer = 0.0f;
     g_burst_done = 0;
 
-    if (!init_particle_program()) {
+    // Compile particle shaders (assumes particle.vert/frag exist)
+    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "particle.vert", "#version 330 core\n");
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "particle.frag", "#version 330 core\n");
+    if (!vs || !fs) {
+        if (vs) C89GL_glDeleteShader(vs);
+        if (fs) C89GL_glDeleteShader(fs);
         fprintf(stderr, "Failed to compile particle shaders\n");
         render_particle_system_shutdown();
         return;
     }
+    g_particle_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(g_particle_program, vs);
+    C89GL_glAttachShader(g_particle_program, fs);
+    C89GL_glLinkProgram(g_particle_program);
+    GLint status;
+    C89GL_glGetProgramiv(g_particle_program, GL_LINK_STATUS, &status);
+    if (!status) {
+        char log[512];
+        C89GL_glGetProgramInfoLog(g_particle_program, sizeof(log), NULL, log);
+        printf("Particle program link error:\n%s\n", log);
+        C89GL_glDeleteProgram(g_particle_program);
+        g_particle_program = 0;
+        C89GL_glDeleteShader(vs);
+        C89GL_glDeleteShader(fs);
+        render_particle_system_shutdown();
+        return;
+    }
+    C89GL_glDeleteShader(vs);
+    C89GL_glDeleteShader(fs);
 
     C89GL_glGenVertexArrays(1, &g_particle_vao);
     C89GL_glGenBuffers(1, &g_particle_vbo);
 
     C89GL_glBindVertexArray(g_particle_vao);
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, g_particle_vbo);
-
     C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
                                 sizeof(particle_instance_t), (void*)offsetof(particle_instance_t, center));
     C89GL_glEnableVertexAttribArray(0);
@@ -1675,7 +1656,6 @@ void render_particle_system_init(int max_particles) {
     C89GL_glVertexAttribDivisor(0, 1);
     C89GL_glVertexAttribDivisor(1, 1);
     C89GL_glVertexAttribDivisor(2, 1);
-
     C89GL_glBindVertexArray(0);
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
 
@@ -1713,44 +1693,8 @@ void render_particle_system_set_emitter(const struct particle_emitter_definition
     g_burst_done        = 0;
 }
 
-static INLINE float rand_float(float min, float max) {
-    return min + (max - min) * ((float)rand() / (float)RAND_MAX);
-}
-static INLINE vec3 rand_vec3(float min, float max) {
-    vec3 v = {rand_float(min, max), rand_float(min, max), rand_float(min, max)};
-    return v;
-}
-static INLINE vec3 rand_sphere(float radius) {
-    vec3 v;
-    do { v = rand_vec3(-1.0f, 1.0f); } while (vec3_magnitude(v) > 1.0f);
-    return vec3_mul_scalar(v, radius);
-}
-
-static void spawn_particle(void) {
-    if (g_particle_count >= g_particle_capacity) return;
-    particle_instance_t *p = &g_particles[g_particle_count];
-    vec3 *vel = &g_particle_velocities[g_particle_count];
-    float *life = &g_particle_lifetimes[g_particle_count];
-    float *max_life = &g_particle_max_lifetimes[g_particle_count];
-
-    p->center = vec3_add(g_emitter_pos, rand_sphere(0.1f));
-
-    vec3 dir = rand_vec3(-1.0f, 1.0f);
-    dir = vec3_normalize(dir);
-    *vel = vec3_mul_scalar(dir, g_emitter_speed * rand_float(0.5f, 1.5f));
-
-    *max_life = rand_float(g_emitter_lifetime * 0.8f, g_emitter_lifetime * 1.2f);
-    *life = *max_life;
-
-    p->size = rand_float(g_emitter_size * 0.8f, g_emitter_size * 1.2f);
-
-    p->color = vec4_init_from_4(g_emitter_color.position.x, g_emitter_color.position.y,
-                                g_emitter_color.position.z, g_emitter_alpha);
-
-    g_particle_count++;
-}
-
 void render_particle_system_update(float dt) {
+    int i;
     if (!g_particles) return;
 
     if (g_emitter_loop) {
@@ -1763,13 +1707,12 @@ void render_particle_system_update(float dt) {
     } else {
         if (!g_burst_done) {
             int burst = (int)(g_emission_rate * 0.5f);
-            int i;
             for (i = 0; i < burst; ++i) spawn_particle();
             g_burst_done = 1;
         }
     }
 
-    int i = 0;
+    i = 0;
     while (i < g_particle_count) {
         float *life = &g_particle_lifetimes[i];
         *life -= dt;
@@ -1841,8 +1784,8 @@ static void render_particle_system_draw_internal(void) {
 }
 
 void render_particle_system_emit_burst(int count) {
-    if (!g_particles) return;
     int i;
+    if (!g_particles) return;
     for (i = 0; i < count; ++i) {
         spawn_particle();
     }

@@ -1,5 +1,6 @@
 /*
  * C89GL.h - OpenGL 3.3 Core Backend for C89FW
+ *           Extended with OpenGL 4.3 compute/SSBO support.
  *
  * Usage:
  *   #define C89GL_IMPLEMENTATION
@@ -66,7 +67,7 @@ typedef float GLclampf;
 #endif
 
 /* ========================================================================
-   OPENGL 3.3 CORE - ENUMS
+   OPENGL 3.3 + 4.3 ENUMS
    ======================================================================== */
 #define GL_FALSE                                    0
 #define GL_TRUE                                     1
@@ -129,6 +130,37 @@ typedef float GLclampf;
 #define GL_RGBA                                     0x1908
 #define GL_RGB                                      0x1907
 #define GL_TEXTURE0                                 0x84C0
+#define GL_TEXTURE1                                 0x84C1
+#define GL_TEXTURE2                                 0x84C2
+#define GL_TEXTURE3                                 0x84C3
+#define GL_TEXTURE4                                 0x84C4
+#define GL_TEXTURE5                                 0x84C5
+#define GL_TEXTURE6                                 0x84C6
+#define GL_TEXTURE7                                 0x84C7
+#define GL_TEXTURE8                                 0x84C8
+#define GL_TEXTURE9                                 0x84C9
+#define GL_TEXTURE10                                0x84CA
+#define GL_TEXTURE11                                0x84CB
+#define GL_TEXTURE12                                0x84CC
+#define GL_TEXTURE13                                0x84CD
+#define GL_TEXTURE14                                0x84CE
+#define GL_TEXTURE15                                0x84CF
+#define GL_TEXTURE16                                0x84D0
+#define GL_TEXTURE17                                0x84D1
+#define GL_TEXTURE18                                0x84D2
+#define GL_TEXTURE19                                0x84D3
+#define GL_TEXTURE20                                0x84D4
+#define GL_TEXTURE21                                0x84D5
+#define GL_TEXTURE22                                0x84D6
+#define GL_TEXTURE23                                0x84D7
+#define GL_TEXTURE24                                0x84D8
+#define GL_TEXTURE25                                0x84D9
+#define GL_TEXTURE26                                0x84DA
+#define GL_TEXTURE27                                0x84DB
+#define GL_TEXTURE28                                0x84DC
+#define GL_TEXTURE29                                0x84DD
+#define GL_TEXTURE30                                0x84DE
+#define GL_TEXTURE31                                0x84DF
 #define GL_COLOR_BUFFER_BIT                         0x00004000
 #define GL_DEPTH_BUFFER_BIT                         0x00000100
 #define GL_STENCIL_BUFFER_BIT                       0x00000400
@@ -178,6 +210,17 @@ typedef float GLclampf;
 #define GL_UNIFORM_BLOCK_BINDING          0x8A3F
 #define GL_INVALID_INDEX                  0xFFFFFFFFu
 
+/* ---- Compute / SSBO (OpenGL 4.3) ---- */
+#define GL_COMPUTE_SHADER                 0x91B9
+#define GL_SHADER_STORAGE_BUFFER          0x90D2
+#define GL_SHADER_STORAGE_BARRIER_BIT     0x00002000
+#define GL_MAP_READ_BIT                   0x0001
+#define GL_MAP_WRITE_BIT                  0x0002
+#define GL_MAP_INVALIDATE_RANGE_BIT       0x0004
+#define GL_MAP_INVALIDATE_BUFFER_BIT      0x0008
+#define GL_MAP_FLUSH_EXPLICIT_BIT         0x0010
+#define GL_MAP_UNSYNCHRONIZED_BIT         0x0020
+
 /* ---------- Additional common enums ---------- */
 #define GL_ZERO                                     0
 #define GL_ONE                                      1
@@ -211,7 +254,7 @@ typedef float GLclampf;
 #define GL_POINT                                    0x1B00
 
 /* ========================================================================
-   OPENGL 3.3 CORE - FUNCTION POINTER TYPES
+   OPENGL 3.3 + 4.3 - FUNCTION POINTER TYPES
    ======================================================================== */
 
 /* 1.0 / 1.1 */
@@ -241,8 +284,9 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilFunc)(unsigned int func, int re
 typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilOp)(unsigned int sfail, unsigned int dpfail, unsigned int dppass);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glStencilMask)(unsigned int mask);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDepthMask)(unsigned char flag);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glColorMask)(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha);
 
-/* 1.0/1.1 ReadPixels (added) */
+/* 1.0/1.1 ReadPixels */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glReadPixels)(int x, int y, int width, int height, unsigned int format, unsigned int type, void* pixels);
 
 /* 1.5 Buffers */
@@ -320,8 +364,6 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glDrawElementsBaseVertex)(unsigned int m
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetActiveUniformBlockiv)(unsigned int program, unsigned int uniformBlockIndex, unsigned int pname, int* params);
 typedef unsigned int (C89GL_APIENTRY *C89GL_PFN_glGetUniformBlockIndex)(unsigned int program, const char* uniformBlockName);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformBlockBinding)(unsigned int program, unsigned int uniformBlockIndex, unsigned int uniformBlockBinding);
-
-/* 3.1 Uniform Queries (new) */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetUniformIndices)(unsigned int program, int count, const char** names, unsigned int* indices);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetActiveUniformsiv)(unsigned int program, int count, const unsigned int* indices, unsigned int pname, int* params);
 
@@ -332,8 +374,6 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glGetIntegeri_v)(unsigned int target, un
 typedef void (C89GL_APIENTRY *C89GL_PFN_glVertexAttribDivisor)(unsigned int index, unsigned int divisor);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDrawArraysInstanced)(unsigned int mode, int first, int count, int instancecount);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDrawElementsInstanced)(unsigned int mode, int count, unsigned int type, const void* indices, int instancecount);
-
-/* 3.3 Indexed Extension String */
 typedef const unsigned char* (C89GL_APIENTRY *C89GL_PFN_glGetStringi)(unsigned int name, unsigned int index);
 
 /* 3.3 Sampler Objects */
@@ -380,8 +420,13 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glBeginTransformFeedback)(unsigned int p
 typedef void (C89GL_APIENTRY *C89GL_PFN_glEndTransformFeedback)(void);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glTransformFeedbackVaryings)(unsigned int program, int count, const char** varyings, unsigned int bufferMode);
 
-/* ---- UBO functions (new) ---- */
+/* ---- UBO (new) ---- */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glBindBufferBase)(unsigned int target, unsigned int index, unsigned int buffer);
+
+/* ---- OpenGL 4.3 Compute / SSBO (new) ---- */
+typedef void (C89GL_APIENTRY *C89GL_PFN_glMemoryBarrier)(unsigned int barriers);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glDispatchCompute)(unsigned int num_groups_x, unsigned int num_groups_y, unsigned int num_groups_z);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glBindImageTexture)(unsigned int unit, unsigned int texture, int level, unsigned char layered, int layer, unsigned int access, unsigned int format);
 
 /* ========================================================================
    GLOBAL FUNCTION POINTERS
@@ -414,8 +459,9 @@ extern C89GL_PFN_glStencilFunc C89GL_glStencilFunc;
 extern C89GL_PFN_glStencilOp C89GL_glStencilOp;
 extern C89GL_PFN_glStencilMask C89GL_glStencilMask;
 extern C89GL_PFN_glDepthMask C89GL_glDepthMask;
+extern C89GL_PFN_glColorMask C89GL_glColorMask;
 
-/* 1.0/1.1 ReadPixels (added) */
+/* 1.0/1.1 ReadPixels */
 extern C89GL_PFN_glReadPixels C89GL_glReadPixels;
 
 /* 1.5 */
@@ -537,8 +583,13 @@ extern C89GL_PFN_glBeginTransformFeedback C89GL_glBeginTransformFeedback;
 extern C89GL_PFN_glEndTransformFeedback C89GL_glEndTransformFeedback;
 extern C89GL_PFN_glTransformFeedbackVaryings C89GL_glTransformFeedbackVaryings;
 
-/* ---- UBO (new) ---- */
+/* ---- UBO ---- */
 extern C89GL_PFN_glBindBufferBase C89GL_glBindBufferBase;
+
+/* ---- OpenGL 4.3 Compute / SSBO ---- */
+extern C89GL_PFN_glMemoryBarrier C89GL_glMemoryBarrier;
+extern C89GL_PFN_glDispatchCompute C89GL_glDispatchCompute;
+extern C89GL_PFN_glBindImageTexture C89GL_glBindImageTexture;
 
 /* ========================================================================
    CONTEXT STRUCTURE
@@ -649,8 +700,8 @@ C89GL_PFN_glStencilFunc C89GL_glStencilFunc = NULL;
 C89GL_PFN_glStencilOp C89GL_glStencilOp = NULL;
 C89GL_PFN_glStencilMask C89GL_glStencilMask = NULL;
 C89GL_PFN_glDepthMask C89GL_glDepthMask = NULL;
+C89GL_PFN_glColorMask C89GL_glColorMask = NULL;
 
-/* 1.0/1.1 ReadPixels (added) */
 C89GL_PFN_glReadPixels C89GL_glReadPixels = NULL;
 
 /* 1.5 */
@@ -772,8 +823,12 @@ C89GL_PFN_glBeginTransformFeedback C89GL_glBeginTransformFeedback = NULL;
 C89GL_PFN_glEndTransformFeedback C89GL_glEndTransformFeedback = NULL;
 C89GL_PFN_glTransformFeedbackVaryings C89GL_glTransformFeedbackVaryings = NULL;
 
-/* ---- UBO (new) ---- */
 C89GL_PFN_glBindBufferBase C89GL_glBindBufferBase = NULL;
+
+/* ---- OpenGL 4.3 Compute / SSBO ---- */
+C89GL_PFN_glMemoryBarrier C89GL_glMemoryBarrier = NULL;
+C89GL_PFN_glDispatchCompute C89GL_glDispatchCompute = NULL;
+C89GL_PFN_glBindImageTexture C89GL_glBindImageTexture = NULL;
 
 /* ---------- Loader Implementation ---------- */
 int C89GL_load_functions(void) {
@@ -804,8 +859,7 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glStencilOp, "glStencilOp");
     C89GL_LOAD_FUNC(C89GL_glStencilMask, "glStencilMask");
     C89GL_LOAD_FUNC(C89GL_glDepthMask, "glDepthMask");
-
-    /* 1.0/1.1 ReadPixels (added) */
+    C89GL_LOAD_FUNC(C89GL_glColorMask, "glColorMask");
     C89GL_LOAD_FUNC(C89GL_glReadPixels, "glReadPixels");
 
     /* 1.5 */
@@ -927,8 +981,13 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glEndTransformFeedback, "glEndTransformFeedback");
     C89GL_LOAD_FUNC(C89GL_glTransformFeedbackVaryings, "glTransformFeedbackVaryings");
 
-    /* ---- UBO (new) ---- */
+    /* UBO */
     C89GL_LOAD_FUNC(C89GL_glBindBufferBase, "glBindBufferBase");
+
+    /* ---- OpenGL 4.3 ---- */
+    C89GL_LOAD_FUNC(C89GL_glMemoryBarrier, "glMemoryBarrier");
+    C89GL_LOAD_FUNC(C89GL_glDispatchCompute, "glDispatchCompute");
+    C89GL_LOAD_FUNC(C89GL_glBindImageTexture, "glBindImageTexture");
 
     return 1;
 }
