@@ -64,6 +64,7 @@ layout(std140) uniform MaterialUniforms {
     vec3  uSheenColor;
     float uSheenExponent;
     float uSheenStrength;
+    float uMatAnisotropic;
 };
 
 #define CLUSTER_TILE_SIZE 16
@@ -166,12 +167,10 @@ void apply_bump(inout vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 
 #ifdef EFFECT_ROUGHNESS
-    // Use interpolated normal for tangent space – gives smooth, 3D bumps
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 tangent = normalize(cross(up, N));
     vec3 bitangent = cross(N, tangent);
 
-    // Higher frequency for more detail
     vec3 p_rough = localPos * 16.0;
     float eps_rough = 0.01;
     float h0 = value_noise(p_rough);
@@ -180,20 +179,18 @@ void apply_bump(inout vec3 N, vec3 worldPos, vec3 localPos) {
     float grad_u = (hx_rough - h0) / eps_rough;
     float grad_v = (hy_rough - h0) / eps_rough;
 
-    // Stronger, more visible perturbation
     float strength = uMatRoughness * 0.5;
-
-    // Mild grazing reduction to keep it visible but stable
     vec3 V = normalize(uCamEye - worldPos);
     float NdotV = max(dot(N, V), 0.0);
     float grazing = 1.0 - NdotV;
-    strength *= (0.5 + 0.5 * (1.0 - grazing)); // still strong at grazing
+    strength *= (0.5 + 0.5 * (1.0 - grazing));
 
     vec3 perturb = tangent * grad_u * strength + bitangent * grad_v * strength;
     N = normalize(N + perturb);
 #endif
 }
 
+// ---- GGX and Smith ----
 float GGX_D(float NdotH, float roughness) {
     float alpha = roughness * roughness;
     float denom = NdotH * NdotH * (alpha - 1.0) + 1.0;
@@ -207,7 +204,13 @@ float Smith_G_GGX(float NdotL, float NdotV, float roughness) {
     return G1L * G1V;
 }
 
-// ---- Burley diffuse (Disney diffuse, royalty‑free) ----
+// ---- Corrected Anisotropic Smith G ----
+float Smith_G_aniso(float NdotV, float VdotX, float VdotY, float ax, float ay) {
+    float denom = NdotV + sqrt( ax * ax * VdotX * VdotX + ay * ay * VdotY * VdotY + NdotV * NdotV );
+    return 2.0 * NdotV / denom;
+}
+
+// ---- Burley diffuse ----
 vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 baseColor, float roughness) {
     float NdotL = max(dot(N, L), 0.0);
     float NdotV = max(dot(N, V), 0.0);
@@ -219,11 +222,12 @@ vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 baseColor, float
     return lightCol * diff * baseColor * uMatAmbientLightFactor;
 }
 
-// ---- Accumulate light with Burley as default diffuse ----
+// ---- Accumulate light (with Tangent and Bitangent passed in) ----
 void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
                       vec3 F0,
+                      vec3 Tangent, vec3 Bitangent,    // <-- renamed
                       inout vec3 diffuse, inout vec3 specular,
-                      inout vec3 sheen,
+                      inout vec3 clearcoat, inout vec3 sheen,
                       inout vec3 rim, inout vec3 backGlow,
                       inout vec3 subsurface,
                       float ndotv)
@@ -239,11 +243,10 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     vec3 diffuseContrib;
 
 #ifdef EFFECT_OREN_NAYAR
-    // Oren‑Nayar (highest priority)
     float sigma = uMatOrenNayarSigma;
     float sigma2 = sigma * sigma;
     float A = 1.0 - 0.5 * sigma2 / (sigma2 + 0.33);
-    float B = 0.45 * sigma2 / (sigma2 + 0.09);
+    float B = 0.45 * sigma2 / (sigma2 + 0.09);   // <-- this 'B' is now safe
     float cos_phi_diff = 0.0;
     float sin_alpha = 0.0, tan_beta = 0.0;
     if (NdotL > 0.0 && NdotV > 0.0) {
@@ -265,51 +268,42 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     diffuseContrib = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
 
 #else
-    // Base diffuse: Minnaert (if enabled) or Burley (default)
     vec3 baseDiffuse;
 
-    #ifdef EFFECT_MINNAERT
-        // Minnaert – a Lambert variant
-        float diff = pow(NdotL, uMatMinnaertK) * pow(NdotV, 1.0 - uMatMinnaertK);
-        #ifdef EFFECT_DIFFUSE_WRAP
-            float t = NdotL;
-            diff = t * t * (3.0 - 2.0 * t);
-        #endif
-        #ifdef EFFECT_CEL_SHADING
-            float inv = 1.0 / float(uMatCelBands);
-            diff = min(1.0, floor(diff * float(uMatCelBands)) * inv);
-        #endif
-        baseDiffuse = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
-
-    #else
-        // Default: Burley diffuse (roughness‑dependent, energy‑conserving)
-        baseDiffuse = burley_diffuse(N, V, L, lightCol, diffuseColor, roughness);
-
-        // Apply WRAP and CEL as multipliers on top of Burley (if enabled)
-        #ifdef EFFECT_DIFFUSE_WRAP
-            float t = NdotL;
-            float wrapFactor = t * t * (3.0 - 2.0 * t);
-            if (NdotL > 0.001) baseDiffuse *= (wrapFactor / NdotL);
-            else baseDiffuse = vec3(0.0);
-        #endif
-        #ifdef EFFECT_CEL_SHADING
-            float inv = 1.0 / float(uMatCelBands);
-            float celFactor = min(1.0, floor(NdotL * float(uMatCelBands)) * inv);
-            if (NdotL > 0.001) baseDiffuse *= (celFactor / NdotL);
-            else baseDiffuse = vec3(0.0);
-        #endif
-
-    #endif // EFFECT_MINNAERT
+#ifdef EFFECT_MINNAERT
+    float diff = pow(NdotL, uMatMinnaertK) * pow(NdotV, 1.0 - uMatMinnaertK);
+    #ifdef EFFECT_DIFFUSE_WRAP
+        float t = NdotL;
+        diff = t * t * (3.0 - 2.0 * t);
+    #endif
+    #ifdef EFFECT_CEL_SHADING
+        float inv = 1.0 / float(uMatCelBands);
+        diff = min(1.0, floor(diff * float(uMatCelBands)) * inv);
+    #endif
+    baseDiffuse = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
+#else
+    baseDiffuse = burley_diffuse(N, V, L, lightCol, diffuseColor, roughness);
+    #ifdef EFFECT_DIFFUSE_WRAP
+        float t = NdotL;
+        float wrapFactor = t * t * (3.0 - 2.0 * t);
+        if (NdotL > 0.001) baseDiffuse *= (wrapFactor / NdotL);
+        else baseDiffuse = vec3(0.0);
+    #endif
+    #ifdef EFFECT_CEL_SHADING
+        float inv = 1.0 / float(uMatCelBands);
+        float celFactor = min(1.0, floor(NdotL * float(uMatCelBands)) * inv);
+        if (NdotL > 0.001) baseDiffuse *= (celFactor / NdotL);
+        else baseDiffuse = vec3(0.0);
+    #endif
+#endif // EFFECT_MINNAERT
 
     diffuseContrib = baseDiffuse;
-
 #endif // EFFECT_OREN_NAYAR
 
     // ---- Specular ----
     if (NdotL > 0.0) {
         vec3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
-        float D = GGX_D(NdotH, roughness);
 
 #ifdef EFFECT_FRESNEL
         float cosTheta = max(dot(V, H), 0.0);
@@ -322,10 +316,62 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
         vec3 fresnel = F0;
 #endif
 
-        float G = Smith_G_GGX(NdotL, NdotV, roughness);
-        vec3 specContrib = D * G * fresnel / (4.0 * max(NdotL, 0.001) * max(NdotV, 0.001));
+        float G = 1.0;
+        float D = 0.0;
+
+#ifdef EFFECT_ANISOTROPIC
+        // ---- Disney anisotropic specular with smooth derivative tangents ----
+        float anisotropy = clamp(uMatAnisotropic, -1.0, 1.0);
+        float aspect = sqrt(1.0 - 0.9 * anisotropy);
+        float ax = roughness * roughness / aspect;
+        float ay = roughness * roughness * aspect;
+        ax = max(ax, 0.001);
+        ay = max(ay, 0.001);
+
+        float HdotT = dot(H, Tangent);
+        float HdotB = dot(H, Bitangent);
+        float HdotN = dot(H, N);
+        float denomDist = (HdotT * HdotT) / (ax * ax) + (HdotB * HdotB) / (ay * ay) + HdotN * HdotN;
+        D = 1.0 / (3.14159265 * ax * ay * denomDist * denomDist);
+
+        float VdotT = dot(V, Tangent);
+        float VdotB = dot(V, Bitangent);
+        float LdotT = dot(L, Tangent);
+        float LdotB = dot(L, Bitangent);
+        float G_V = Smith_G_aniso(NdotV, VdotT, VdotB, ax, ay);
+        float G_L = Smith_G_aniso(NdotL, LdotT, LdotB, ax, ay);
+        G = G_V * G_L;
+
+#else
+        // ---- Isotropic ----
+        D = GGX_D(NdotH, roughness);
+        G = Smith_G_GGX(NdotL, NdotV, roughness);
+#endif
+
+        float denomSpec = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
+        vec3 specContrib = D * G * fresnel / denomSpec;
         specular += specContrib * lightCol;
     }
+
+    // ---- Clearcoat ----
+#ifdef EFFECT_CLEARCOAT
+    if (uClearcoatStrength > 0.0 && NdotL > 0.0) {
+        vec3 H = normalize(L + V);
+        float cosTheta = max(dot(V, H), 0.0);
+        cosTheta = min(cosTheta, 1.0);
+        float exp = max(uMatFresnelExponent, 0.1);
+        vec3 clearcoatF0 = vec3(0.04);
+        vec3 ccFresnel = clearcoatF0 + (1.0 - clearcoatF0) * pow(1.0 - cosTheta, exp);
+        float NdotH = max(dot(N, H), 0.0);
+        float clearcoatRoughness = sqrt(2.0 / max(uClearcoatExponent, 1.0) + 2.0);
+        clearcoatRoughness = clamp(clearcoatRoughness, 0.001, 1.0);
+        float ccD = GGX_D(NdotH, clearcoatRoughness);
+        float ccG = Smith_G_GGX(NdotL, NdotV, clearcoatRoughness);
+        float ccDenom = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
+        vec3 ccContrib = ccD * ccG * ccFresnel / ccDenom;
+        clearcoat += ccContrib * lightCol * uClearcoatColor * uClearcoatStrength;
+    }
+#endif
 
     // ---- Sheen ----
 #ifdef EFFECT_SHEEN
@@ -361,18 +407,13 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     float NdotV = max(dot(N_bumped, V), 0.0);
 
-    // ---- F0 (with safety) ----
+    // ---- F0 ----
     float metallic = clamp(uMatMetallic, 0.0, 1.0);
     float ior = uMatIor;
     if (ior <= 0.0) ior = 1.5;
     float ratio = (ior - 1.0) / (ior + 1.0);
     vec3 dielectricF0 = vec3(ratio * ratio);
     vec3 F0 = mix(dielectricF0, uMatColor, metallic);
-
-    // ---- Clearcoat (additive) ----
-    vec3 clearcoatF0 = vec3(0.04);
-    float clearcoatRoughness = sqrt(2.0 / max(uClearcoatExponent, 1.0) + 2.0);
-    clearcoatRoughness = clamp(clearcoatRoughness, 0.001, 1.0);
 
     // ---- Cavity ----
     float cavity = 1.0;
@@ -382,6 +423,17 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     float cavityStrength = uMatRoughness * 0.5;
     cavity = 1.0 - cavityStrength * (0.5 + 0.5 * noise);
     cavity = max(cavity, 0.3);
+#endif
+
+    // ---- Smooth anisotropic tangent frame (derivatives) ----
+    vec3 Tangent = vec3(0.0);
+    vec3 Bitangent = vec3(0.0);
+#ifdef EFFECT_ANISOTROPIC
+    Tangent = normalize(dFdx(worldPos));
+    Bitangent = normalize(dFdy(worldPos));
+    Tangent = normalize(Tangent - N_bumped * dot(Tangent, N_bumped));
+    Bitangent = normalize(cross(N_bumped, Tangent));
+    Tangent = normalize(cross(Bitangent, N_bumped));
 #endif
 
     vec3 totalDiffuse   = vec3(0.0);
@@ -453,29 +505,10 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         }
 
         accumulate_light(N_bumped, V, lightDir, lightCol, F0,
-                         totalDiffuse, totalSpec, totalSheen,
+                         Tangent, Bitangent,   // <-- pass the new names
+                         totalDiffuse, totalSpec, totalClearcoat, totalSheen,
                          totalRim, totalBackGlow, totalSubsurface,
                          NdotV);
-
-        // ---- Additive clearcoat ----
-        if (uClearcoatStrength > 0.0) {
-#ifdef EFFECT_CLEARCOAT
-            vec3 H = normalize(lightDir + V);
-            float NdotL_cc = max(dot(N_bumped, lightDir), 0.0);
-            if (NdotL_cc > 0.0) {
-                float NdotH = max(dot(N_bumped, H), 0.0);
-                float cosTheta = max(dot(V, H), 0.0);
-                cosTheta = min(cosTheta, 1.0);
-                float exp = max(uMatFresnelExponent, 0.1);
-                vec3 ccFresnel = clearcoatF0 + (1.0 - clearcoatF0) * pow(1.0 - cosTheta, exp);
-                float ccD = GGX_D(NdotH, clearcoatRoughness);
-                float ccG = Smith_G_GGX(NdotL_cc, NdotV, clearcoatRoughness);
-                float denom = 4.0 * max(NdotL_cc, 0.001) * max(NdotV, 0.001);
-                vec3 ccContrib = ccD * ccG * ccFresnel / denom;
-                totalClearcoat += ccContrib * lightCol * uClearcoatColor * uClearcoatStrength;
-            }
-#endif
-        }
 
         weightedDir += lightDir * intensity;
         totalWeight += intensity;

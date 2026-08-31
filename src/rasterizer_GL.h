@@ -124,7 +124,7 @@ static i32 gl_render_height = 0;
 #define MODEL_UBO_BINDING     1
 
 /* ------------------------------------------------------------
-   MATERIAL UBO – updated with metallic/ior instead of fresnel_color
+   MATERIAL UBO – updated with anisotropy and adjusted padding
    ------------------------------------------------------------ */
 typedef struct {
     float uMatColor[3];             float _pad0;
@@ -134,12 +134,10 @@ typedef struct {
     float uMatSpecularExponent;     float _pad1;
     float uMatSpecularColor[3];     float uMatSpecularThreshold;
     float uMatRimColor[3];          float uMatRimExponent;
-    /* REMOVED: float uMatFresnelColor[3]; */
-    /* NEW: three floats to replace the vec3, keeping alignment */
     float uMatMetallic;
     float uMatIor;
     float uMatPad;
-    float uMatFresnelExponent;      /* kept in same position */
+    float uMatFresnelExponent;
     float uMatGoochCool[3];         float _pad2;
     float uMatGoochWarm[3];         float uMatAmbientLightFactor;
     float uMatOrenNayarSigma;       float uMatMinnaertK;
@@ -154,12 +152,14 @@ typedef struct {
     float uClearcoatColor[3];       float uClearcoatExponent;
     float uClearcoatStrength;       float _pad5[3];
     float uSheenColor[3];           float uSheenExponent;
-    float uSheenStrength;           float _pad6[3];
+    float uSheenStrength;
+    float uMatAnisotropic;          // new anisotropy uniform
+    float _pad6[2];                 // adjusted padding (was 3 floats)
 } material_ubo_t;
 
 #define MAX_MODEL_MATRICES 1024
 
-/* ---- Shader variant cache (for different material render methods) ---- */
+/* ---- Shader variant cache ---- */
 typedef struct {
     render_method key;
     GLuint program;
@@ -523,6 +523,7 @@ static void generate_defines(render_method key, int is_depth, char* out, size_t 
     if (effects & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
     if (effects & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
     if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_ANISOTROPIC)     { n = snprintf(p, remaining, "#define EFFECT_ANISOTROPIC\n"); p += n; remaining -= n; }
 }
 
 static void shader_cache_resize(int new_size) {
@@ -543,7 +544,7 @@ static void shader_cache_resize(int new_size) {
     free(old_cache);
 }
 
-/* ---- Get shader variant for a given material key (and depth flag) ---- */
+/* ---- Get shader variant ---- */
 static shader_variant_t* get_program_for_method(render_method key, int is_depth) {
     shader_variant_t *entry;
     GLuint vs, fs, prog;
@@ -560,7 +561,6 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
         gl_shader_cache_count = 0;
     }
 
-    // Compute cache key: include depth flag in the key (high bit)
     render_method cache_key = key | (is_depth ? (1u << 31) : 0);
 
     index = (unsigned)cache_key % gl_shader_cache_size;
@@ -578,9 +578,7 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
     printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)cache_key);
     generate_defines(key, is_depth, defines, sizeof(defines));
 
-    // Vertex shader is the same for all
     vs = compile_shader_with_defines(GL_VERTEX_SHADER, "material.vert", defines);
-    // Fragment shader: same file, DEPTH_ONLY controls behaviour
     fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material.frag", defines);
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
@@ -649,7 +647,7 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
     return &gl_shader_cache[index];
 }
 
-/* ---- Update material UBO (updated for metallic/ior) ---- */
+/* ---- Update material UBO (now includes anisotropic) ---- */
 static void update_material_ubo(const material_definition *mat) {
     material_ubo_t ubo;
     memset(&ubo, 0, sizeof(ubo));
@@ -677,16 +675,10 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatRimColor[1] = mat->rim_color.position.y;
     ubo.uMatRimColor[2] = mat->rim_color.position.z;
     ubo.uMatRimExponent = mat->rim_exponent;
-
-    /* ---- NEW: metallic and ior ---- */
     ubo.uMatMetallic = mat->metallic;
     ubo.uMatIor      = mat->ior;
     ubo.uMatPad      = 0.0f;
-
-    /* fresnel_exponent stays in the same place */
     ubo.uMatFresnelExponent = mat->fresnel_exponent;
-
-    /* rest of fields */
     ubo.uMatGoochCool[0] = mat->gooch_cool.position.x;
     ubo.uMatGoochCool[1] = mat->gooch_cool.position.y;
     ubo.uMatGoochCool[2] = mat->gooch_cool.position.z;
@@ -724,6 +716,11 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uSheenColor[2] = mat->sheen_color.position.z;
     ubo.uSheenExponent = mat->sheen_exponent;
     ubo.uSheenStrength = mat->sheen_strength;
+
+    /* NEW: copy anisotropic value */
+    ubo.uMatAnisotropic = mat->anisotropic;
+
+    /* _pad6[2] is left zero (was 3 floats, now 2) */
 
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(material_ubo_t), &ubo);
@@ -804,9 +801,8 @@ static void dispatch_cluster_build(void) {
     C89GL_glActiveTexture(GL_TEXTURE0);
 }
 
-/* ---- Init compute shader and SSBOs ---- */
+/* ---- Init cluster resources ---- */
 static void init_cluster_resources(void) {
-    // Compile compute shader
     GLuint cs = compile_shader_with_defines(GL_COMPUTE_SHADER, "cluster.comp", "#version 430 core\n");
     if (!cs) {
         printf("ERROR: Failed to compile cluster compute shader.\n");
@@ -837,7 +833,6 @@ static void init_cluster_resources(void) {
     cluster_u_near = C89GL_glGetUniformLocation(gl_cluster_program, "uNear");
     cluster_u_far = C89GL_glGetUniformLocation(gl_cluster_program, "uFar");
 
-    // SSBOs
     C89GL_glGenBuffers(1, &gl_light_ssbo);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_light_ssbo);
     C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_LIGHTS * sizeof(gpu_light_t), NULL, GL_DYNAMIC_DRAW);
@@ -894,10 +889,9 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
     if (variant->u_fog_end != -1)
         C89GL_glUniform1f(variant->u_fog_end, gl_fog_end);
     if (variant->u_gouraud_blend != -1)
-        C89GL_glUniform1f(variant->u_gouraud_blend, 0.0f); // default to Phong
+        C89GL_glUniform1f(variant->u_gouraud_blend, 0.0f);
 
     if (!is_depth_pass) {
-        // Bind depth texture for cluster lookups
         if (variant->u_depth_tex != -1) {
             C89GL_glActiveTexture(GL_TEXTURE1);
             C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
@@ -913,7 +907,6 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
         if (variant->u_num_tiles_y != -1)
             C89GL_glUniform1i(variant->u_num_tiles_y, gl_num_tiles_y);
 
-        // Bind SSBOs for light and cluster data
         C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_light_ssbo);
         C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl_cluster_ssbo);
         C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_cluster_offset_ssbo);
@@ -1202,7 +1195,6 @@ int render_init(i32 window_width, i32 window_height) {
     printf("OpenGL vendor: %s\n", C89GL_glGetString(GL_VENDOR));
     printf("OpenGL renderer: %s\n", C89GL_glGetString(GL_RENDERER));
 
-    // Create VAO and VBOs
     C89GL_glGenVertexArrays(1, &gl_vao);
     C89GL_glBindVertexArray(gl_vao);
 
@@ -1216,7 +1208,6 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBufferData(GL_ELEMENT_ARRAY_BUFFER, 1, NULL, GL_STREAM_DRAW);
     gl_ibo_capacity_bytes = 0;
 
-    // Vertex attributes (pos, normal, localPos, modelIndex, localFaceNormal, localCentroid)
     C89GL_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)0);
     C89GL_glEnableVertexAttribArray(0);
     C89GL_glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(3 * sizeof(float)));
@@ -1234,7 +1225,6 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBindBuffer(GL_ARRAY_BUFFER, 0);
     C89GL_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    // Create UBOs
     C89GL_glGenBuffers(1, &gl_material_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(material_ubo_t), NULL, GL_DYNAMIC_DRAW);
@@ -1245,14 +1235,12 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glBufferData(GL_UNIFORM_BUFFER, MAX_MODEL_MATRICES * sizeof(mat4), NULL, GL_STREAM_DRAW);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    // Create FBO with colour texture and depth texture (instead of renderbuffer)
     gl_default_fbo = 0;
     C89GL_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &gl_default_fbo);
 
     C89GL_glGenFramebuffers(1, &gl_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
 
-    // Colour texture
     C89GL_glGenTextures(1, &gl_color_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -1262,7 +1250,6 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_color_tex, 0);
 
-    // Depth texture (sampled in compute)
     C89GL_glGenTextures(1, &gl_depth_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
@@ -1278,14 +1265,12 @@ int render_init(i32 window_width, i32 window_height) {
     }
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
 
-    // Enable depth test, blending, culling
     C89GL_glEnable(GL_DEPTH_TEST);
     C89GL_glEnable(GL_BLEND);
     C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     C89GL_glEnable(GL_CULL_FACE);
     C89GL_glFrontFace(GL_CCW);
 
-    // Init cluster resources
     init_cluster_resources();
 
     printf("render_init returning 1 (success)\n");
@@ -1294,7 +1279,6 @@ int render_init(i32 window_width, i32 window_height) {
 
 void render_shutdown(void) {
     int i;
-    // Delete VBOs, VAO, FBO, textures, UBOs, SSBOs, programs, etc.
     if (gl_vertex_vbo) { C89GL_glDeleteBuffers(1, &gl_vertex_vbo); gl_vertex_vbo = 0; }
     if (gl_index_vbo) { C89GL_glDeleteBuffers(1, &gl_index_vbo); gl_index_vbo = 0; }
     if (gl_vao) { C89GL_glDeleteVertexArrays(1, &gl_vao); gl_vao = 0; }
@@ -1413,11 +1397,9 @@ void render_set_render_resolution(i32 rw, i32 rh) {
                        GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
-    // Update tile counts
     gl_num_tiles_x = (gl_render_width + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
     gl_num_tiles_y = (gl_render_height + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
     gl_num_clusters = gl_num_tiles_x * gl_num_tiles_y * CLUSTER_DEPTH_SLICES;
-    // Resize cluster SSBOs (if needed)
     size_t list_size = gl_num_clusters * CLUSTER_MAX_LIGHTS_PER * sizeof(GLuint);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_cluster_ssbo);
     C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, list_size, NULL, GL_DYNAMIC_DRAW);
@@ -1483,7 +1465,7 @@ void render_finish(void) {
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 1); // depth
+            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 1);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -1499,7 +1481,6 @@ void render_finish(void) {
         // ---- Compute cluster lists ----
         dispatch_cluster_build();
 
-        // Now use GL_LEQUAL so geometry passes the depth test
         C89GL_glDepthFunc(GL_LEQUAL);
 
         // ---- Colour pass (opaque) ----
@@ -1549,7 +1530,6 @@ void render_finish(void) {
         render_particle_system_draw_internal();
     }
 
-    // Upscale and swap
     C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
     C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
     C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
@@ -1567,7 +1547,7 @@ void render_finish(void) {
 }
 
 /* ========================================================================
-   Particle system (unchanged from original)
+   Particle system (unchanged)
    ======================================================================== */
 
 static INLINE float rand_float(float min, float max) {
@@ -1624,7 +1604,6 @@ void render_particle_system_init(int max_particles) {
     g_emission_timer = 0.0f;
     g_burst_done = 0;
 
-    // Compile particle shaders (assumes particle.vert/frag exist)
     GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "particle.vert", "#version 330 core\n");
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "particle.frag", "#version 330 core\n");
     if (!vs || !fs) {

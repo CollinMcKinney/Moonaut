@@ -46,13 +46,13 @@ typedef enum render_method {
     EFFECT_ALPHA           = (1 << 25),
     EFFECT_CLEARCOAT       = (1 << 26),
     EFFECT_SHEEN           = (1 << 27),
-    EFFECT_RESERVED_28 = (1 << 28),
+    EFFECT_ANISOTROPIC     = (1 << 28),
     EFFECT_RESERVED_29 = (1 << 29),
     EFFECT_RESERVED_30 = (1 << 30),
     EFFECT_RESERVED_31 = (1 << 31)
 } render_method;
 
-/* ---- Bitfield metadata (unchanged) ---- */
+/* ---- Bitfield metadata ---- */
 TAG_BITFIELD32_BEGIN(render_method, 3)
     TAG_BITFIELD32_ENTRY(MODE_WIREFRAME, "Wireframe")
     TAG_BITFIELD32_ENTRY(MODE_FLAT,      "Flat")
@@ -85,6 +85,7 @@ TAG_BITFIELD32_BEGIN(render_method, 3)
     TAG_BITFIELD32_ENTRY(EFFECT_ALPHA,           "Alpha")
     TAG_BITFIELD32_ENTRY(EFFECT_CLEARCOAT,       "Clearcoat")
     TAG_BITFIELD32_ENTRY(EFFECT_SHEEN,           "Sheen")
+    TAG_BITFIELD32_ENTRY(EFFECT_ANISOTROPIC,     "Anisotropic")
 TAG_BITFIELD32_END(render_method)
 
 static INLINE u32 render_method_get_mode(render_method key) {
@@ -145,7 +146,7 @@ typedef struct material_definition {
     bool         double_sided;
     real         roughness;
 
-    /* ---- NEW PBR fields ---- */
+    /* ---- PBR fields ---- */
     real         metallic;          /* 0.0 = dielectric, 1.0 = metal */
     real         ior;               /* index of refraction (>0) */
 
@@ -155,6 +156,9 @@ typedef struct material_definition {
     vec3         sheen_color;
     real         sheen_exponent;
     real         sheen_strength;
+
+    /* ---- Anisotropy ---- */
+    real         anisotropic;       /* 0.0 = isotropic, 1.0 = full anisotropy */
 
 } material_definition;
 
@@ -207,11 +211,12 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_VEC3("sheen_color"),
     FIELD_REAL("sheen_exponent"),
     FIELD_REAL("sheen_strength"),
+    FIELD_REAL("anisotropic"),      /* new */
     FIELD_TERMINATOR
 TAG_GROUP_END(material, sizeof(struct material_definition))
 
 /* =========================================================================
- * Default materials – refined roughness & IOR for physical accuracy
+ * Default materials – refined with anisotropy where applicable
  * ========================================================================= */
 
 /* ------------------------------------------------------------------------
@@ -262,7 +267,8 @@ const struct material_definition DEFAULT_MATERIAL_WIREFRAME = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -313,7 +319,8 @@ const struct material_definition DEFAULT_MATERIAL_FLAT = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -364,7 +371,8 @@ const struct material_definition DEFAULT_MATERIAL_GOURAUD = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -415,7 +423,8 @@ const struct material_definition DEFAULT_MATERIAL_QUADRATIC = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -466,7 +475,8 @@ const struct material_definition DEFAULT_MATERIAL_CUBIC = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -517,7 +527,8 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -563,7 +574,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .fringe_intensity       = 0.01f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 0.0f,
     .ior                    = 1.33f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -571,7 +582,8 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -618,7 +630,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .fringe_intensity       = 0.01f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.65f,   /* was 0.0 */
+    .roughness              = 0.65f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -626,7 +638,8 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.3f, 0.6f, 0.1f},
     .sheen_exponent         = 3.0f,
-    .sheen_strength         = 1.5f
+    .sheen_strength         = 1.5f,
+    .anisotropic            = -0.25f
 };
 
 /* ------------------------------------------------------------------------
@@ -671,7 +684,7 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.85f,   /* was 0.0 */
+    .roughness              = 0.85f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -679,16 +692,17 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {1.0f, 1.0f, 1.0f},
     .sheen_exponent         = 2.0f,
-    .sheen_strength         = 2.0f
+    .sheen_strength         = 2.0f,
+    .anisotropic            = -0.5f
 };
 
 /* ------------------------------------------------------------------------
- * 10. WOOD – roughness 0.40, IOR 1.55
+ * 10. WOOD – roughness 0.40, IOR 1.55, anisotropic 0.6
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_DIFFUSE_WRAP |
                               EFFECT_OREN_NAYAR | EFFECT_RIM | EFFECT_SPECULAR |
-                              EFFECT_ROUGHNESS | EFFECT_CLEARCOAT,
+                              EFFECT_ROUGHNESS | EFFECT_CLEARCOAT | EFFECT_ANISOTROPIC,
     .color                  = {0.60f, 0.35f, 0.15f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
@@ -724,24 +738,25 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.40f,   /* was 0.30 */
+    .roughness              = 0.40f,
     .metallic               = 0.0f,
-    .ior                    = 1.55f,   /* was 1.5 */
+    .ior                    = 1.55f,
     .clearcoat_color        = {0.9f, 0.8f, 0.5f},
     .clearcoat_exponent     = 32.0f,
     .clearcoat_strength     = 1.5f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.75f
 };
 
 /* ------------------------------------------------------------------------
- * 11. METAL – roughness 0.02
+ * 11. METAL – roughness 0.02, anisotropic 0.5
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_METAL = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
                               EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR |
-                              EFFECT_IRIDESCENCE,
+                              EFFECT_IRIDESCENCE | EFFECT_ANISOTROPIC,
     .color                  = {0.80f, 0.80f, 0.85f},
     .ambient_light_factor   = 0.5f,
     .alpha                  = 1.0f,
@@ -777,7 +792,7 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 1.0f,
     .ior                    = 0.0f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -785,7 +800,8 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.8f
 };
 
 /* ------------------------------------------------------------------------
@@ -830,7 +846,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .fringe_intensity       = 0.02f,
     .posterize_levels       = 0,
     .double_sided           = true,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -838,7 +854,8 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -883,7 +900,7 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.50f,   /* was 0.0 */
+    .roughness              = 0.50f,
     .metallic               = 0.0f,
     .ior                    = 1.4f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -891,11 +908,12 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {1.0f, 0.8f, 0.7f},
     .sheen_exponent         = 2.0f,
-    .sheen_strength         = 0.8f
+    .sheen_strength         = 0.8f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 14. RUBBER – roughness 0.50 (unchanged)
+ * 14. RUBBER – roughness 0.50
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -944,7 +962,8 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -990,7 +1009,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .fringe_intensity       = 0.03f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 0.0f,
     .ior                    = 1.31f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -998,11 +1017,12 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 16. STONE – roughness 0.35 (unchanged)
+ * 16. STONE – roughness 0.35
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_STONE = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
@@ -1051,7 +1071,8 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -1098,7 +1119,7 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .fringe_intensity       = 0.50f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.50f,   /* was 0.0 */
+    .roughness              = 0.50f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -1106,11 +1127,12 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 18. TOON – stylized, keep roughness 0.0
+ * 18. TOON – stylized
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_TOON = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_GOOCH |
@@ -1159,11 +1181,12 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 19. HOLOGRAM – stylized, keep roughness 0.0
+ * 19. HOLOGRAM – stylized
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
@@ -1213,11 +1236,12 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.7f
 };
 
 /* ------------------------------------------------------------------------
- * 20. IRIDESCENT – stylized, keep roughness 0.0
+ * 20. IRIDESCENT – stylized
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
@@ -1268,7 +1292,8 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.5f
 };
 
 /* ------------------------------------------------------------------------
@@ -1314,7 +1339,7 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .fringe_intensity       = 0.02f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.10f,   /* was 0.0 */
+    .roughness              = 0.10f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 1.0f},
@@ -1322,11 +1347,12 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .clearcoat_strength     = 2.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 22. BRICK – roughness 0.25 (unchanged)
+ * 22. BRICK – roughness 0.25
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
@@ -1374,7 +1400,8 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -1420,7 +1447,7 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.15f,   /* was 0.05 */
+    .roughness              = 0.15f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.1f, 0.05f, 0.02f},
@@ -1428,17 +1455,18 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .clearcoat_strength     = 2.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 24. GOLD – roughness 0.02
+ * 24. GOLD – roughness 0.02, anisotropic 0.5
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | 
                               EFFECT_OREN_NAYAR | EFFECT_GOOCH | EFFECT_BACK_GLOW |
                               EFFECT_RIM | EFFECT_FRESNEL | EFFECT_SPECULAR |
-                              EFFECT_EMISSIVE | EFFECT_IRIDESCENCE,
+                              EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_ANISOTROPIC,
     .color                  = {0.80f, 0.60f, 0.20f},
     .ambient_light_factor   = 0.50f,
     .alpha                  = 1.0f,
@@ -1474,7 +1502,7 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 1.0f,
     .ior                    = 0.0f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -1482,7 +1510,8 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.8f
 };
 
 /* ------------------------------------------------------------------------
@@ -1537,11 +1566,12 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {1.0f, 1.0f, 1.0f},
     .sheen_exponent         = 2.0f,
-    .sheen_strength         = 1.5f
+    .sheen_strength         = 1.5f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 26. DIRT – roughness 0.25 (unchanged)
+ * 26. DIRT – roughness 0.25
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
@@ -1589,11 +1619,12 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 27. NEON – stylized, keep roughness 0.0
+ * 27. NEON – stylized
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_NEON = {
     .render_method          = MODE_PHONG | EFFECT_GOOCH | EFFECT_BACK_GLOW |
@@ -1643,11 +1674,12 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.5f
 };
 
 /* ------------------------------------------------------------------------
- * 28. VELVET – roughness 0.40 (unchanged)
+ * 28. VELVET – roughness 0.40
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
@@ -1695,7 +1727,8 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {1.0f, 0.6f, 0.7f},
     .sheen_exponent         = 2.0f,
-    .sheen_strength         = 1.8f
+    .sheen_strength         = 1.8f,
+    .anisotropic            = -0.6f
 };
 
 /* ------------------------------------------------------------------------
@@ -1739,15 +1772,16 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.05f,   /* was 0.0 */
+    .roughness              = 0.05f,
     .metallic               = 0.0f,
-    .ior                    = 1.6f,    /* was 1.5 */
+    .ior                    = 1.6f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -1792,7 +1826,7 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.08f,   /* was 0.0 */
+    .roughness              = 0.08f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -1800,7 +1834,8 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -1844,7 +1879,7 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.08f,   /* was 0.0 */
+    .roughness              = 0.08f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -1852,11 +1887,12 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 32. CERAMIC – roughness 0.05 (unchanged)
+ * 32. CERAMIC – roughness 0.05
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_CLEARCOAT |
@@ -1904,11 +1940,12 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .clearcoat_strength     = 3.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 33. CHALK – roughness 0.60 (unchanged)
+ * 33. CHALK – roughness 0.60
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_MINNAERT |
@@ -1956,11 +1993,12 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 34. POSTERIZED – stylized, keep roughness 0.0
+ * 34. POSTERIZED – stylized
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_POSTERIZE |
@@ -2008,11 +2046,12 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 35. FROST – roughness 0.50 (unchanged)
+ * 35. FROST – roughness 0.50
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_FROST = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
@@ -2060,11 +2099,12 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 36. RUST – roughness 0.50 (unchanged)
+ * 36. RUST – roughness 0.50
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUST = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
@@ -2112,15 +2152,17 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
- * 37. CARBON – roughness 0.20 (unchanged)
+ * 37. CARBON – roughness 0.20, anisotropic 0.3
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
-                              EFFECT_SPECULAR | EFFECT_ROUGHNESS | EFFECT_FRINGE,
+                              EFFECT_SPECULAR | EFFECT_ROUGHNESS | EFFECT_FRINGE |
+                              EFFECT_ANISOTROPIC,
     .color                  = {0.10f, 0.10f, 0.10f},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 1.0f,
@@ -2164,15 +2206,16 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.9f
 };
 
 /* ------------------------------------------------------------------------
- * 38. CHROME – roughness 0.02
+ * 38. CHROME – roughness 0.02, anisotropic 0.2
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_SPECULAR |
-                              EFFECT_FRESNEL | EFFECT_RIM,
+                              EFFECT_FRESNEL | EFFECT_RIM | EFFECT_ANISOTROPIC,
     .color                  = {1.0f, 1.0f, 1.0f},
     .ambient_light_factor   = 0.30f,
     .alpha                  = 1.0f,
@@ -2208,7 +2251,7 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 1.0f,
     .ior                    = 0.0f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -2216,7 +2259,8 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = -0.5f
 };
 
 /* ------------------------------------------------------------------------
@@ -2260,15 +2304,16 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 0.0f,
-    .ior                    = 1.57f,   /* was 1.5 */
+    .ior                    = 1.57f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 /* ------------------------------------------------------------------------
@@ -2312,7 +2357,7 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .roughness              = 0.02f,   /* was 0.0 */
+    .roughness              = 0.02f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -2320,7 +2365,8 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
-    .sheen_strength         = 0.0f
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f
 };
 
 #ifdef __cplusplus

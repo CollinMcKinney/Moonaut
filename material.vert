@@ -14,9 +14,6 @@ uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
 
-/* ------------------------------------------------------------
-   UBO – updated to replace uMatFresnelColor with metallic/ior/pad
-   ------------------------------------------------------------ */
 layout(std140) uniform MaterialUniforms {
     vec3  uMatColor;
     vec3  uMatTint;
@@ -30,12 +27,10 @@ layout(std140) uniform MaterialUniforms {
     float uMatSpecularThreshold;
     vec3  uMatRimColor;
     float uMatRimExponent;
-    /* REMOVED: vec3 uMatFresnelColor; */
-    /* NEW: metallic, ior, pad, then fresnel_exponent */
     float uMatMetallic;
     float uMatIor;
-    float uMatPad;               /* padding to maintain 16‑byte alignment */
-    float uMatFresnelExponent;   /* still used */
+    float uMatPad;
+    float uMatFresnelExponent;
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
     float uMatAmbientLightFactor;
@@ -61,6 +56,7 @@ layout(std140) uniform MaterialUniforms {
     vec3  uSheenColor;
     float uSheenExponent;
     float uSheenStrength;
+    float uMatAnisotropic;
 };
 
 layout(std140, row_major) uniform ModelMatrices {
@@ -77,16 +73,34 @@ flat out vec3 vLocalCentroid;
 flat out vec3 vWorldFaceNormal;
 flat out vec3 vLocalFaceNormal;
 
+// ---- NEW: tangent and bitangent for anisotropy ----
+out vec3 vTangent;
+out vec3 vBitangent;
+
 void main() {
     mat4 model = uModels[int(aModelIndex)];
     vec4 worldPos = model * vec4(aPos, 1.0);
     vWorldPos = worldPos.xyz;
-    vNormal   = normalize(mat3(model) * aNormal);
+
+    // Transform normal to world space
+    vec3 normal = normalize(mat3(model) * aNormal);
+    vNormal = normal;
+
+    // ---- Compute tangent and bitangent from vertex normal ----
+    vec3 up = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, normal));
+    vec3 bitangent = cross(normal, tangent);
+
+    // Transform tangent and bitangent to world space (using model matrix)
+    vTangent = normalize(mat3(model) * tangent);
+    vBitangent = normalize(mat3(model) * bitangent);
+
     vLocalPos = aLocalPos;
     vLocalFaceNormal = normalize(aLocalFaceNormal);
     vLocalCentroid   = aLocalCentroid;
     vWorldFaceNormal = normalize(mat3(model) * vLocalFaceNormal);
     vWorldCentroid   = (model * vec4(vLocalCentroid, 1.0)).xyz;
+
     gl_Position = uViewProj * worldPos;
     vVertexColor = vec3(0.0);
     vFlatColor = vec3(0.0);
