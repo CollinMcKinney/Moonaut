@@ -14,6 +14,9 @@ uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
 
+/* ------------------------------------------------------------
+   UBO – updated to replace uMatFresnelColor with metallic/ior/pad
+   ------------------------------------------------------------ */
 layout(std140) uniform MaterialUniforms {
     vec3  uMatColor;
     vec3  uMatTint;
@@ -27,8 +30,12 @@ layout(std140) uniform MaterialUniforms {
     float uMatSpecularThreshold;
     vec3  uMatRimColor;
     float uMatRimExponent;
-    vec3  uMatFresnelColor;
-    float uMatFresnelExponent;
+    /* REMOVED: vec3 uMatFresnelColor; */
+    /* NEW: metallic, ior, pad, then fresnel_exponent */
+    float uMatMetallic;
+    float uMatIor;
+    float uMatPad;               /* padding to maintain 16‑byte alignment */
+    float uMatFresnelExponent;   /* still used */
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
     float uMatAmbientLightFactor;

@@ -123,7 +123,9 @@ static i32 gl_render_height = 0;
 #define MATERIAL_UBO_BINDING  0
 #define MODEL_UBO_BINDING     1
 
-/* ---- Material UBO (std140) ---- */
+/* ------------------------------------------------------------
+   MATERIAL UBO – updated with metallic/ior instead of fresnel_color
+   ------------------------------------------------------------ */
 typedef struct {
     float uMatColor[3];             float _pad0;
     float uMatTint[3];              float uMatAlpha;
@@ -132,7 +134,12 @@ typedef struct {
     float uMatSpecularExponent;     float _pad1;
     float uMatSpecularColor[3];     float uMatSpecularThreshold;
     float uMatRimColor[3];          float uMatRimExponent;
-    float uMatFresnelColor[3];      float uMatFresnelExponent;
+    /* REMOVED: float uMatFresnelColor[3]; */
+    /* NEW: three floats to replace the vec3, keeping alignment */
+    float uMatMetallic;
+    float uMatIor;
+    float uMatPad;
+    float uMatFresnelExponent;      /* kept in same position */
     float uMatGoochCool[3];         float _pad2;
     float uMatGoochWarm[3];         float uMatAmbientLightFactor;
     float uMatOrenNayarSigma;       float uMatMinnaertK;
@@ -642,10 +649,12 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
     return &gl_shader_cache[index];
 }
 
-/* ---- Update material UBO ---- */
+/* ---- Update material UBO (updated for metallic/ior) ---- */
 static void update_material_ubo(const material_definition *mat) {
     material_ubo_t ubo;
     memset(&ubo, 0, sizeof(ubo));
+
+    /* existing fields */
     ubo.uMatColor[0] = mat->color.position.x;
     ubo.uMatColor[1] = mat->color.position.y;
     ubo.uMatColor[2] = mat->color.position.z;
@@ -668,10 +677,16 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatRimColor[1] = mat->rim_color.position.y;
     ubo.uMatRimColor[2] = mat->rim_color.position.z;
     ubo.uMatRimExponent = mat->rim_exponent;
-    ubo.uMatFresnelColor[0] = mat->fresnel_color.position.x;
-    ubo.uMatFresnelColor[1] = mat->fresnel_color.position.y;
-    ubo.uMatFresnelColor[2] = mat->fresnel_color.position.z;
+
+    /* ---- NEW: metallic and ior ---- */
+    ubo.uMatMetallic = mat->metallic;
+    ubo.uMatIor      = mat->ior;
+    ubo.uMatPad      = 0.0f;
+
+    /* fresnel_exponent stays in the same place */
     ubo.uMatFresnelExponent = mat->fresnel_exponent;
+
+    /* rest of fields */
     ubo.uMatGoochCool[0] = mat->gooch_cool.position.x;
     ubo.uMatGoochCool[1] = mat->gooch_cool.position.y;
     ubo.uMatGoochCool[2] = mat->gooch_cool.position.z;
@@ -1552,7 +1567,7 @@ void render_finish(void) {
 }
 
 /* ========================================================================
-   Particle system (unchanged from original, with C89 fixes)
+   Particle system (unchanged from original)
    ======================================================================== */
 
 static INLINE float rand_float(float min, float max) {

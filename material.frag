@@ -35,7 +35,9 @@ layout(std140) uniform MaterialUniforms {
     float uMatSpecularThreshold;
     vec3  uMatRimColor;
     float uMatRimExponent;
-    vec3  uMatFresnelColor;
+    float uMatMetallic;
+    float uMatIor;
+    float uMatPad;
     float uMatFresnelExponent;
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
@@ -64,7 +66,6 @@ layout(std140) uniform MaterialUniforms {
     float uSheenStrength;
 };
 
-// ---- Clustered definitions ----
 #define CLUSTER_TILE_SIZE 16
 #define CLUSTER_DEPTH_SLICES 24
 #define CLUSTER_MAX_LIGHTS_PER 64
@@ -91,6 +92,7 @@ layout(std430, binding = 2) buffer ClusterOffsetBuffer { uint clusterOffsets[]; 
 
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
+// ---- Hash and noise ----
 uint hash(uint x) {
     x = (x ^ 61u) ^ (x >> 16u);
     x = x + (x << 3u);
@@ -107,7 +109,6 @@ float hash_float(vec3 p) {
     return float(h) / 4294967296.0;
 }
 
-// ---- 3D value noise (smooth) ----
 float value_noise(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
@@ -125,51 +126,80 @@ float value_noise(vec3 p) {
     return mix(mix1, mix2, f.z);
 }
 
+// ---- Bump and roughness ----
 void apply_bump(inout vec3 N, vec3 worldPos, vec3 localPos) {
 #ifdef EFFECT_BUMP
-    float fx = worldPos.x * uMatBumpFrequency;
-    float fy = worldPos.y * uMatBumpFrequency;
-    float fz = worldPos.z * uMatBumpFrequency;
-    float t = uTime * uMatBumpSpeed;
-    vec3 bump = vec3(sin(fy + fz + t), sin(fz + fx + t), sin(fx + fy + t)) * uMatBumpAmplitude;
-    N = normalize(N + bump);
+    float freq = uMatBumpFrequency;
+    float speed = uMatBumpSpeed;
+    float time = uTime;
+
+    vec3 p = localPos * freq;
+    float noise = value_noise(p * 0.1);
+
+    float phase1 = p.x * 1.0 + p.z * 0.5 + time * speed + noise * 2.0;
+    float phase2 = p.y * 0.7 + p.x * 0.3 + time * speed * 0.7 + 1.2 + noise * 1.5;
+    float height = sin(phase1) * 0.6 + sin(phase2) * 0.4;
+
+    float eps = 0.01;
+    vec3 p_eps;
+    p_eps = p + vec3(eps, 0.0, 0.0);
+    float noise_x = value_noise(p_eps * 0.1);
+    float phase1_x = p_eps.x * 1.0 + p_eps.z * 0.5 + time * speed + noise_x * 2.0;
+    float phase2_x = p_eps.y * 0.7 + p_eps.x * 0.3 + time * speed * 0.7 + 1.2 + noise_x * 1.5;
+    float hx = sin(phase1_x) * 0.6 + sin(phase2_x) * 0.4;
+
+    p_eps = p + vec3(0.0, eps, 0.0);
+    float noise_y = value_noise(p_eps * 0.1);
+    float phase1_y = p_eps.x * 1.0 + p_eps.z * 0.5 + time * speed + noise_y * 2.0;
+    float phase2_y = p_eps.y * 0.7 + p_eps.x * 0.3 + time * speed * 0.7 + 1.2 + noise_y * 1.5;
+    float hy = sin(phase1_y) * 0.6 + sin(phase2_y) * 0.4;
+
+    p_eps = p + vec3(0.0, 0.0, eps);
+    float noise_z = value_noise(p_eps * 0.1);
+    float phase1_z = p_eps.x * 1.0 + p_eps.z * 0.5 + time * speed + noise_z * 2.0;
+    float phase2_z = p_eps.y * 0.7 + p_eps.x * 0.3 + time * speed * 0.7 + 1.2 + noise_z * 1.5;
+    float hz = sin(phase1_z) * 0.6 + sin(phase2_z) * 0.4;
+
+    vec3 gradient = vec3(hx - height, hy - height, hz - height) / eps;
+    gradient *= uMatBumpAmplitude;
+    N = normalize(N + gradient);
 #endif
 
 #ifdef EFFECT_ROUGHNESS
+    // Use interpolated normal for tangent space – gives smooth, 3D bumps
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 tangent = normalize(cross(up, N));
     vec3 bitangent = cross(N, tangent);
 
-    vec3 p = localPos * 32.0;
-    float eps = 0.01;
-    float h0 = value_noise(p);
-    float hx = value_noise(p + vec3(eps, 0.0, 0.0));
-    float hy = value_noise(p + vec3(0.0, eps, 0.0));
-    float grad_u = (hx - h0) / eps;
-    float grad_v = (hy - h0) / eps;
+    // Higher frequency for more detail
+    vec3 p_rough = localPos * 16.0;
+    float eps_rough = 0.01;
+    float h0 = value_noise(p_rough);
+    float hx_rough = value_noise(p_rough + vec3(eps_rough, 0.0, 0.0));
+    float hy_rough = value_noise(p_rough + vec3(0.0, eps_rough, 0.0));
+    float grad_u = (hx_rough - h0) / eps_rough;
+    float grad_v = (hy_rough - h0) / eps_rough;
 
-    float strength = uMatRoughness * 1.0; // adjust as needed
-    N += tangent * grad_u * strength + bitangent * grad_v * strength;
-    N = normalize(N);
+    // Stronger, more visible perturbation
+    float strength = uMatRoughness * 0.5;
+
+    // Mild grazing reduction to keep it visible but stable
+    vec3 V = normalize(uCamEye - worldPos);
+    float NdotV = max(dot(N, V), 0.0);
+    float grazing = 1.0 - NdotV;
+    strength *= (0.5 + 0.5 * (1.0 - grazing)); // still strong at grazing
+
+    vec3 perturb = tangent * grad_u * strength + bitangent * grad_v * strength;
+    N = normalize(N + perturb);
 #endif
 }
 
-// ---- GGX distribution ----
 float GGX_D(float NdotH, float roughness) {
     float alpha = roughness * roughness;
     float denom = NdotH * NdotH * (alpha - 1.0) + 1.0;
     return alpha / (3.14159265 * denom * denom);
 }
 
-// ---- Anisotropic GGX ----
-float GGX_D_anisotropic(float NdotH, float HdotT, float HdotB, float roughness_t, float roughness_b) {
-    float alpha_t = roughness_t * roughness_t;
-    float alpha_b = roughness_b * roughness_b;
-    float denom = NdotH * NdotH * (alpha_t * HdotT * HdotT + alpha_b * HdotB * HdotB) + 1.0;
-    return 1.0 / (3.14159265 * alpha_t * alpha_b * denom * denom);
-}
-
-// ---- Smith G ----
 float Smith_G_GGX(float NdotL, float NdotV, float roughness) {
     float alpha = roughness * roughness;
     float G1L = 2.0 * NdotL / (NdotL + sqrt(alpha * alpha + (1.0 - alpha * alpha) * NdotL * NdotL));
@@ -177,9 +207,8 @@ float Smith_G_GGX(float NdotL, float NdotV, float roughness) {
     return G1L * G1V;
 }
 
-// ---- Disney diffuse ----
-#ifdef EFFECT_DISNEY_DIFFUSE
-vec3 disney_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, float roughness) {
+// ---- Burley diffuse (Disney diffuse, royalty‑free) ----
+vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 baseColor, float roughness) {
     float NdotL = max(dot(N, L), 0.0);
     float NdotV = max(dot(N, V), 0.0);
     float LdotV = max(dot(L, V), 0.0);
@@ -187,57 +216,30 @@ vec3 disney_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, float roughness) {
     float FD90 = 0.5 + 2.0 * roughness * LdotV * LdotV;
     float diff = (1.0 + (FD90 - 1.0) * pow(1.0 - NdotL, 5.0)) *
                  (1.0 + (FD90 - 1.0) * pow(1.0 - NdotV, 5.0));
-    return lightCol * diff * uMatColor * uMatAmbientLightFactor;
+    return lightCol * diff * baseColor * uMatAmbientLightFactor;
 }
-#endif
 
-// ------------------------------------------------------------------
-// Per‑light accumulation (Fresnel corrected)
-// ------------------------------------------------------------------
+// ---- Accumulate light with Burley as default diffuse ----
 void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
+                      vec3 F0,
                       inout vec3 diffuse, inout vec3 specular,
-                      inout vec3 clearcoat, inout vec3 sheen,
+                      inout vec3 sheen,
                       inout vec3 rim, inout vec3 backGlow,
                       inout vec3 subsurface,
                       float ndotv)
 {
-    float ndotl_raw = dot(N, L);
-    float ndotl = max(ndotl_raw, 0.0);
-    float NdotL = ndotl;
+    float NdotL_raw = dot(N, L);
+    float NdotL = max(NdotL_raw, 0.0);
     float NdotV = ndotv;
 
-    // ---- Metallic (placeholder) ----
-#ifdef EFFECT_METALLIC
-    float metallic = uMatAmbientLightFactor;
-    vec3 baseColor = mix(uMatColor, uMatSpecularColor, metallic);
-    float diffScale = 1.0 - metallic;
-#else
-    vec3 baseColor = uMatColor;
-    float diffScale = 1.0;
-#endif
-
     float roughness = clamp(uMatRoughness, 0.001, 1.0);
+    vec3 diffuseColor = uMatColor * (1.0 - uMatMetallic);
 
     // ---- Diffuse ----
     vec3 diffuseContrib;
 
-#ifdef EFFECT_DISNEY_DIFFUSE
-    diffuseContrib = disney_diffuse(N, V, L, lightCol, roughness);
-    diffuseContrib *= diffScale;
-#else
-    float diff = NdotL;
-#ifdef EFFECT_DIFFUSE_WRAP
-    float t = NdotL;
-    diff = t * t * (3.0 - 2.0 * t);
-#endif
-#ifdef EFFECT_CEL_SHADING
-    float inv = 1.0 / float(uMatCelBands);
-    diff = min(1.0, floor(diff * float(uMatCelBands)) * inv);
-#endif
-#ifdef EFFECT_MINNAERT
-    diff = pow(NdotL, uMatMinnaertK) * pow(NdotV, 1.0 - uMatMinnaertK);
-#endif
 #ifdef EFFECT_OREN_NAYAR
+    // Oren‑Nayar (highest priority)
     float sigma = uMatOrenNayarSigma;
     float sigma2 = sigma * sigma;
     float A = 1.0 - 0.5 * sigma2 / (sigma2 + 0.33);
@@ -258,98 +260,72 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
             tan_beta = sin_v / NdotV;
         }
     }
-    diff = NdotL * (A + B * cos_phi_diff * sin_alpha * tan_beta);
+    float diff = NdotL * (A + B * cos_phi_diff * sin_alpha * tan_beta);
     diff = max(diff, 0.0);
-#endif
-    diffuseContrib = lightCol * diff * baseColor * uMatAmbientLightFactor * diffScale;
-#endif // EFFECT_DISNEY_DIFFUSE
+    diffuseContrib = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
 
-    // ---- Subsurface ----
-#ifdef EFFECT_SUBSURFACE
-    vec3 subsurfaceColor = uMatEmissiveColor;   // temporary
-    float subsurfaceScale = uMatAmbientLightFactor;
-    float thickness = 0.5 + 0.5 * sin(localPos.x * 3.0 + localPos.y * 5.0 + localPos.z * 7.0);
-    float wrap = max(0.0, (ndotl_raw + 0.5) / 1.5);
-    float sss = (1.0 - wrap) * thickness * subsurfaceScale;
-    subsurface += lightCol * subsurfaceColor * sss * uMatColor * uMatAmbientLightFactor;
-#endif
+#else
+    // Base diffuse: Minnaert (if enabled) or Burley (default)
+    vec3 baseDiffuse;
+
+    #ifdef EFFECT_MINNAERT
+        // Minnaert – a Lambert variant
+        float diff = pow(NdotL, uMatMinnaertK) * pow(NdotV, 1.0 - uMatMinnaertK);
+        #ifdef EFFECT_DIFFUSE_WRAP
+            float t = NdotL;
+            diff = t * t * (3.0 - 2.0 * t);
+        #endif
+        #ifdef EFFECT_CEL_SHADING
+            float inv = 1.0 / float(uMatCelBands);
+            diff = min(1.0, floor(diff * float(uMatCelBands)) * inv);
+        #endif
+        baseDiffuse = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
+
+    #else
+        // Default: Burley diffuse (roughness‑dependent, energy‑conserving)
+        baseDiffuse = burley_diffuse(N, V, L, lightCol, diffuseColor, roughness);
+
+        // Apply WRAP and CEL as multipliers on top of Burley (if enabled)
+        #ifdef EFFECT_DIFFUSE_WRAP
+            float t = NdotL;
+            float wrapFactor = t * t * (3.0 - 2.0 * t);
+            if (NdotL > 0.001) baseDiffuse *= (wrapFactor / NdotL);
+            else baseDiffuse = vec3(0.0);
+        #endif
+        #ifdef EFFECT_CEL_SHADING
+            float inv = 1.0 / float(uMatCelBands);
+            float celFactor = min(1.0, floor(NdotL * float(uMatCelBands)) * inv);
+            if (NdotL > 0.001) baseDiffuse *= (celFactor / NdotL);
+            else baseDiffuse = vec3(0.0);
+        #endif
+
+    #endif // EFFECT_MINNAERT
+
+    diffuseContrib = baseDiffuse;
+
+#endif // EFFECT_OREN_NAYAR
 
     // ---- Specular ----
     if (NdotL > 0.0) {
         vec3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
-
-#ifdef EFFECT_ANISOTROPIC
-        float anisotropy = clamp(uMatRoughness, 0.0, 1.0);
-        vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 tangent = normalize(cross(up, N));
-        vec3 bitangent = cross(N, tangent);
-        float HdotT = dot(H, tangent);
-        float HdotB = dot(H, bitangent);
-        float anisotropyStrength = anisotropy * 0.9;
-        float roughness_t = roughness / sqrt(1.0 - anisotropyStrength);
-        float roughness_b = roughness * sqrt(1.0 - anisotropyStrength);
-        roughness_t = clamp(roughness_t, 0.001, 1.0);
-        roughness_b = clamp(roughness_b, 0.001, 1.0);
-        float D = GGX_D_anisotropic(NdotH, HdotT, HdotB, roughness_t, roughness_b);
-#else
         float D = GGX_D(NdotH, roughness);
-#endif
 
-        // ---- Fresnel (corrected) ----
 #ifdef EFFECT_FRESNEL
         float cosTheta = max(dot(V, H), 0.0);
         cosTheta = min(cosTheta, 1.0);
-        vec3 F0;
-#ifdef EFFECT_METALLIC
-        F0 = uMatSpecularColor;
-#else
-        F0 = uMatFresnelColor;
-        if (length(F0) < 0.001) F0 = vec3(0.04);
-#endif
-        float exp = uMatFresnelExponent;
+        float exp = max(uMatFresnelExponent, 0.1);
         vec3 fresnel = F0 + (1.0 - F0) * pow(1.0 - cosTheta, exp);
         float fresnelLuma = max(max(fresnel.r, fresnel.g), fresnel.b);
-        diffuseContrib *= (1.0 - fresnelLuma);   // energy conservation
+        diffuseContrib *= (1.0 - fresnelLuma);
 #else
-        vec3 fresnel = uMatSpecularColor;
+        vec3 fresnel = F0;
 #endif
 
         float G = Smith_G_GGX(NdotL, NdotV, roughness);
-        vec3 specContrib = D * G * max(fresnel, vec3(0.0)) / (4.0 * max(NdotV, 0.001));
+        vec3 specContrib = D * G * fresnel / (4.0 * max(NdotL, 0.001) * max(NdotV, 0.001));
         specular += specContrib * lightCol;
     }
-
-    // ---- Clearcoat (Fresnel corrected) ----
-#ifdef EFFECT_CLEARCOAT
-    if (NdotL > 0.0) {
-        vec3 H = normalize(L + V);
-        float NdotH = max(dot(N, H), 0.0);
-        float ccRoughness = sqrt(2.0 / (uClearcoatExponent + 2.0));
-        ccRoughness = clamp(ccRoughness, 0.001, 1.0);
-        float ccD = GGX_D(NdotH, ccRoughness);
-        float ccG = Smith_G_GGX(NdotL, NdotV, ccRoughness);
-
-#ifdef EFFECT_FRESNEL
-        float cosThetaCC = max(dot(V, H), 0.0);
-        cosThetaCC = min(cosThetaCC, 1.0);
-        vec3 F0_cc;
-#ifdef EFFECT_METALLIC
-        F0_cc = uMatSpecularColor;
-#else
-        F0_cc = uMatFresnelColor;
-        if (length(F0_cc) < 0.001) F0_cc = vec3(0.04);
-#endif
-        float exp = uMatFresnelExponent;
-        vec3 ccFresnel = F0_cc + (1.0 - F0_cc) * pow(1.0 - cosThetaCC, exp);
-#else
-        vec3 ccFresnel = uClearcoatColor;
-#endif
-
-        vec3 ccContrib = ccD * ccG * max(ccFresnel, vec3(0.0)) / (4.0 * max(NdotV, 0.001));
-        clearcoat += ccContrib * lightCol * uClearcoatStrength;
-    }
-#endif
 
     // ---- Sheen ----
 #ifdef EFFECT_SHEEN
@@ -361,12 +337,13 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     }
 #endif
 
-    // ---- Rim, Back‑Glow ----
+    // ---- Back Glow ----
 #ifdef EFFECT_BACK_GLOW
     float backNdotL = max(dot(N, -L), 0.0);
     backGlow += uMatBackGlowColor * backNdotL * lightCol;
 #endif
 
+    // ---- Rim ----
 #ifdef EFFECT_RIM
     float rimf = pow(1.0 - ndotv, uMatRimExponent);
     rim += uMatRimColor * rimf * lightCol;
@@ -375,9 +352,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     diffuse += diffuseContrib;
 }
 
-// ------------------------------------------------------------------
-// Main shading
-// ------------------------------------------------------------------
+// ---- Main shading function ----
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 V = normalize(uCamEye - worldPos);
     vec3 N_bumped = N;
@@ -385,10 +360,21 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     N_bumped = normalize(N_bumped);
 
     float NdotV = max(dot(N_bumped, V), 0.0);
-    float t, s;
-    vec3 q;
-    float offset;
 
+    // ---- F0 (with safety) ----
+    float metallic = clamp(uMatMetallic, 0.0, 1.0);
+    float ior = uMatIor;
+    if (ior <= 0.0) ior = 1.5;
+    float ratio = (ior - 1.0) / (ior + 1.0);
+    vec3 dielectricF0 = vec3(ratio * ratio);
+    vec3 F0 = mix(dielectricF0, uMatColor, metallic);
+
+    // ---- Clearcoat (additive) ----
+    vec3 clearcoatF0 = vec3(0.04);
+    float clearcoatRoughness = sqrt(2.0 / max(uClearcoatExponent, 1.0) + 2.0);
+    clearcoatRoughness = clamp(clearcoatRoughness, 0.001, 1.0);
+
+    // ---- Cavity ----
     float cavity = 1.0;
 #ifdef EFFECT_ROUGHNESS
     vec3 p = localPos * 32.0;
@@ -409,7 +395,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 weightedDir = vec3(0.0);
     float totalWeight = 0.0;
 
-    // ---- Clustered light loop ----
+    // ---- Light loop ----
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     ivec2 tile = pixel / CLUSTER_TILE_SIZE;
     float depth = gl_FragCoord.z;
@@ -436,9 +422,9 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         float intensity = length(lightCol);
         if (intensity < 0.001) continue;
 
-        if (lightType == 0) { // directional
+        if (lightType == 0) {
             lightDir = normalize(L.dir.xyz);
-        } else if (lightType == 1) { // point
+        } else if (lightType == 1) {
             vec3 toLight = lightPos - worldPos;
             float dist = length(toLight);
             if (dist > range) continue;
@@ -447,7 +433,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
             lightDir = normalize(toLight);
             lightCol *= atten;
             intensity *= atten;
-        } else if (lightType == 2) { // spot
+        } else if (lightType == 2) {
             vec3 toLight = lightPos - worldPos;
             float dist = length(toLight);
             if (dist > range) continue;
@@ -466,17 +452,38 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
             continue;
         }
 
-        accumulate_light(N_bumped, V, lightDir, lightCol,
-                         totalDiffuse, totalSpec, totalClearcoat, totalSheen,
+        accumulate_light(N_bumped, V, lightDir, lightCol, F0,
+                         totalDiffuse, totalSpec, totalSheen,
                          totalRim, totalBackGlow, totalSubsurface,
                          NdotV);
+
+        // ---- Additive clearcoat ----
+        if (uClearcoatStrength > 0.0) {
+#ifdef EFFECT_CLEARCOAT
+            vec3 H = normalize(lightDir + V);
+            float NdotL_cc = max(dot(N_bumped, lightDir), 0.0);
+            if (NdotL_cc > 0.0) {
+                float NdotH = max(dot(N_bumped, H), 0.0);
+                float cosTheta = max(dot(V, H), 0.0);
+                cosTheta = min(cosTheta, 1.0);
+                float exp = max(uMatFresnelExponent, 0.1);
+                vec3 ccFresnel = clearcoatF0 + (1.0 - clearcoatF0) * pow(1.0 - cosTheta, exp);
+                float ccD = GGX_D(NdotH, clearcoatRoughness);
+                float ccG = Smith_G_GGX(NdotL_cc, NdotV, clearcoatRoughness);
+                float denom = 4.0 * max(NdotL_cc, 0.001) * max(NdotV, 0.001);
+                vec3 ccContrib = ccD * ccG * ccFresnel / denom;
+                totalClearcoat += ccContrib * lightCol * uClearcoatColor * uClearcoatStrength;
+            }
+#endif
+        }
 
         weightedDir += lightDir * intensity;
         totalWeight += intensity;
     }
 
     // ---- Combine ----
-    vec3 baseColor = uAmbientCol * uMatColor * uMatAmbientLightFactor + totalDiffuse;
+    vec3 diffuseColor = uMatColor * (1.0 - metallic);
+    vec3 baseColor = uAmbientCol * diffuseColor * uMatAmbientLightFactor + totalDiffuse;
     baseColor *= cavity;
 
 #ifdef EFFECT_GOOCH
@@ -504,7 +511,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     // ---- Tone mapping ----
     color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
 
-    // ---- Post‑effects ----
+    // ---- Post-effects ----
 #ifdef EFFECT_EMISSIVE
     vec3 emissive = uMatEmissiveColor;
 #ifdef EFFECT_EMISSIVE_PULSE
@@ -515,7 +522,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 
 #ifdef EFFECT_STROBE
-    s = sin(uTime * uMatStrobeFrequency + uMatStrobePhase) * 0.5 + 0.5;
+    float s = sin(uTime * uMatStrobeFrequency + uMatStrobePhase) * 0.5 + 0.5;
     color += uMatStrobeColor * s;
 #endif
 
@@ -528,16 +535,16 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     {
         float angle = NdotV * 2.0 * 3.14159265;
         float c = cos(angle);
-        s = sin(angle);
-        float rot0 = 0.299 + 0.701*c + 0.168*s;
-        float rot1 = 0.587 - 0.587*c + 0.330*s;
-        float rot2 = 0.114 - 0.114*c - 0.497*s;
-        float rot3 = 0.299 - 0.299*c - 0.328*s;
-        float rot4 = 0.587 + 0.413*c + 0.035*s;
-        float rot5 = 0.114 - 0.114*c + 0.292*s;
-        float rot6 = 0.299 - 0.300*c + 1.250*s;
-        float rot7 = 0.587 - 0.588*c - 1.050*s;
-        float rot8 = 0.114 + 0.886*c - 0.203*s;
+        float s_ir = sin(angle);
+        float rot0 = 0.299 + 0.701*c + 0.168*s_ir;
+        float rot1 = 0.587 - 0.587*c + 0.330*s_ir;
+        float rot2 = 0.114 - 0.114*c - 0.497*s_ir;
+        float rot3 = 0.299 - 0.299*c - 0.328*s_ir;
+        float rot4 = 0.587 + 0.413*c + 0.035*s_ir;
+        float rot5 = 0.114 - 0.114*c + 0.292*s_ir;
+        float rot6 = 0.299 - 0.300*c + 1.250*s_ir;
+        float rot7 = 0.587 - 0.588*c - 1.050*s_ir;
+        float rot8 = 0.114 + 0.886*c - 0.203*s_ir;
         float r = color.r * rot0 + color.g * rot1 + color.b * rot2;
         float g = color.r * rot3 + color.g * rot4 + color.b * rot5;
         float b = color.r * rot6 + color.g * rot7 + color.b * rot8;
@@ -549,8 +556,8 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 
 #ifdef EFFECT_GLITCH
-    q = floor(worldPos * 4096.0 + uTime * 60.0);
-    offset = (hash_float(q) - 0.5) * uMatGlitchIntensity;
+    vec3 q = floor(worldPos * 4096.0 + uTime * 60.0);
+    float offset = (hash_float(q) - 0.5) * uMatGlitchIntensity;
     color.r += offset;
     color.g += offset * 0.7;
     color.b -= offset;
@@ -570,17 +577,15 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #ifdef EFFECT_FOG
     if (uFogEnd > uFogStart) {
         float dist = length(worldPos - uCamEye);
-        t = clamp((dist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
+        float t = clamp((dist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
         color = mix(color, uFogColor, t);
     }
 #endif
 
     color *= uMatTint;
-
     return color;
 }
 
-// ------------------------------------------------------------------
 out vec4 FragColor;
 
 void main() {

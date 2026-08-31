@@ -9,38 +9,40 @@ clear_color(0, 32, 64)
 -- --------------------------------------------------------
 light_clear()
 
+local I = 20
+
 -- Point light 0: blue, follows sphere (updated in update())
 light_set_type(0, LIGHT_POINT)
 light_set_position(0, 0, 5, 0)
-light_set_color(0, 0, 0, 20)
+light_set_color(0, 0, 0, I)
 light_set_range(0, 7)
 light_set_enabled(0, true)
 
 -- Point light 1: red, at (0,5,0)
 light_set_type(1, LIGHT_POINT)
 light_set_position(1, 0, 5, 2)
-light_set_color(1, 20, 0, 0)          
+light_set_color(1, I, 0, 0)          
 light_set_range(1, 7)
 light_set_enabled(1, true)
 
 -- Point light 2: green, at (0,5,10)
 light_set_type(2, LIGHT_POINT)
 light_set_position(2, 0, 5, 10)
-light_set_color(2, 0, 20, 0)           -- intense green
+light_set_color(2, 0, I, 0)           -- intense green
 light_set_range(2, 7)
 light_set_enabled(2, true)
 
 -- Point light 3: blue, at (0,5,-6)
 light_set_type(3, LIGHT_POINT)
 light_set_position(3, 0, 5, -6)
-light_set_color(3, 0, 0, 20)          -- intense blue
+light_set_color(3, 0, 0, I)          -- intense blue
 light_set_range(3, 10)
 light_set_enabled(3, true)
 
 -- Spot light 4: magenta, at (10,5,1) pointing toward origin
 light_set_type(4, LIGHT_SPOT)
 light_set_position(4, 10, 5, 1)
-light_set_color(4, 20, 0, 20)
+light_set_color(4, I, 0, I)
 light_set_direction(4, 0, -1, 0)
 light_set_range(4, 30)
 light_set_spot_params(4, 0.25, 0.5, 2.0)
@@ -49,7 +51,7 @@ light_set_enabled(4, true)
 -- Spot light 5: yellow, at (-10,5,1) pointing toward origin
 light_set_type(5, LIGHT_SPOT)
 light_set_position(5, -10, 5, 1)
-light_set_color(5, 20, 20, 0)
+light_set_color(5, I, I, 0)
 light_set_direction(5, 0, -1, 0)
 light_set_range(5, 30)
 light_set_spot_params(5, 0.25, 0.5, 2.0)
@@ -58,7 +60,7 @@ light_set_enabled(5, true)
 -- Spot light 6: cyan, at (10,5,-6) pointing toward origin
 light_set_type(6, LIGHT_SPOT)
 light_set_position(6, 10, 5, -6)
-light_set_color(6, 0, 20, 20)
+light_set_color(6, 0, I, I)
 light_set_direction(6, 0, -1, 0)
 light_set_range(6, 30)
 light_set_spot_params(6, 0.25, 0.5, 2.0)
@@ -67,7 +69,7 @@ light_set_enabled(6, true)
 -- Spot light 7: yellow, at (10,5,10) pointing toward origin
 light_set_type(7, LIGHT_SPOT)
 light_set_position(7, 10, 5, 10)
-light_set_color(7, 20, 20, 0)
+light_set_color(7, I, I, 0)
 light_set_direction(7, 0, -1, 0)
 light_set_range(7, 30)
 light_set_spot_params(7, 0.25, 0.5, 2.0)
@@ -76,7 +78,7 @@ light_set_enabled(7, true)
 -- Spot light 8: magenta, at (-10,5,-6) pointing toward origin
 light_set_type(8, LIGHT_SPOT)
 light_set_position(8, -10, 5, -6)
-light_set_color(8, 20, 0, 20)
+light_set_color(8, I, 0, I)
 light_set_direction(8, 0, -1, 0)
 light_set_range(8, 30)
 light_set_spot_params(8, 0.25, 0.5, 2.0)
@@ -85,7 +87,7 @@ light_set_enabled(8, true)
 -- Spot light 9: cyan, at (-10,5,10) pointing toward origin
 light_set_type(9, LIGHT_SPOT)
 light_set_position(9, -10, 5, 10)
-light_set_color(9, 0, 20, 20)
+light_set_color(9, 0, I, I)
 light_set_direction(9, 0, -1, 0)
 light_set_range(9, 30)
 light_set_spot_params(9, 0.25, 0.5, 2.0)
@@ -94,17 +96,22 @@ light_set_enabled(9, true)
 -- Directional light 10: upward fill (from below)
 light_set_type(10, LIGHT_DIRECTIONAL)
 light_set_direction(10, 0, -1, 0)          -- pointing up
-light_set_color(10, 0.25,0.5,0.25)    
+light_set_color(10, 0.25, 0.5, 0.25)    
 light_set_enabled(10, true)
+
+light_set_type(11, LIGHT_DIRECTIONAL)
+light_set_direction(11, 0, 1, 0)          -- pointing up
+light_set_color(11, 0.5, 0.5, 1.0)    
+light_set_enabled(11, true)
 
 -- --------------------------------------------------------
 -- White spot light that follows the camera
 -- --------------------------------------------------------
-light_set_type(11, LIGHT_SPOT)
-light_set_color(11, 2,2,2)               -- white
-light_set_range(11, 100)
-light_set_spot_params(11, 0.25, 0.5, 2.0)   -- inner cone 0.25 rad, outer 0.5 rad, falloff 2
-light_set_enabled(11, true)
+light_set_type(12, LIGHT_SPOT)
+light_set_color(12, 1, 1, 1)               -- white
+light_set_range(12, 100)
+light_set_spot_params(12, 0.25, 0.5, 2.0)   -- inner cone 0.25 rad, outer 0.5 rad, falloff 2
+light_set_enabled(12, true)
 
 -- Load a particle emitter tag
 local emitter = particle_load_emitter("default_particle_emitter")
@@ -126,7 +133,7 @@ local sphere_material_pool = {
     "default_material_stone",
     "default_material_plastic",
     "default_material_brick",
-    "default_material_leather",
+    "default_material_leather", 
     "default_material_gold",
     "default_material_snow",
     "default_material_dirt",
@@ -233,13 +240,11 @@ function update(dt)
     camera_lookat(0, 0, 0, 0, 1, 0)
 
     -- ---- Update global (main) directional light ----
-    light_direction(0, 1, 0)
-    light_color(0.5,0.5,1)          -- blue (you can change)
-    --light_ambient(0.0, 0.0, 0.0)
+    --light_ambient(0.1, 0.1, 0.1)
 
     -- ---- Update camera‑following spotlight ----
     local eye_pos = vec3(cam_x, height, cam_z)
-    light_set_position(11, eye_pos.x, eye_pos.y, eye_pos.z)
+    light_set_position(12, eye_pos.x, eye_pos.y, eye_pos.z)
     -- Point slightly downwards: target (0, -2, 0) instead of (0,0,0)
     local target_x = 0
     local target_y = 0   -- slightly below origin
@@ -249,7 +254,7 @@ function update(dt)
     local dz = target_z - eye_pos.z
     local len = math.sqrt(dx*dx + dy*dy + dz*dz)
     if len > 0 then
-        light_set_direction(11, dx/len, dy/len, dz/len)
+        light_set_direction(12, dx/len, dy/len, dz/len)
     end
 
     -- ---- Update sphere‑following point light (index 0) ----
