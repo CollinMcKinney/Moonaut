@@ -30,14 +30,14 @@ layout(std140) uniform MaterialUniforms {
     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency;
     float uMatEmissivePulsePhase;
-    float uMatSpecularExponent;
-    vec3  uMatSpecularColor;
+    float uMatTransmissionStrength;    // renamed from uMatSpecularExponent
+    vec3  uMatSpecularTint;            // renamed from uMatSpecularColor
     float uMatSpecularThreshold;
     vec3  uMatRimColor;
     float uMatRimExponent;
     float uMatMetallic;
     float uMatIor;
-    float uMatPad;
+    float uMatSubsurfaceStrength;      // renamed from uMatPad
     float uMatFresnelExponent;
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
@@ -65,6 +65,7 @@ layout(std140) uniform MaterialUniforms {
     float uSheenExponent;
     float uSheenStrength;
     float uMatAnisotropic;
+    vec3  uMatTransmissionTint;        // NEW: colour of transmitted light
 };
 
 #define CLUSTER_TILE_SIZE 16
@@ -225,7 +226,7 @@ vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 baseColor, float
 // ---- Accumulate light (with Tangent and Bitangent passed in) ----
 void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
                       vec3 F0,
-                      vec3 Tangent, vec3 Bitangent,    // <-- renamed
+                      vec3 Tangent, vec3 Bitangent,
                       inout vec3 diffuse, inout vec3 specular,
                       inout vec3 clearcoat, inout vec3 sheen,
                       inout vec3 rim, inout vec3 backGlow,
@@ -246,7 +247,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     float sigma = uMatOrenNayarSigma;
     float sigma2 = sigma * sigma;
     float A = 1.0 - 0.5 * sigma2 / (sigma2 + 0.33);
-    float B = 0.45 * sigma2 / (sigma2 + 0.09);   // <-- this 'B' is now safe
+    float B = 0.45 * sigma2 / (sigma2 + 0.09);
     float cos_phi_diff = 0.0;
     float sin_alpha = 0.0, tan_beta = 0.0;
     if (NdotL > 0.0 && NdotV > 0.0) {
@@ -300,6 +301,15 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     diffuseContrib = baseDiffuse;
 #endif // EFFECT_OREN_NAYAR
 
+    // ---- Subsurface Scattering (Disney wrap style) ----
+#ifdef EFFECT_SUBSURFACE
+    float sssStrength = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
+    float wrap = 0.5;
+    float NdotL_sss = (NdotL_raw + wrap) / (1.0 + wrap);
+    float sss = pow(clamp(NdotL_sss, 0.0, 1.0), 2.0);
+    subsurface += lightCol * sss * uMatColor * sssStrength;
+#endif
+
     // ---- Specular ----
     if (NdotL > 0.0) {
         vec3 H = normalize(L + V);
@@ -350,8 +360,28 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
 
         float denomSpec = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
         vec3 specContrib = D * G * fresnel / denomSpec;
+
+        // ---- Stylised specular tint (reflection) ----
+        specContrib *= uMatSpecularTint;
+
         specular += specContrib * lightCol;
     }
+
+    // ---- Transmission (thin‑walled transmitted specular) ----
+#ifdef EFFECT_TRANSMISSION
+    float transStrength = clamp(uMatTransmissionStrength, 0.0, 1.0);
+    if (transStrength > 0.001 && NdotL > 0.0 && NdotV > 0.0) {
+        float transRoughness = clamp(roughness * 0.8, 0.01, 1.0);
+        vec3 Ht = normalize(-V + L);
+        float NdotHt = max(dot(N, Ht), 0.0);
+        float Dt = GGX_D(NdotHt, transRoughness);
+        float Gt = Smith_G_GGX(NdotL, NdotV, transRoughness);
+        float denomTrans = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
+        vec3 transContrib = vec3(Dt * Gt / denomTrans);
+        transContrib *= uMatTransmissionTint * transStrength;
+        specular += transContrib * lightCol;
+    }
+#endif
 
     // ---- Clearcoat ----
 #ifdef EFFECT_CLEARCOAT
@@ -415,7 +445,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 dielectricF0 = vec3(ratio * ratio);
     vec3 F0 = mix(dielectricF0, uMatColor, metallic);
 
-    // ---- Cavity ----
+    // ---- Cavity (roughness noise) ----
     float cavity = 1.0;
 #ifdef EFFECT_ROUGHNESS
     vec3 p = localPos * 32.0;
@@ -505,7 +535,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         }
 
         accumulate_light(N_bumped, V, lightDir, lightCol, F0,
-                         Tangent, Bitangent,   // <-- pass the new names
+                         Tangent, Bitangent,
                          totalDiffuse, totalSpec, totalClearcoat, totalSheen,
                          totalRim, totalBackGlow, totalSubsurface,
                          NdotV);
@@ -518,6 +548,10 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 diffuseColor = uMatColor * (1.0 - metallic);
     vec3 baseColor = uAmbientCol * diffuseColor * uMatAmbientLightFactor + totalDiffuse;
     baseColor *= cavity;
+
+    // Apply cavity to specular and clearcoat (stylised grounding)
+    totalSpec *= cavity;
+    totalClearcoat *= cavity;
 
 #ifdef EFFECT_GOOCH
     if (totalWeight > 0.001) {

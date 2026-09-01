@@ -22,14 +22,14 @@ layout(std140) uniform MaterialUniforms {
     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency;
     float uMatEmissivePulsePhase;
-    float uMatSpecularExponent;
-    vec3  uMatSpecularColor;
+    float uMatTransmissionStrength;
+    vec3  uMatSpecularTint;
     float uMatSpecularThreshold;
     vec3  uMatRimColor;
     float uMatRimExponent;
     float uMatMetallic;
     float uMatIor;
-    float uMatPad;
+    float uMatSubsurfaceStrength;
     float uMatFresnelExponent;
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
@@ -57,6 +57,7 @@ layout(std140) uniform MaterialUniforms {
     float uSheenExponent;
     float uSheenStrength;
     float uMatAnisotropic;
+    vec3  uMatTransmissionTint;
 };
 
 layout(std140, row_major) uniform ModelMatrices {

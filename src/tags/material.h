@@ -47,9 +47,9 @@ typedef enum render_method {
     EFFECT_CLEARCOAT       = (1 << 26),
     EFFECT_SHEEN           = (1 << 27),
     EFFECT_ANISOTROPIC     = (1 << 28),
-    EFFECT_RESERVED_29 = (1 << 29),
-    EFFECT_RESERVED_30 = (1 << 30),
-    EFFECT_RESERVED_31 = (1 << 31)
+    EFFECT_SUBSURFACE      = (1 << 29),
+    EFFECT_TRANSMISSION    = (1 << 30),
+    EFFECT_RESERVED_31     = (1 << 31)
 } render_method;
 
 /* ---- Bitfield metadata ---- */
@@ -86,6 +86,7 @@ TAG_BITFIELD32_BEGIN(render_method, 3)
     TAG_BITFIELD32_ENTRY(EFFECT_CLEARCOAT,       "Clearcoat")
     TAG_BITFIELD32_ENTRY(EFFECT_SHEEN,           "Sheen")
     TAG_BITFIELD32_ENTRY(EFFECT_ANISOTROPIC,     "Anisotropic")
+    TAG_BITFIELD32_ENTRY(EFFECT_SUBSURFACE,      "Subsurface")
 TAG_BITFIELD32_END(render_method)
 
 static INLINE u32 render_method_get_mode(render_method key) {
@@ -125,8 +126,8 @@ typedef struct material_definition {
     vec3         fresnel_color;     /* dummy, kept for compatibility – ignored */
     real         fresnel_exponent;  /* Schlick exponent, still used */
 
-    real         specular_exponent;
-    vec3         specular_color;
+    real         transmission_strength;
+    vec3         specular_tint;
     real         specular_threshold;
 
     vec3         emissive_color;
@@ -147,8 +148,9 @@ typedef struct material_definition {
     real         roughness;
 
     /* ---- PBR fields ---- */
-    real         metallic;          /* 0.0 = dielectric, 1.0 = metal */
-    real         ior;               /* index of refraction (>0) */
+    real         metallic;              /* 0.0 = dielectric, 1.0 = metal */
+    real         ior;                   /* index of refraction (>0) */
+    real         subsurface_strength;   /* 0 = none, 1 = strong, 2 = max */
 
     vec3         clearcoat_color;
     real         clearcoat_exponent;
@@ -158,7 +160,8 @@ typedef struct material_definition {
     real         sheen_strength;
 
     /* ---- Anisotropy ---- */
-    real         anisotropic;       /* 0.0 = isotropic, 1.0 = full anisotropy */
+    real         anisotropic;           /* 0.0 = isotropic, 1.0 = full anisotropy */
+    vec3         transmission_tint;     /* colour of transmitted light (e.g., (1,1,1) for glass) */
 
 } material_definition;
 
@@ -186,8 +189,8 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_REAL("rim_exponent"),
     FIELD_VEC3("fresnel_color"),   /* dummy, kept for compatibility */
     FIELD_REAL("fresnel_exponent"),
-    FIELD_REAL("specular_exponent"),
-    FIELD_VEC3("specular_color"),
+    FIELD_REAL("transmission_strength"),
+    FIELD_VEC3("specular_tint"),
     FIELD_REAL("specular_threshold"),
     FIELD_VEC3("emissive_color"),
     FIELD_REAL("emissive_pulse_frequency"),
@@ -205,6 +208,7 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_REAL("roughness"),
     FIELD_REAL("metallic"),
     FIELD_REAL("ior"),
+    FIELD_REAL("subsurface_strength"),
     FIELD_VEC3("clearcoat_color"),
     FIELD_REAL("clearcoat_exponent"),
     FIELD_REAL("clearcoat_strength"),
@@ -212,6 +216,7 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_REAL("sheen_exponent"),
     FIELD_REAL("sheen_strength"),
     FIELD_REAL("anisotropic"),      /* new */
+    FIELD_REAL("transmission_tint"),      /* new */
     FIELD_TERMINATOR
 TAG_GROUP_END(material, sizeof(struct material_definition))
 
@@ -243,8 +248,8 @@ const struct material_definition DEFAULT_MATERIAL_WIREFRAME = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -295,8 +300,8 @@ const struct material_definition DEFAULT_MATERIAL_FLAT = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -347,8 +352,8 @@ const struct material_definition DEFAULT_MATERIAL_GOURAUD = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -399,8 +404,8 @@ const struct material_definition DEFAULT_MATERIAL_QUADRATIC = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -451,8 +456,8 @@ const struct material_definition DEFAULT_MATERIAL_CUBIC = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -503,8 +508,8 @@ const struct material_definition DEFAULT_MATERIAL_PHONG = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 4.0f,
-    .specular_color         = {0.5f, 0.5f, 0.5f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.5f, 0.5f, 0.5f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -538,7 +543,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
                               EFFECT_BUMP | EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR |
                               EFFECT_BACK_GLOW | EFFECT_FRESNEL | EFFECT_SPECULAR |
-                              EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+                              EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_TRANSMISSION,
     .color                  = {0.05f, 0.30f, 0.50f},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 0.75f,
@@ -558,8 +563,8 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 384.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.5f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -583,7 +588,8 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.9f, 0.95f, 1.0f}
 };
 
 /* ------------------------------------------------------------------------
@@ -594,7 +600,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
                               EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR |
                               EFFECT_BACK_GLOW | EFFECT_RIM | EFFECT_FRESNEL |
                               EFFECT_SPECULAR | EFFECT_IRIDESCENCE | EFFECT_GLITCH |
-                              EFFECT_FRINGE | EFFECT_CEL_SHADING | EFFECT_SHEEN,
+                              EFFECT_FRINGE | EFFECT_CEL_SHADING | EFFECT_SHEEN | EFFECT_SUBSURFACE,
     .color                  = {0.0f, 0.24f, 0.08f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
@@ -614,8 +620,8 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .rim_exponent           = 2.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 4.0f,
-    .specular_color         = {0.3f, 0.4f, 0.15f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.3f, 0.4f, 0.15f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -633,6 +639,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .roughness              = 0.65f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
+    .subsurface_strength    = 0.8f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -648,7 +655,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
 const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
                               EFFECT_DIFFUSE_WRAP | EFFECT_OREN_NAYAR |
-                              EFFECT_SPECULAR | EFFECT_SHEEN,
+                              EFFECT_SPECULAR | EFFECT_SHEEN | EFFECT_SUBSURFACE,
     .color                  = {0.6f, 0.2f, 0.3f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
@@ -668,8 +675,8 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 2.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -687,6 +694,7 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .roughness              = 0.85f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
+    .subsurface_strength    = 0.25f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -722,8 +730,8 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .rim_exponent           = 2.5f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 64.0f,
-    .specular_color         = {0.5f, 0.35f, 0.20f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.5f, 0.35f, 0.20f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -776,8 +784,8 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 128.0f,
-    .specular_color         = {0.80f, 0.80f, 0.85f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.80f, 0.80f, 0.85f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -810,7 +818,7 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
                               EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR |
-                              EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+                              EFFECT_EMISSIVE | EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_TRANSMISSION,
     .color                  = {0.85f, 0.95f, 1.0f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.3f,
@@ -830,8 +838,8 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 512.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.8f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.00f, 0.02f, 0.05f},
     .emissive_pulse_frequency = 0.0f,
@@ -855,7 +863,8 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {1.0f, 1.0f, 1.0f}
 };
 
 /* ------------------------------------------------------------------------
@@ -864,7 +873,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_OREN_NAYAR |
                               EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM |
-                              EFFECT_SPECULAR | EFFECT_SHEEN,
+                              EFFECT_SPECULAR | EFFECT_SHEEN | EFFECT_SUBSURFACE,
     .color                  = {0.87f, 0.8f, 0.64f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
@@ -884,8 +893,8 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .rim_exponent           = 2.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 16.0f,
-    .specular_color         = {0.50f, 0.40f, 0.35f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.50f, 0.40f, 0.35f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -903,6 +912,7 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .roughness              = 0.50f,
     .metallic               = 0.0f,
     .ior                    = 1.4f,
+    .subsurface_strength    = 0.9f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -938,8 +948,8 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 2.0f,
-    .specular_color         = {0.25f, 0.25f, 0.25f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.25f, 0.25f, 0.25f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -973,7 +983,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
                               EFFECT_BUMP | EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE |
-                              EFFECT_IRIDESCENCE | EFFECT_FRINGE,
+                              EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
     .color                  = {0.65f, 0.85f, 0.95f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.85f,
@@ -993,8 +1003,8 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .rim_exponent           = 4.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 256.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.7f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.02f, 0.05f, 0.12f},
     .emissive_pulse_frequency = 0.0f,
@@ -1012,13 +1022,15 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .roughness              = 0.02f,
     .metallic               = 0.0f,
     .ior                    = 1.31f,
+    .subsurface_strength    = 0.6f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.8f, 0.9f, 1.0f}
 };
 
 /* ------------------------------------------------------------------------
@@ -1047,8 +1059,8 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     .rim_exponent           = 2.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 16.0f,
-    .specular_color         = {0.40f, 0.38f, 0.35f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.40f, 0.38f, 0.35f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1103,8 +1115,8 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .rim_exponent           = 1.5f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.50f, 0.33f, 0.0f},
     .emissive_pulse_frequency = 1.0471975512f,
@@ -1157,8 +1169,8 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     .rim_exponent           = 8.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 100.0f,
-    .specular_color         = {1.0f, 1.0f, 0.8f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {1.0f, 1.0f, 0.8f},
     .specular_threshold     = 0.90f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1212,8 +1224,8 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .rim_exponent           = 64.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.60f, 0.85f, 1.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.60f, 0.85f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.05f, 0.15f, 0.25f},
     .emissive_pulse_frequency = 0.8f,
@@ -1268,8 +1280,8 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .rim_exponent           = 2.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 16.0f,
-    .specular_color         = {1.0f, 1.0f, 0.8f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {1.0f, 1.0f, 0.8f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.30f, 0.20f, 0.40f},
     .emissive_pulse_frequency = 0.5f,
@@ -1323,8 +1335,8 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 32.0f,
-    .specular_color         = {0.80f, 0.90f, 1.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.80f, 0.90f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1376,8 +1388,8 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1431,8 +1443,8 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .rim_exponent           = 1.5f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 4.0f,
-    .specular_color         = {0.45f, 0.23f, 0.14f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.45f, 0.23f, 0.14f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1486,8 +1498,8 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 64.0f,
-    .specular_color         = {1.0f, 0.75f, 0.3f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {1.0f, 0.75f, 0.3f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.20f, 0.15f, 0.05f},
     .emissive_pulse_frequency = 0.0f,
@@ -1522,7 +1534,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
                               EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_FRESNEL | EFFECT_SPECULAR | EFFECT_EMISSIVE |
                               EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_ROUGHNESS |
-                              EFFECT_SHEEN,
+                              EFFECT_SHEEN | EFFECT_SUBSURFACE,
     .color                  = {0.95f, 0.95f, 1.00f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
@@ -1542,8 +1554,8 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .rim_exponent           = 2.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 64.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.05f, 0.05f, 0.10f},
     .emissive_pulse_frequency = 0.0f,
@@ -1561,6 +1573,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .roughness              = 0.05f,
     .metallic               = 0.0f,
     .ior                    = 1.3f,
+    .subsurface_strength    = 0.7f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -1595,8 +1608,8 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .rim_exponent           = 1.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1650,8 +1663,8 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
     .rim_exponent           = 16.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.00f, 4.00f, 4.00f},
     .emissive_pulse_frequency = 4.0f,
@@ -1703,8 +1716,8 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1736,7 +1749,8 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_BUMP |
-                              EFFECT_OREN_NAYAR | EFFECT_SPECULAR | EFFECT_FRESNEL,
+                              EFFECT_OREN_NAYAR | EFFECT_SPECULAR | EFFECT_FRESNEL | 
+                              EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
     .color                  = {0.85f, 0.82f, 0.78f},
     .ambient_light_factor   = 0.90f,
     .alpha                  = 1.0f,
@@ -1756,8 +1770,8 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 64.0f,
-    .specular_color         = {0.9f, 0.9f, 0.9f},
+    .transmission_strength  = 0.4f,
+    .specular_tint         = {0.9f, 0.9f, 0.9f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1775,13 +1789,15 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .roughness              = 0.05f,
     .metallic               = 0.0f,
     .ior                    = 1.6f,
+    .subsurface_strength    = 0.6f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.9f, 0.9f, 0.85f}
 };
 
 /* ------------------------------------------------------------------------
@@ -1790,7 +1806,7 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
 const struct material_definition DEFAULT_MATERIAL_WAX = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
                               EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_SPECULAR |
-                              EFFECT_EMISSIVE,
+                              EFFECT_EMISSIVE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
     .color                  = {0.85f, 0.75f, 0.50f},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 0.87f,
@@ -1810,8 +1826,8 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 32.0f,
-    .specular_color         = {0.9f, 0.8f, 0.6f},
+    .transmission_strength  = 0.9f,
+    .specular_tint         = {0.9f, 0.8f, 0.6f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.05f, 0.03f, 0.01f},
     .emissive_pulse_frequency = 0.0f,
@@ -1829,13 +1845,15 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .roughness              = 0.08f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
+    .subsurface_strength    = 1.05f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {1.0f, 0.8f, 0.5f}
 };
 
 /* ------------------------------------------------------------------------
@@ -1843,7 +1861,8 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_IRIDESCENCE |
-                              EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SATURATION,
+                              EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SATURATION | 
+                              EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
     .color                  = {0.95f, 0.90f, 0.85f},
     .ambient_light_factor   = 0.90f,
     .alpha                  = 1.0f,
@@ -1863,8 +1882,8 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 128.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.5f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1882,13 +1901,15 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .roughness              = 0.08f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
+    .subsurface_strength    = 0.35f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.9f, 0.9f, 1.0f}
 };
 
 /* ------------------------------------------------------------------------
@@ -1896,7 +1917,7 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_CLEARCOAT |
-                              EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SATURATION,
+                              EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SATURATION | EFFECT_TRANSMISSION,
     .color                  = {0.95f, 0.92f, 0.88f},
     .ambient_light_factor   = 0.90f,
     .alpha                  = 1.0f,
@@ -1916,8 +1937,8 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 128.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.2f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -1941,7 +1962,8 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.95f, 0.95f, 1.0f}
 };
 
 /* ------------------------------------------------------------------------
@@ -1969,8 +1991,8 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2022,8 +2044,8 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 2.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.5f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2055,7 +2077,7 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_FROST = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_ALPHA |
-                              EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_ROUGHNESS,
+                              EFFECT_BUMP | EFFECT_FRESNEL | EFFECT_ROUGHNESS | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
     .color                  = {0.90f, 0.95f, 1.0f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.40f,
@@ -2075,8 +2097,8 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.3f,
+    .specular_tint          = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2094,13 +2116,15 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .roughness              = 0.50f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
+    .subsurface_strength    = 0.7f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.9f, 0.95f, 1.0f}
 };
 
 /* ------------------------------------------------------------------------
@@ -2128,8 +2152,8 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength      = 0.0f,
+    .specular_tint         = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2182,8 +2206,8 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 16.0f,
-    .specular_color         = {0.20f, 0.20f, 0.20f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {0.20f, 0.20f, 0.20f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2235,8 +2259,8 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 1024.0f,
-    .specular_color         = {1.0f, 1.0f, 1.0f},
+    .transmission_strength  = 0.0f,
+    .specular_tint         = {1.0f, 1.0f, 1.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2268,7 +2292,7 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_IRIDESCENCE |
-                              EFFECT_SPECULAR | EFFECT_FRESNEL,
+                              EFFECT_SPECULAR | EFFECT_FRESNEL | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
     .color                  = {0.10f, 0.70f, 0.30f},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 1.0f,
@@ -2288,8 +2312,8 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 256.0f,
-    .specular_color         = {0.8f, 1.0f, 0.8f},
+    .transmission_strength  = 0.7f,
+    .specular_tint         = {0.8f, 1.0f, 0.8f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2307,13 +2331,15 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .roughness              = 0.02f,
     .metallic               = 0.0f,
     .ior                    = 1.57f,
+    .subsurface_strength    = 0.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_exponent     = 0.0f,
     .clearcoat_strength     = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.6f, 1.0f, 0.6f}
 };
 
 /* ------------------------------------------------------------------------
@@ -2321,7 +2347,7 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .render_method          = MODE_PHONG | EFFECT_AMBIENT_LIGHT | EFFECT_IRIDESCENCE |
-                              EFFECT_FRESNEL | EFFECT_SATURATION,
+                              EFFECT_FRESNEL | EFFECT_SATURATION | EFFECT_TRANSMISSION,
     .color                  = {0.05f, 0.05f, 0.08f},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 1.0f,
@@ -2341,8 +2367,8 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .fresnel_exponent       = 5.0f,
-    .specular_exponent      = 0.0f,
-    .specular_color         = {0.0f, 0.0f, 0.0f},
+    .transmission_strength  = 0.1f,
+    .specular_tint          = {0.0f, 0.0f, 0.0f},
     .specular_threshold     = 0.0f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -2366,7 +2392,8 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_exponent         = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {1.0f, 1.0f, 1.0f}
 };
 
 #ifdef __cplusplus

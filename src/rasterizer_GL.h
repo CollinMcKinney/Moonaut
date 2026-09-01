@@ -131,12 +131,12 @@ typedef struct {
     float uMatTint[3];              float uMatAlpha;
     float uMatEmissiveColor[3];     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency; float uMatEmissivePulsePhase;
-    float uMatSpecularExponent;     float _pad1;
-    float uMatSpecularColor[3];     float uMatSpecularThreshold;
+    float uMatTransmissionStrength; float _pad1;
+    float uMatSpecularTint[3];      float uMatSpecularThreshold;
     float uMatRimColor[3];          float uMatRimExponent;
     float uMatMetallic;
     float uMatIor;
-    float uMatPad;
+    float uMatSubsurfaceStrength;
     float uMatFresnelExponent;
     float uMatGoochCool[3];         float _pad2;
     float uMatGoochWarm[3];         float uMatAmbientLightFactor;
@@ -154,7 +154,7 @@ typedef struct {
     float uSheenColor[3];           float uSheenExponent;
     float uSheenStrength;
     float uMatAnisotropic;          // new anisotropy uniform
-    float _pad6[2];                 // adjusted padding (was 3 floats)
+    float uMatTransmissionTint[3];  float _pad6;
 } material_ubo_t;
 
 #define MAX_MODEL_MATRICES 1024
@@ -524,6 +524,8 @@ static void generate_defines(render_method key, int is_depth, char* out, size_t 
     if (effects & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
     if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
     if (effects & EFFECT_ANISOTROPIC)     { n = snprintf(p, remaining, "#define EFFECT_ANISOTROPIC\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_SUBSURFACE)      { n = snprintf(p, remaining, "#define EFFECT_SUBSURFACE\n"); p += n; remaining -= n; }
+    if (effects & EFFECT_TRANSMISSION)    { n = snprintf(p, remaining, "#define EFFECT_TRANSMISSION\n"); p += n; remaining -= n; }
 }
 
 static void shader_cache_resize(int new_size) {
@@ -666,10 +668,10 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatEmissivePulseAmplitude = mat->emissive_pulse_amplitude;
     ubo.uMatEmissivePulseFrequency = mat->emissive_pulse_frequency;
     ubo.uMatEmissivePulsePhase     = mat->emissive_pulse_phase;
-    ubo.uMatSpecularExponent = mat->specular_exponent;
-    ubo.uMatSpecularColor[0] = mat->specular_color.position.x;
-    ubo.uMatSpecularColor[1] = mat->specular_color.position.y;
-    ubo.uMatSpecularColor[2] = mat->specular_color.position.z;
+    ubo.uMatTransmissionStrength   = mat->transmission_strength;
+    ubo.uMatSpecularTint[0] = mat->specular_tint.position.x;
+    ubo.uMatSpecularTint[1] = mat->specular_tint.position.y;
+    ubo.uMatSpecularTint[2] = mat->specular_tint.position.z;
     ubo.uMatSpecularThreshold = mat->specular_threshold;
     ubo.uMatRimColor[0] = mat->rim_color.position.x;
     ubo.uMatRimColor[1] = mat->rim_color.position.y;
@@ -677,7 +679,7 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatRimExponent = mat->rim_exponent;
     ubo.uMatMetallic = mat->metallic;
     ubo.uMatIor      = mat->ior;
-    ubo.uMatPad      = 0.0f;
+    ubo.uMatSubsurfaceStrength = mat->subsurface_strength;
     ubo.uMatFresnelExponent = mat->fresnel_exponent;
     ubo.uMatGoochCool[0] = mat->gooch_cool.position.x;
     ubo.uMatGoochCool[1] = mat->gooch_cool.position.y;
@@ -719,6 +721,9 @@ static void update_material_ubo(const material_definition *mat) {
 
     /* NEW: copy anisotropic value */
     ubo.uMatAnisotropic = mat->anisotropic;
+    ubo.uMatTransmissionTint[0] = mat->transmission_tint.color.r;
+    ubo.uMatTransmissionTint[1] = mat->transmission_tint.color.g;
+    ubo.uMatTransmissionTint[2] = mat->transmission_tint.color.b;
 
     /* _pad6[2] is left zero (was 3 floats, now 2) */
 
