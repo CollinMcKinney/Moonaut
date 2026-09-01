@@ -24,7 +24,7 @@ layout(std140) uniform MaterialUniforms {
     float uMatEmissivePulsePhase;
     float uMatTransmissionStrength;
     vec3  uMatSpecularTint;
-    float uMatSpecularThreshold;
+    float uMatSurfaceRoughness;
     vec3  uMatRimColor;
     float uMatRimExponent;
     float uMatMetallic;
@@ -51,7 +51,7 @@ layout(std140) uniform MaterialUniforms {
     float uMatStrobeFrequency;
     float uMatStrobePhase;
     vec3  uClearcoatColor;
-    float uClearcoatExponent;
+    float uClearcoatRoughness;
     float uClearcoatStrength;
     vec3  uSheenColor;
     float uSheenExponent;

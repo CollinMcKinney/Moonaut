@@ -13,6 +13,8 @@ flat in vec3 vWorldCentroid;
 flat in vec3 vLocalCentroid;
 flat in vec3 vWorldFaceNormal;
 flat in vec3 vLocalFaceNormal;
+in vec3 vTangent;
+in vec3 vBitangent;
 
 uniform vec3 uAmbientCol;
 uniform vec3 uCamEye;
@@ -30,14 +32,14 @@ layout(std140) uniform MaterialUniforms {
     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency;
     float uMatEmissivePulsePhase;
-    float uMatTransmissionStrength;    // renamed from uMatSpecularExponent
-    vec3  uMatSpecularTint;            // renamed from uMatSpecularColor
-    float uMatSpecularThreshold;
+    float uMatTransmissionStrength;
+    vec3  uMatSpecularTint;
+    float uMatSurfaceRoughness;
     vec3  uMatRimColor;
     float uMatRimExponent;
     float uMatMetallic;
     float uMatIor;
-    float uMatSubsurfaceStrength;      // renamed from uMatPad
+    float uMatSubsurfaceStrength;
     float uMatFresnelExponent;
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
@@ -59,13 +61,13 @@ layout(std140) uniform MaterialUniforms {
     float uMatStrobeFrequency;
     float uMatStrobePhase;
     vec3  uClearcoatColor;
-    float uClearcoatExponent;
+    float uClearcoatRoughness;
     float uClearcoatStrength;
     vec3  uSheenColor;
     float uSheenExponent;
     float uSheenStrength;
     float uMatAnisotropic;
-    vec3  uMatTransmissionTint;        // NEW: colour of transmitted light
+    vec3  uMatTransmissionTint;
 };
 
 #define CLUSTER_TILE_SIZE 16
@@ -191,13 +193,22 @@ void apply_bump(inout vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 }
 
-// ---- GGX and Smith ----
+// ---- GGX D ----
 float GGX_D(float NdotH, float roughness) {
     float alpha = roughness * roughness;
     float denom = NdotH * NdotH * (alpha - 1.0) + 1.0;
     return alpha / (3.14159265 * denom * denom);
 }
 
+// ---- Height-correlated Smith Visibility (safe, energy conserving) ----
+float Vis_SmithGGXCorrelated(float NdotL, float NdotV, float roughness) {
+    float a = roughness * roughness;
+    float lambdaV = NdotL * sqrt(max(0.0, NdotV * (NdotV - NdotV * a) + a));
+    float lambdaL = NdotV * sqrt(max(0.0, NdotL * (NdotL - NdotL * a) + a));
+    return 0.5 / max(lambdaV + lambdaL, 1e-5);
+}
+
+// ---- Original Smith G with clamping (kept for reference, not used now) ----
 float Smith_G_GGX(float NdotL, float NdotV, float roughness) {
     float alpha = roughness * roughness;
     float G1L = 2.0 * NdotL / (NdotL + sqrt(alpha * alpha + (1.0 - alpha * alpha) * NdotL * NdotL));
@@ -205,14 +216,14 @@ float Smith_G_GGX(float NdotL, float NdotV, float roughness) {
     return G1L * G1V;
 }
 
-// ---- Corrected Anisotropic Smith G ----
-float Smith_G_aniso(float NdotV, float VdotX, float VdotY, float ax, float ay) {
-    float denom = NdotV + sqrt( ax * ax * VdotX * VdotX + ay * ay * VdotY * VdotY + NdotV * NdotV );
-    return 2.0 * NdotV / denom;
+// ---- Corrected Anisotropic Smith G (used for main specular with visibility) ----
+float Smith_G_aniso_vis(float NdotV, float VdotX, float VdotY, float ax, float ay) {
+    float denom = NdotV + sqrt(ax * ax * VdotX * VdotX + ay * ay * VdotY * VdotY + NdotV * NdotV);
+    return denom; // returns denominator, not G itself
 }
 
-// ---- Burley diffuse ----
-vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 baseColor, float roughness) {
+// ---- Burley diffuse (returns BRDF without NdotL and without lightCol) ----
+vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 baseColor, float roughness) {
     float NdotL = max(dot(N, L), 0.0);
     float NdotV = max(dot(N, V), 0.0);
     float LdotV = max(dot(L, V), 0.0);
@@ -220,28 +231,30 @@ vec3 burley_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 baseColor, float
     float FD90 = 0.5 + 2.0 * roughness * LdotV * LdotV;
     float diff = (1.0 + (FD90 - 1.0) * pow(1.0 - NdotL, 5.0)) *
                  (1.0 + (FD90 - 1.0) * pow(1.0 - NdotV, 5.0));
-    return lightCol * diff * baseColor * uMatAmbientLightFactor;
+    return diff * (baseColor / 3.14159265);
 }
 
-// ---- Accumulate light (with Tangent and Bitangent passed in) ----
+// ---- Accumulate light ----
 void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
                       vec3 F0,
                       vec3 Tangent, vec3 Bitangent,
                       inout vec3 diffuse, inout vec3 specular,
                       inout vec3 clearcoat, inout vec3 sheen,
                       inout vec3 rim, inout vec3 backGlow,
-                      inout vec3 subsurface,
                       float ndotv)
 {
     float NdotL_raw = dot(N, L);
     float NdotL = max(NdotL_raw, 0.0);
     float NdotV = ndotv;
 
-    float roughness = clamp(uMatRoughness, 0.001, 1.0);
+    float roughness = clamp(uMatSurfaceRoughness, 0.001, 1.0);
     vec3 diffuseColor = uMatColor * (1.0 - uMatMetallic);
 
-    // ---- Diffuse ----
-    vec3 diffuseContrib;
+    // Clamp clearcoat strength to [0,1] to ensure energy conservation
+    float clearcoatStrength = clamp(uClearcoatStrength, 0.0, 1.0);
+
+    // ---- Diffuse BRDF (no cosine, no lightCol) ----
+    vec3 diffuseBRDF;
 
 #ifdef EFFECT_OREN_NAYAR
     float sigma = uMatOrenNayarSigma;
@@ -264,54 +277,60 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
             tan_beta = sin_v / NdotV;
         }
     }
-    float diff = NdotL * (A + B * cos_phi_diff * sin_alpha * tan_beta);
+    float diff = A + B * cos_phi_diff * sin_alpha * tan_beta;
     diff = max(diff, 0.0);
-    diffuseContrib = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
+    diffuseBRDF = diff * (diffuseColor / 3.14159265);
 
 #else
-    vec3 baseDiffuse;
-
-#ifdef EFFECT_MINNAERT
-    float diff = pow(NdotL, uMatMinnaertK) * pow(NdotV, 1.0 - uMatMinnaertK);
-    #ifdef EFFECT_DIFFUSE_WRAP
-        float t = NdotL;
-        diff = t * t * (3.0 - 2.0 * t);
-    #endif
-    #ifdef EFFECT_CEL_SHADING
-        float inv = 1.0 / float(uMatCelBands);
-        diff = min(1.0, floor(diff * float(uMatCelBands)) * inv);
-    #endif
-    baseDiffuse = lightCol * diff * diffuseColor * uMatAmbientLightFactor;
-#else
-    baseDiffuse = burley_diffuse(N, V, L, lightCol, diffuseColor, roughness);
-    #ifdef EFFECT_DIFFUSE_WRAP
-        float t = NdotL;
-        float wrapFactor = t * t * (3.0 - 2.0 * t);
-        if (NdotL > 0.001) baseDiffuse *= (wrapFactor / NdotL);
-        else baseDiffuse = vec3(0.0);
-    #endif
-    #ifdef EFFECT_CEL_SHADING
-        float inv = 1.0 / float(uMatCelBands);
-        float celFactor = min(1.0, floor(NdotL * float(uMatCelBands)) * inv);
-        if (NdotL > 0.001) baseDiffuse *= (celFactor / NdotL);
-        else baseDiffuse = vec3(0.0);
-    #endif
-#endif // EFFECT_MINNAERT
-
-    diffuseContrib = baseDiffuse;
+    #ifdef EFFECT_MINNAERT
+        float diff = pow(NdotL, uMatMinnaertK) * pow(NdotV, 1.0 - uMatMinnaertK);
+        #ifdef EFFECT_DIFFUSE_WRAP
+            float t = NdotL;
+            diff = t * t * (3.0 - 2.0 * t);
+        #endif
+        #ifdef EFFECT_CEL_SHADING
+            float inv = 1.0 / float(uMatCelBands);
+            diff = min(1.0, floor(diff * float(uMatCelBands)) * inv);
+        #endif
+        diffuseBRDF = diff * (diffuseColor / 3.14159265);
+    #else
+        diffuseBRDF = burley_diffuse(N, V, L, diffuseColor, roughness);
+        #ifdef EFFECT_DIFFUSE_WRAP
+            float t = NdotL;
+            float wrapFactor = t * t * (3.0 - 2.0 * t);
+            if (NdotL > 0.001) diffuseBRDF *= (wrapFactor / NdotL);
+            else diffuseBRDF = vec3(0.0);
+        #endif
+        #ifdef EFFECT_CEL_SHADING
+            float inv = 1.0 / float(uMatCelBands);
+            float celFactor = min(1.0, floor(NdotL * float(uMatCelBands)) * inv);
+            if (NdotL > 0.001) diffuseBRDF *= (celFactor / NdotL);
+            else diffuseBRDF = vec3(0.0);
+        #endif
+    #endif // EFFECT_MINNAERT
 #endif // EFFECT_OREN_NAYAR
 
-    // ---- Subsurface Scattering (Disney wrap style) ----
+    // ---- Subsurface (blends with diffuse) ----
 #ifdef EFFECT_SUBSURFACE
     float sssStrength = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
     float wrap = 0.5;
     float NdotL_sss = (NdotL_raw + wrap) / (1.0 + wrap);
     float sss = pow(clamp(NdotL_sss, 0.0, 1.0), 2.0);
-    subsurface += lightCol * sss * uMatColor * sssStrength;
+    vec3 sssBRDF = sss * (uMatColor / 3.14159265);
+    float blend = clamp(sssStrength * sss, 0.0, 1.0);
+    diffuseBRDF = mix(diffuseBRDF, sssBRDF, blend);
 #endif
 
-    // ---- Specular ----
-    if (NdotL > 0.0) {
+    // ---- Fresnel for diffuse (always active) ----
+    float cosThetaDiff = clamp(NdotV, 0.0, 1.0);
+    vec3 F_diffuse = F0 + (1.0 - F0) * pow(1.0 - cosThetaDiff, 5.0);
+
+    // ---- Base diffuse contribution (local) ----
+    vec3 diffuseContrib = diffuseBRDF * NdotL * lightCol * (1.0 - F_diffuse);
+
+    // ---- Main specular contribution (local, without lightCol) ----
+    vec3 specContrib = vec3(0.0);
+    if (NdotL > 0.0 && NdotV > 0.0) {
         vec3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
 
@@ -320,17 +339,14 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
         cosTheta = min(cosTheta, 1.0);
         float exp = max(uMatFresnelExponent, 0.1);
         vec3 fresnel = F0 + (1.0 - F0) * pow(1.0 - cosTheta, exp);
-        float fresnelLuma = max(max(fresnel.r, fresnel.g), fresnel.b);
-        diffuseContrib *= (1.0 - fresnelLuma);
 #else
         vec3 fresnel = F0;
 #endif
 
-        float G = 1.0;
-        float D = 0.0;
+        float D;
+        float denomL, denomV;
 
 #ifdef EFFECT_ANISOTROPIC
-        // ---- Disney anisotropic specular with smooth derivative tangents ----
         float anisotropy = clamp(uMatAnisotropic, -1.0, 1.0);
         float aspect = sqrt(1.0 - 0.9 * anisotropy);
         float ax = roughness * roughness / aspect;
@@ -344,48 +360,45 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
         float denomDist = (HdotT * HdotT) / (ax * ax) + (HdotB * HdotB) / (ay * ay) + HdotN * HdotN;
         D = 1.0 / (3.14159265 * ax * ay * denomDist * denomDist);
 
-        float VdotT = dot(V, Tangent);
-        float VdotB = dot(V, Bitangent);
         float LdotT = dot(L, Tangent);
         float LdotB = dot(L, Bitangent);
-        float G_V = Smith_G_aniso(NdotV, VdotT, VdotB, ax, ay);
-        float G_L = Smith_G_aniso(NdotL, LdotT, LdotB, ax, ay);
-        G = G_V * G_L;
+        float VdotT = dot(V, Tangent);
+        float VdotB = dot(V, Bitangent);
 
+        denomL = NdotL + sqrt(ax * ax * LdotT * LdotT + ay * ay * LdotB * LdotB + NdotL * NdotL);
+        denomV = NdotV + sqrt(ax * ax * VdotT * VdotT + ay * ay * VdotB * VdotB + NdotV * NdotV);
 #else
-        // ---- Isotropic ----
+        float alpha = roughness * roughness;
         D = GGX_D(NdotH, roughness);
-        G = Smith_G_GGX(NdotL, NdotV, roughness);
+        denomL = NdotL + sqrt(alpha * alpha + (1.0 - alpha * alpha) * NdotL * NdotL);
+        denomV = NdotV + sqrt(alpha * alpha + (1.0 - alpha * alpha) * NdotV * NdotV);
 #endif
 
-        float denomSpec = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
-        vec3 specContrib = D * G * fresnel / denomSpec;
-
-        // ---- Stylised specular tint (reflection) ----
+        specContrib = D * fresnel / (denomL * denomV);
         specContrib *= uMatSpecularTint;
-
-        specular += specContrib * lightCol;
     }
 
-    // ---- Transmission (thin‑walled transmitted specular) ----
+    // ---- Transmission contribution (local) ----
+    vec3 transContrib = vec3(0.0);
 #ifdef EFFECT_TRANSMISSION
     float transStrength = clamp(uMatTransmissionStrength, 0.0, 1.0);
     if (transStrength > 0.001 && NdotL > 0.0 && NdotV > 0.0) {
         float transRoughness = clamp(roughness * 0.8, 0.01, 1.0);
+        float transAlpha = transRoughness * transRoughness;
         vec3 Ht = normalize(-V + L);
         float NdotHt = max(dot(N, Ht), 0.0);
         float Dt = GGX_D(NdotHt, transRoughness);
-        float Gt = Smith_G_GGX(NdotL, NdotV, transRoughness);
-        float denomTrans = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
-        vec3 transContrib = vec3(Dt * Gt / denomTrans);
+        float tDenomL = NdotL + sqrt(transAlpha * transAlpha + (1.0 - transAlpha * transAlpha) * NdotL * NdotL);
+        float tDenomV = NdotV + sqrt(transAlpha * transAlpha + (1.0 - transAlpha * transAlpha) * NdotV * NdotV);
+        transContrib = vec3(Dt / (tDenomL * tDenomV));
         transContrib *= uMatTransmissionTint * transStrength;
-        specular += transContrib * lightCol;
     }
 #endif
 
-    // ---- Clearcoat ----
+    // ---- Clearcoat contribution (local, raw BRDF) ----
+    vec3 ccContrib = vec3(0.0);
 #ifdef EFFECT_CLEARCOAT
-    if (uClearcoatStrength > 0.0 && NdotL > 0.0) {
+    if (clearcoatStrength > 0.0 && NdotL > 0.0 && NdotV > 0.0) {
         vec3 H = normalize(L + V);
         float cosTheta = max(dot(V, H), 0.0);
         cosTheta = min(cosTheta, 1.0);
@@ -393,42 +406,64 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
         vec3 clearcoatF0 = vec3(0.04);
         vec3 ccFresnel = clearcoatF0 + (1.0 - clearcoatF0) * pow(1.0 - cosTheta, exp);
         float NdotH = max(dot(N, H), 0.0);
-        float clearcoatRoughness = sqrt(2.0 / max(uClearcoatExponent, 1.0) + 2.0);
-        clearcoatRoughness = clamp(clearcoatRoughness, 0.001, 1.0);
-        float ccD = GGX_D(NdotH, clearcoatRoughness);
-        float ccG = Smith_G_GGX(NdotL, NdotV, clearcoatRoughness);
-        float ccDenom = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
-        vec3 ccContrib = ccD * ccG * ccFresnel / ccDenom;
-        clearcoat += ccContrib * lightCol * uClearcoatColor * uClearcoatStrength;
+        float ccRoughness = clamp(uClearcoatRoughness, 0.001, 1.0);
+        float ccD = GGX_D(NdotH, ccRoughness);
+        float ccVis = Vis_SmithGGXCorrelated(NdotL, NdotV, ccRoughness);
+        ccContrib = ccD * ccVis * ccFresnel;
     }
 #endif
 
-    // ---- Sheen ----
+    // ---- Sheen contribution (local, without lightCol) ----
+    vec3 sheenContrib = vec3(0.0);
 #ifdef EFFECT_SHEEN
-    if (NdotL > 0.0) {
+    if (NdotL > 0.0 && NdotV > 0.0) {
         vec3 H = normalize(L + V);
         float ndoth = dot(N, H);
         float sheenVal = pow(saturate(1.0 - ndoth), uSheenExponent);
-        sheen += uSheenColor * sheenVal * uSheenStrength * NdotL * lightCol;
+        sheenContrib = uSheenColor * sheenVal * uSheenStrength * NdotL;
     }
 #endif
 
-    // ---- Back Glow ----
+    // ---- Back glow contribution (local) ----
+    vec3 backGlowContrib = vec3(0.0);
 #ifdef EFFECT_BACK_GLOW
-    float backNdotL = max(dot(N, -L), 0.0);
-    backGlow += uMatBackGlowColor * backNdotL * lightCol;
+    backGlowContrib = uMatBackGlowColor * max(dot(N, -L), 0.0);
 #endif
 
-    // ---- Rim ----
+    // ---- Rim contribution (local) ----
+    vec3 rimContrib = vec3(0.0);
 #ifdef EFFECT_RIM
-    float rimf = pow(1.0 - ndotv, uMatRimExponent);
-    rim += uMatRimColor * rimf * lightCol;
+    rimContrib = uMatRimColor * pow(1.0 - ndotv, uMatRimExponent);
 #endif
 
-    diffuse += diffuseContrib;
+    // ---- Apply energy conservation scaling to base lobes ----
+#ifdef EFFECT_CLEARCOAT
+    float clearcoatScale = 1.0 - clearcoatStrength;
+    diffuseContrib *= clearcoatScale;
+    specContrib   *= clearcoatScale;
+#endif
+
+#ifdef EFFECT_TRANSMISSION
+    float transScale = 1.0 - clamp(uMatTransmissionStrength, 0.0, 1.0);
+    diffuseContrib *= transScale;
+    specContrib   *= transScale;
+#endif
+
+    // ---- Accumulate everything ----
+    diffuse  += diffuseContrib;                          // already includes lightCol
+    specular += specContrib * lightCol;                  // specContrib did not include lightCol
+    clearcoat += ccContrib * lightCol * uClearcoatColor * clearcoatStrength;
+    sheen     += sheenContrib * lightCol;                // sheenContrib did not include lightCol
+    backGlow  += backGlowContrib * lightCol;
+    rim       += rimContrib * lightCol;
+
+    // Add transmission contribution to specular
+#ifdef EFFECT_TRANSMISSION
+    specular += transContrib * lightCol;
+#endif
 }
 
-// ---- Main shading function ----
+// ---- Main shading ----
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 V = normalize(uCamEye - worldPos);
     vec3 N_bumped = N;
@@ -437,7 +472,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     float NdotV = max(dot(N_bumped, V), 0.0);
 
-    // ---- F0 ----
     float metallic = clamp(uMatMetallic, 0.0, 1.0);
     float ior = uMatIor;
     if (ior <= 0.0) ior = 1.5;
@@ -445,7 +479,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 dielectricF0 = vec3(ratio * ratio);
     vec3 F0 = mix(dielectricF0, uMatColor, metallic);
 
-    // ---- Cavity (roughness noise) ----
     float cavity = 1.0;
 #ifdef EFFECT_ROUGHNESS
     vec3 p = localPos * 32.0;
@@ -455,15 +488,11 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     cavity = max(cavity, 0.3);
 #endif
 
-    // ---- Smooth anisotropic tangent frame (derivatives) ----
     vec3 Tangent = vec3(0.0);
     vec3 Bitangent = vec3(0.0);
 #ifdef EFFECT_ANISOTROPIC
-    Tangent = normalize(dFdx(worldPos));
-    Bitangent = normalize(dFdy(worldPos));
-    Tangent = normalize(Tangent - N_bumped * dot(Tangent, N_bumped));
+    Tangent = normalize(vTangent - N_bumped * dot(vTangent, N_bumped));
     Bitangent = normalize(cross(N_bumped, Tangent));
-    Tangent = normalize(cross(Bitangent, N_bumped));
 #endif
 
     vec3 totalDiffuse   = vec3(0.0);
@@ -472,7 +501,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 totalSheen     = vec3(0.0);
     vec3 totalRim       = vec3(0.0);
     vec3 totalBackGlow  = vec3(0.0);
-    vec3 totalSubsurface = vec3(0.0);
 
     vec3 weightedDir = vec3(0.0);
     float totalWeight = 0.0;
@@ -508,19 +536,23 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
             lightDir = normalize(L.dir.xyz);
         } else if (lightType == 1) {
             vec3 toLight = lightPos - worldPos;
-            float dist = length(toLight);
+            float dist = max(length(toLight), 0.01); // avoid division by zero
             if (dist > range) continue;
-            float atten = 1.0 - (dist / range);
-            atten = atten * atten;
+            float distRatio = dist / range;
+            float atten = max(0.0, 1.0 - distRatio * distRatio);
+            atten *= atten;
+            atten /= (dist * dist + 0.01); // inverse square with epsilon
             lightDir = normalize(toLight);
             lightCol *= atten;
             intensity *= atten;
         } else if (lightType == 2) {
             vec3 toLight = lightPos - worldPos;
-            float dist = length(toLight);
+            float dist = max(length(toLight), 0.01);
             if (dist > range) continue;
-            float atten = 1.0 - (dist / range);
-            atten = atten * atten;
+            float distRatio = dist / range;
+            float atten = max(0.0, 1.0 - distRatio * distRatio);
+            atten *= atten;
+            atten /= (dist * dist + 0.01);
             lightDir = normalize(toLight);
             float cosAngle = dot(-lightDir, normalize(L.dir.xyz));
             float inner = L.inner_cos;
@@ -537,7 +569,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         accumulate_light(N_bumped, V, lightDir, lightCol, F0,
                          Tangent, Bitangent,
                          totalDiffuse, totalSpec, totalClearcoat, totalSheen,
-                         totalRim, totalBackGlow, totalSubsurface,
+                         totalRim, totalBackGlow,
                          NdotV);
 
         weightedDir += lightDir * intensity;
@@ -549,7 +581,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 baseColor = uAmbientCol * diffuseColor * uMatAmbientLightFactor + totalDiffuse;
     baseColor *= cavity;
 
-    // Apply cavity to specular and clearcoat (stylised grounding)
     totalSpec *= cavity;
     totalClearcoat *= cavity;
 
@@ -569,9 +600,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     vec3 color = baseColor;
     color += totalSpec + totalClearcoat + totalSheen + totalRim + totalBackGlow;
-#ifdef EFFECT_SUBSURFACE
-    color += totalSubsurface;
-#endif
 
     color = max(color, vec3(0.0));
 

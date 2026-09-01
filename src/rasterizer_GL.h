@@ -132,7 +132,7 @@ typedef struct {
     float uMatEmissiveColor[3];     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency; float uMatEmissivePulsePhase;
     float uMatTransmissionStrength; float _pad1;
-    float uMatSpecularTint[3];      float uMatSpecularThreshold;
+    float uMatSpecularTint[3];      float uMatSurfaceRoughness;
     float uMatRimColor[3];          float uMatRimExponent;
     float uMatMetallic;
     float uMatIor;
@@ -149,7 +149,7 @@ typedef struct {
     int   uMatPosterizeLevels;      float _pad3;
     float uMatStrobeColor[3];       float uMatStrobeFrequency;
     float uMatStrobePhase;          float _pad4[3];
-    float uClearcoatColor[3];       float uClearcoatExponent;
+    float uClearcoatColor[3];       float uClearcoatRoughness;
     float uClearcoatStrength;       float _pad5[3];
     float uSheenColor[3];           float uSheenExponent;
     float uSheenStrength;
@@ -672,7 +672,7 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatSpecularTint[0] = mat->specular_tint.position.x;
     ubo.uMatSpecularTint[1] = mat->specular_tint.position.y;
     ubo.uMatSpecularTint[2] = mat->specular_tint.position.z;
-    ubo.uMatSpecularThreshold = mat->specular_threshold;
+    ubo.uMatSurfaceRoughness = mat->surface_roughness;
     ubo.uMatRimColor[0] = mat->rim_color.position.x;
     ubo.uMatRimColor[1] = mat->rim_color.position.y;
     ubo.uMatRimColor[2] = mat->rim_color.position.z;
@@ -711,7 +711,7 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uClearcoatColor[0] = mat->clearcoat_color.position.x;
     ubo.uClearcoatColor[1] = mat->clearcoat_color.position.y;
     ubo.uClearcoatColor[2] = mat->clearcoat_color.position.z;
-    ubo.uClearcoatExponent = mat->clearcoat_exponent;
+    ubo.uClearcoatRoughness = mat->clearcoat_roughness;
     ubo.uClearcoatStrength = mat->clearcoat_strength;
     ubo.uSheenColor[0] = mat->sheen_color.position.x;
     ubo.uSheenColor[1] = mat->sheen_color.position.y;
