@@ -38,7 +38,7 @@ float* load_wav(const char *filename, int *out_sample_rate,
     int num_frames, i, c;
     int bytes_per_sample, is_float;
     int expected_frame_size, frame_size;
-    int data_pos;
+    int data_pos;           /* offset of the data chunk (computed) */
     unsigned char chunk[8];
     int chunk_size;
     float *src;
@@ -47,7 +47,7 @@ float* load_wav(const char *filename, int *out_sample_rate,
     float_data = NULL;
     is_float = 0;
     data_size = 0;
-    data_pos = 36;
+    /* data_pos will be computed after reading header */
 
     printf("Attempting to open: %s\n", filename);
     fp = fopen(filename, "rb");
@@ -60,6 +60,13 @@ float* load_wav(const char *filename, int *out_sample_rate,
         printf("Failed to read 44‑byte header\n");
         fclose(fp);
         return NULL;
+    }
+
+    /* ---- compute data chunk offset from actual fmt chunk size ---- */
+    {
+        int fmt_size = header[16] | (header[17] << 8) | (header[18] << 16) | (header[19] << 24);
+        data_pos = 12 + 8 + fmt_size;   /* 12 = "RIFF"+"WAVE", 8 = "fmt " header */
+        printf("fmt chunk size: %d, starting data search at offset %d\n", fmt_size, data_pos);
     }
 
     if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
@@ -83,6 +90,7 @@ float* load_wav(const char *filename, int *out_sample_rate,
     printf("WAV info: %d Hz, %d ch, %d bits, block_align=%d, format=0x%04X\n",
            sample_rate, channels, bits_per_sample, block_align, format);
 
+    /* ---- Accept Extensible (0xFFFE) as standard PCM ---- */
     if (format == 3) {
         if (bits_per_sample != 32) {
             printf("Float format requires 32 bits\n");
@@ -90,12 +98,15 @@ float* load_wav(const char *filename, int *out_sample_rate,
             return NULL;
         }
         is_float = 1;
-    } else if (format == 1) {
+    } else if (format == 1 || format == 0xFFFE) {
         if (bits_per_sample != 8 && bits_per_sample != 16 &&
             bits_per_sample != 24 && bits_per_sample != 32) {
             printf("Unsupported PCM bit depth: %d\n", bits_per_sample);
             fclose(fp);
             return NULL;
+        }
+        if (format == 0xFFFE) {
+            printf("Detected Extensible WAV (0xFFFE), assuming standard PCM data.\n");
         }
     } else {
         printf("Unsupported format 0x%04X\n", format);
@@ -103,18 +114,27 @@ float* load_wav(const char *filename, int *out_sample_rate,
         return NULL;
     }
 
-    /* ---- Find data chunk ---- */
+    /* ---- Find data chunk (using computed data_pos) ---- */
     while (1) {
         if (fseek(fp, data_pos, SEEK_SET) != 0) break;
         if (fread(chunk, 1, 8, fp) != 8) break;
+        
         if (memcmp(chunk, "data", 4) == 0) {
             data_size = chunk[4] | (chunk[5] << 8) | (chunk[6] << 16) | (chunk[7] << 24);
-            data_pos += 8;
+            data_pos += 8;   /* move to start of audio data */
             break;
         }
+        
+        /* Skip this chunk (e.g., "fact", "cue ", "list", etc.) */
         chunk_size = chunk[4] | (chunk[5] << 8) | (chunk[6] << 16) | (chunk[7] << 24);
         data_pos += 8 + chunk_size;
-        if (data_pos >= 44) break;
+        
+        /* Safety: prevent infinite loop if the file is corrupted.
+           Most WAV files have the data chunk within the first 1MB. */
+        if (data_pos > 1024 * 1024) {
+            printf("Warning: data chunk not found within first 1MB.\n");
+            break;
+        }
     }
 
     if (data_size <= 0) {
