@@ -32,10 +32,14 @@
 #include "tags/globals.h"
 #include "tags/camera.h"
 #include "tags/lua_script.h"
-#include "tags/particle_emitter.h"   /* new particle emitter definition */
+#include "tags/particle_emitter.h"
 
 #include "toolbox/model_importer.h"
 #include "toolbox/cbsp_builder.h"
+
+#include "../libs/audiopipe/wavloader.h"
+#include "../libs/audiopipe/audiomixer.h"
+#include "../libs/audiopipe/audiopipe.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -46,7 +50,7 @@ extern "C" {
 #endif
 
 #define SCENARIO_MAX_ENTITIES PHYSICS_MAX_BODIES
-#define SCENARIO_WINDOW_SCALE 4
+#define SCENARIO_WINDOW_SCALE 6
 #define SCENARIO_DEFAULT_WIDTH  (256 * SCENARIO_WINDOW_SCALE)
 #define SCENARIO_DEFAULT_HEIGHT (144 * SCENARIO_WINDOW_SCALE)
 
@@ -92,6 +96,24 @@ static int g_last_height = 0;
 /* ---- Particle system state ---- */
 static i32 g_particle_emitter_handle = -1;   /* current emitter tag handle */
 
+/* ========================================================================
+   AUDIO SYSTEM STATE (NEW)
+   ======================================================================== */
+#define MAX_AUDIO_VOICES AP_MAX_MIXER_VOICES
+
+typedef struct audio_voice_slot {
+    voice_t voice;
+    float *samples;               /* pointer to loaded sample data (owned by this slot) */
+    int   sample_frames;
+    int   channels;
+    int   sample_rate;
+    int   loaded;                 /* 1 if slot contains a valid sample */
+} audio_voice_slot_t;
+
+static audio_voice_slot_t g_audio_slots[MAX_AUDIO_VOICES];
+static effect_mixer_ctx_t g_audio_ctx;
+static int g_audio_initialized = 0;
+
 /* ------------------------------------------------------------------------
    Lua helper - return the internal physics_body for a given entity index,
    or NULL if it isn't dynamic.
@@ -102,7 +124,7 @@ static physics_body *scenario_get_physics_body(i32 entity_index) {
     return &g_scene_world->physics.bodies[idx];
 }
 
-/* Helper to find field offset to avoid pointer drift if possible, 
+/* Helper to find field offset to avoid pointer drift if possible,
    though our simple system relies on sequential FIELD definitions matching C structs. */
 static void* get_field_ptr(void* struct_base, const tag_field_definition* fields, const char* name) {
     u8* ptr = (u8*)struct_base;
@@ -196,7 +218,7 @@ static i32 scenario_load_tag(const char *scenario_name) {
 }
 
 /* ------------------------------------------------------------------------
-   Draw one model primitive with its material 
+   Draw one model primitive with its material
    ------------------------------------------------------------------------ */
 static void scenario_draw_primitive(model_primitive *prim, model_definition *mod,
                                     vec3 pos, vec4 orient) {
@@ -1103,9 +1125,142 @@ static i32 lua_light_set_enabled(lua_State *L) {
     return 0;
 }
 
-/* ------------------------------------------------------------------------
+/* ========================================================================
+   Audio Lua bindings (NEW)
+   ======================================================================== */
+
+static i32 lua_audio_load_wav(lua_State *L) {
+    const char *filename = luaL_checkstring(L, 1);
+    int sample_rate, channels, num_frames;
+    float *samples = load_wav(filename, &sample_rate, &channels, &num_frames);
+    if (!samples) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    // Find a free slot
+    int slot = -1;
+    for (int i = 0; i < MAX_AUDIO_VOICES; i++) {
+        if (!g_audio_slots[i].loaded) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        free(samples);
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    audio_voice_slot_t *s = &g_audio_slots[slot];
+    s->samples = samples;
+    s->sample_frames = num_frames;
+    s->channels = channels;
+    s->sample_rate = sample_rate;
+    s->loaded = 1;
+
+    // Initialize voice_t
+    voice_t *v = &s->voice;
+    memset(v, 0, sizeof(voice_t));
+    v->samples = samples;
+    v->num_frames = num_frames;
+    v->channels = channels;
+    v->source_sample_rate = sample_rate;
+    v->position = 0.0;
+    v->pitch = 1.0f;
+    v->volume = 1.0f;
+    v->rolloff = 1.0f;
+    v->active = 0; // not playing yet
+    v->looping = 0;
+
+    lua_pushinteger(L, slot);
+    return 1;
+}
+
+static i32 lua_audio_play(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    int loop = lua_toboolean(L, 2);
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->position = 0.0;
+    v->active = 1;
+    v->releasing = 0;
+    v->looping = loop ? 1 : 0;
+    return 0;
+}
+
+static i32 lua_audio_stop(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->active = 0;
+    v->releasing = 0;
+    return 0;
+}
+
+static i32 lua_audio_set_position(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->pos_x = (float)luaL_checknumber(L, 2);
+    v->pos_y = (float)luaL_checknumber(L, 3);
+    v->pos_z = (float)luaL_checknumber(L, 4);
+    // Reset smoothing to match new position instantly
+    v->smooth_x = v->pos_x;
+    v->smooth_y = v->pos_y;
+    v->smooth_z = v->pos_z;
+    return 0;
+}
+
+static i32 lua_audio_set_velocity(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->vel_x = (float)luaL_checknumber(L, 2);
+    v->vel_y = (float)luaL_checknumber(L, 3);
+    v->vel_z = (float)luaL_checknumber(L, 4);
+    return 0;
+}
+
+static i32 lua_audio_set_listener_velocity(lua_State *L) {
+    g_audio_ctx.listener.vel_x = (float)luaL_checknumber(L, 1);
+    g_audio_ctx.listener.vel_y = (float)luaL_checknumber(L, 2);
+    g_audio_ctx.listener.vel_z = (float)luaL_checknumber(L, 3);
+    return 0;
+}
+
+static i32 lua_audio_set_volume(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->volume = (float)luaL_checknumber(L, 2);
+    return 0;
+}
+
+static i32 lua_audio_set_pitch(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->pitch = (float)luaL_checknumber(L, 2);
+    return 0;
+}
+
+static i32 lua_audio_set_rolloff(lua_State *L) {
+    int slot = (int)luaL_checkinteger(L, 1);
+    if (slot < 0 || slot >= MAX_AUDIO_VOICES || !g_audio_slots[slot].loaded)
+        return luaL_error(L, "invalid audio slot");
+    voice_t *v = &g_audio_slots[slot].voice;
+    v->rolloff = (float)luaL_checknumber(L, 2);
+    return 0;
+}
+
+/* ========================================================================
    Lua registration
-   ------------------------------------------------------------------------ */
+   ======================================================================== */
 static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "clear",                lua_clear);
     lua_register_builtin(state, "camera_eye",           lua_camera_eye);
@@ -1137,7 +1292,7 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "particle_set_rate",        lua_particle_set_rate);
     lua_register_builtin(state, "particle_emit_burst",      lua_particle_emit_burst);
 
-    /* ---- Light bindings (NEW) ---- */
+    /* Light bindings */
     lua_register_builtin(state, "light_clear",          lua_light_clear);
     lua_register_builtin(state, "light_set_type",       lua_light_set_type);
     lua_register_builtin(state, "light_set_position",   lua_light_set_position);
@@ -1147,28 +1302,33 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "light_set_spot_params", lua_light_set_spot_params);
     lua_register_builtin(state, "light_set_enabled",    lua_light_set_enabled);
 
+    /* Audio bindings */
+    lua_register_builtin(state, "audio_load_wav",       lua_audio_load_wav);
+    lua_register_builtin(state, "audio_play",           lua_audio_play);
+    lua_register_builtin(state, "audio_stop",           lua_audio_stop);
+    lua_register_builtin(state, "audio_set_position",   lua_audio_set_position);
+    lua_register_builtin(state, "audio_set_velocity",   lua_audio_set_velocity);
+    lua_register_builtin(state, "audio_set_listener_velocity", lua_audio_set_listener_velocity);
+    lua_register_builtin(state, "audio_set_volume",     lua_audio_set_volume);
+    lua_register_builtin(state, "audio_set_pitch",      lua_audio_set_pitch);
+    lua_register_builtin(state, "audio_set_rolloff",    lua_audio_set_rolloff);
+
     lua_register_builtin(state, "vec2",                 lua_builtin_vec2);
     lua_register_builtin(state, "vec3",                 lua_builtin_vec3);
     lua_register_builtin(state, "vec4",                 lua_builtin_vec4);
 
-    /* 
-     *  Constants 
-     */
-
-    /* Rendering modes. */
+    /* Constants */
     lua_set_global_integer(state, "MODE_WIREFRAME",    MODE_WIREFRAME);
     lua_set_global_integer(state, "MODE_FLAT",         MODE_FLAT);
     lua_set_global_integer(state, "MODE_GOURAUD",      MODE_GOURAUD);
     lua_set_global_integer(state, "MODE_PHONG",        MODE_PHONG);
 
-    /* Tag groups. */
     lua_set_global_integer(state, "TAG_material",       TAG_material);
     lua_set_global_integer(state, "TAG_model",          TAG_model);
     lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
     lua_set_global_integer(state, "TAG_particle_emitter", TAG_particle_emitter);
     lua_set_global_integer(state, "TAG_light",          TAG_light);
 
-    /* Light types. */
     lua_set_global_integer(state, "LIGHT_DIRECTIONAL",  LIGHT_DIRECTIONAL);
     lua_set_global_integer(state, "LIGHT_POINT",        LIGHT_POINT);
     lua_set_global_integer(state, "LIGHT_SPOT",         LIGHT_SPOT);
@@ -1240,6 +1400,47 @@ static void runtime_init(void) {
 
     physics_init(&g_scene_world->physics, g_scene_world->entities, SCENARIO_MAX_ENTITIES,
                  vec3_init_from_3(0, -9.8f, 0));
+
+    /* ---- Initialize Audio ---- */
+    {
+        int audio_sample_rate = 48000; /* Will be adjusted by the device */
+        int audio_channels = 2;
+        int audio_buffer_frames = 256;
+
+        memset(&g_audio_ctx, 0, sizeof(g_audio_ctx));
+        g_audio_ctx.sample_rate = audio_sample_rate;
+        g_audio_ctx.count = MAX_AUDIO_VOICES;
+        for (int i = 0; i < MAX_AUDIO_VOICES; i++) {
+            g_audio_slots[i].loaded = 0;
+            g_audio_slots[i].samples = NULL;
+            g_audio_ctx.voices[i] = &g_audio_slots[i].voice;
+        }
+        /* Listener starts at origin, facing -Z */
+        g_audio_ctx.listener.pos_x = 0;
+        g_audio_ctx.listener.pos_y = 0;
+        g_audio_ctx.listener.pos_z = 0;
+        g_audio_ctx.listener.forward_x = 0;
+        g_audio_ctx.listener.forward_y = 0;
+        g_audio_ctx.listener.forward_z = -1;
+
+        if (ap_init(audio_sample_rate, audio_channels, audio_buffer_frames,
+                    effect_mixer, &g_audio_ctx) == 0) {
+            printf("Audio initialized successfully.\n");
+            g_audio_initialized = 1;
+            
+            int actual_rate = ap_get_actual_sample_rate();
+            if (actual_rate > 0) {
+                g_audio_ctx.sample_rate = actual_rate;
+                if (g_audio_ctx.reverb.initialized) {
+                    g_audio_ctx.reverb.initialized = 0;
+                }
+            }
+            ap_start();
+        } else {
+            printf("Failed to initialize audio pipe.\n");
+        }
+    }
+
     scripts_init();
     if (scripts_add_lua("script.lua", runtime_bind_lua_state, g_scene_world) < 0)
         fprintf(stderr, "Failed to load Lua script: script.lua\n");
@@ -1276,7 +1477,6 @@ static void runtime_init(void) {
         g_emitter_gravity = 0.0f;
         g_emitter_loop = 1;
         g_emission_rate = 30.0f;
-        /* Need to set emitter in rasterizer using a temporary def */
         particle_emitter_definition tmp = DEFAULT_PARTICLE_EMITTER;
         tmp.position = g_emitter_pos;
         tmp.color = g_emitter_color;
@@ -1311,6 +1511,18 @@ static void runtime_reconfigure_thread_count(i32 new_thread_count)
 }
 
 static void runtime_shutdown(void) {
+    /* ---- Audio shutdown ---- */
+    ap_stop();
+    ap_shutdown();
+    for (int i = 0; i < MAX_AUDIO_VOICES; i++) {
+        if (g_audio_slots[i].samples) {
+            free(g_audio_slots[i].samples);
+            g_audio_slots[i].samples = NULL;
+        }
+        g_audio_slots[i].loaded = 0;
+    }
+    g_audio_initialized = 0;
+
     render_particle_system_shutdown();
     scripts_shutdown();
     if (g_jobgraph) {
@@ -1401,6 +1613,19 @@ static void runtime_start(void)
                 accumulator = 0.0;
                 break;
             }
+        }
+
+        /* ---- Update audio listener and feed pipe ---- */
+        if (g_audio_initialized) {
+            vec3 forward = vec3_normalize(vec3_sub(sc_cam_center, sc_cam_eye));
+            g_audio_ctx.listener.pos_x = sc_cam_eye.position.x;
+            g_audio_ctx.listener.pos_y = sc_cam_eye.position.y;
+            g_audio_ctx.listener.pos_z = sc_cam_eye.position.z;
+            g_audio_ctx.listener.forward_x = forward.position.x;
+            g_audio_ctx.listener.forward_y = forward.position.y;
+            g_audio_ctx.listener.forward_z = forward.position.z;
+            /* Velocities remain zero for now */
+            ap_update();
         }
 
         render_set_time((real)now);
