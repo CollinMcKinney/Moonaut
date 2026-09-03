@@ -4,7 +4,11 @@
 #include <math.h>
 
 #define AP_MAX_CHANNELS 8
+#define AP_MAX_MIXER_VOICES 8
 
+/* ------------------------------------------------------------------------
+   VOICE STRUCT (Per-Sound Instance)
+   ------------------------------------------------------------------------ */
 typedef struct {
     const float *samples;
     int          num_frames;
@@ -26,10 +30,13 @@ typedef struct {
     /* HRTF state: secondary notch (biquad) – per ear */
     float        secondary_bq_state[AP_MAX_CHANNELS * 2];
 
+    /* HRTF state: tertiary notch (biquad) – per ear */
+    float        tertiary_bq_state[AP_MAX_CHANNELS * 2];
+
     /* HRTF state: resonance peak (biquad) – per ear */
     float        resonance_state[AP_MAX_CHANNELS * 2];
 
-    /* Smoothed resonance gains (to avoid digital zipper artifacts) */
+    /* Smoothed resonance gains */
     float        smooth_res_gain_left;
     float        smooth_res_gain_right;
 
@@ -39,14 +46,18 @@ typedef struct {
     /* HRTF state: low‑pass (one‑pole) – second pole per ear (12dB/oct) */
     float        hrtf_lp2_state[AP_MAX_CHANNELS];
 
-    /* Smoothed HRTF parameters (to avoid digital zipper artifacts) */
+    /* Smoothed HRTF parameters */
     float        smooth_left_notch_freq;
     float        smooth_right_notch_freq;
     float        smooth_left_cutoff;
     float        smooth_right_cutoff;
 
+    /* Smoothed notch modulation parameters */
+    float        smooth_side_factor;
+    float        smooth_elev_norm;
+
     /* Delay buffer for ITD (Interaural Time Difference) */
-    float        delay_buffer[2][128]; /* 2 channels, 128 samples max (~2.6ms @ 48kHz) */
+    float        delay_buffer[2][128];
     int          delay_write_pos;
 
     /* ---- Artistic Effects ---- */
@@ -59,12 +70,15 @@ typedef struct {
     float        eq_q;              /* EQ bandwidth (e.g., 0.8) */
     float        eq_state[AP_MAX_CHANNELS * 2]; /* Biquad state for EQ */
 
-    /* ---- 3‑Band Directional Exciters (6 total) ---- */
-    float        pre_excit_state[3][AP_MAX_CHANNELS * 2];  /* Low(1500), Mid(7500), High(11000) */
-    float        post_excit_state[3][AP_MAX_CHANNELS * 2]; /* Low, Mid, High */
+    /* ---- Directional Exciters (Pre-Low + Post-Mid + Post-High) ---- */
+    float        pre_excit_state[2][AP_MAX_CHANNELS * 2];   /* only using index 0 (Low) */
+    float        post_excit_state[2][AP_MAX_CHANNELS * 2];  /* index 0: Mid, index 1: High */
+
+    /* ---- Frequency-Dependent ILD crossover states ---- */
+    float        crossover_lpf_state[AP_MAX_CHANNELS];      /* one‑pole low‑pass for left/right (stereo) */
 
     /* ================================================================
-       GEOMETRY HOOKS (Dormant until filled by renderer)
+       GEOMETRY HOOKS (Filled by renderer's compute shader)
        ================================================================ */
 
     /* ---- Occlusion (Wall Muffling) ---- */
@@ -91,15 +105,25 @@ typedef struct {
     int          looping;        /* 1 = loop, 0 = play once */
 } voice_t;
 
-#define AP_MAX_MIXER_VOICES 8
-
+/* ------------------------------------------------------------------------
+   LISTENER STRUCT
+   ------------------------------------------------------------------------ */
 typedef struct {
     float pos_x, pos_y, pos_z;
     float vel_x, vel_y, vel_z;
     float forward_x, forward_y, forward_z;
-    float up_x, up_y, up_z;
+    float up_x, up_y, up_z;            /* Camera's up vector (head-relative) */
+
+    /* ---- Internal smoothed forward (updated inside mixer) ---- */
+    float smooth_forward_x;
+    float smooth_forward_y;
+    float smooth_forward_z;
+    int   smooth_forward_initialized;
 } listener_t;
 
+/* ------------------------------------------------------------------------
+   REVERB STRUCT
+   ------------------------------------------------------------------------ */
 typedef struct {
     float wet;
     float decay;
@@ -126,6 +150,9 @@ typedef struct {
     float smooth_damping;    /* Current smoothed damping */
 } reverb_t;
 
+/* ------------------------------------------------------------------------
+   MIXER CONTEXT
+   ------------------------------------------------------------------------ */
 typedef struct {
     int      count;
     voice_t *voices[AP_MAX_MIXER_VOICES];
@@ -134,35 +161,48 @@ typedef struct {
     reverb_t reverb;
 } effect_mixer_ctx_t;
 
+/* ------------------------------------------------------------------------
+   GEOMETRY DATA STRUCT (Unified API – filled by compute shader)
+   ------------------------------------------------------------------------ */
+typedef struct audio_voice_geometry {
+    /* Occlusion */
+    float occlusion;              /* 0.0 = clear, 1.0 = fully blocked */
+
+    /* Portal (Doorway / Aperture) */
+    int   portal_active;          /* 1 if sound is routed through a portal */
+    float portal_pos_x;           /* World X position of the doorway */
+    float portal_pos_y;           /* World Y position of the doorway */
+    float portal_pos_z;           /* World Z position of the doorway */
+    float portal_dampening;       /* Extra muffling factor (0.0..1.0) */
+
+    /* Early Reflections (Slap Echo) */
+    float reflection_delay_sec;   /* Delay in seconds (e.g., 0.015) */
+    float reflection_gain;        /* Volume of the reflection (0.0 to 1.0) */
+} audio_voice_geometry_t;
+
+/* ------------------------------------------------------------------------
+   PUBLIC API
+   ------------------------------------------------------------------------ */
 void effect_mixer(float *buffer, int frames, int out_channels, void *userdata);
 
-/* ---- Geometry Data Setters ---- */
-static inline void audio_voice_set_occlusion(voice_t *v, float occlusion) {
-    if (v) v->occlusion = occlusion;
+/* ---- Geometry Setters (Call from CPU after compute shader readback) ---- */
+static inline void audio_voice_set_geometry(voice_t *v, const audio_voice_geometry_t *geo) {
+    if (!v || !geo) return;
+    v->occlusion = geo->occlusion;
+    v->portal_active = geo->portal_active;
+    v->portal_pos_x  = geo->portal_pos_x;
+    v->portal_pos_y  = geo->portal_pos_y;
+    v->portal_pos_z  = geo->portal_pos_z;
+    v->portal_dampening = geo->portal_dampening;
+    v->reflection_delay_sec = geo->reflection_delay_sec;
+    v->reflection_gain = geo->reflection_gain;
 }
-static inline void audio_voice_set_portal(voice_t *v, float x, float y, float z, float dampening) {
-    if (v) {
-        v->portal_active = 1;
-        v->portal_pos_x = x;
-        v->portal_pos_y = y;
-        v->portal_pos_z = z;
-        v->portal_dampening = dampening;
-    }
-}
-static inline void audio_voice_clear_portal(voice_t *v) {
-    if (v) v->portal_active = 0;
-}
-static inline void audio_voice_set_reflection(voice_t *v, float delay_sec, float gain) {
-    if (v) {
-        v->reflection_delay_sec = delay_sec;
-        v->reflection_gain = gain;
-    }
-}
-static inline void audio_reverb_set_room(reverb_t *rv, float decay, float damping) {
+
+static inline void audio_set_listener_room(reverb_t *rv, float decay, float damping) {
     if (rv) {
         rv->target_decay = decay;
         rv->target_damping = damping;
     }
 }
 
-#endif
+#endif /* AUDIO_MIXER_H */

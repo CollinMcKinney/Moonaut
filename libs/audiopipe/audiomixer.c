@@ -1,5 +1,9 @@
 /*
-  audiomixer.c - Per‑ear independent HRTF + ITD
+    audiomixer.c
+        Parametric HRTF (with 3 dynamic pinna notches, frontal resonance,
+    and torso shadow), ITD, frequency‑dependent ILD, perceptual distance,
+    Doppler, directional exciters (pre‑low, post‑mid, post‑high),
+    tube saturation, peak EQ, soft‑knee limiter, and zipper‑free smoothing.
 */
 
 /* ---- Tuning Constants ---- */
@@ -28,6 +32,9 @@
 #define SECONDARY_NOTCH_MAX_FREQ    13000.0f
 #define SECONDARY_NOTCH_SCALE   0.5f
 
+#define TERTIARY_NOTCH_FREQ     14000.0f
+#define TERTIARY_NOTCH_SCALE    0.25f
+
 #define RESONANCE_FREQ          2500.0f
 #define RESONANCE_Q             1.0f
 #define RESONANCE_GAIN_MAX      4.0f
@@ -40,26 +47,30 @@
 #define PERCEPTUAL_DB_PER_DOUBLING 3.0f
 
 #define HRTF_SMOOTH_ALPHA       0.2f
-#define POS_SMOOTH_ALPHA        0.15f
+#define NOTCH_MOD_SMOOTH_ALPHA  0.3f
+#define POS_SMOOTH_ALPHA        0.0024f
 #define RELEASE_DECAY           0.01f
 #define REVERB_SMOOTH_ALPHA     0.05f
+#define HEAD_SMOOTH_ALPHA       0.15f
 
-/* ---- 4‑Band Directional Exciters ---- */
-#define PRE_EXCIT_LOW_FREQ      1500.0f
+/* ---- Directional Exciters ---- */
+#define PRE_EXCIT_LOW_FREQ      1500.0f   /* Generates harmonics for low-frequency sounds */
 #define PRE_EXCIT_LOW_GAIN      2.0f
 #define PRE_EXCIT_LOW_Q         0.6f
 
-#define PRE_EXCIT_MID_FREQ      NOTCH_BASE_FREQ   /* 7500 Hz */
-#define PRE_EXCIT_MID_GAIN      3.0f
-#define PRE_EXCIT_MID_Q         0.8f
-
-#define POST_EXCIT_MID_FREQ     NOTCH_BASE_FREQ   /* 7500 Hz */
+#define POST_EXCIT_MID_FREQ     NOTCH_BASE_FREQ   /* 7500 Hz – primary notch boost */
 #define POST_EXCIT_MID_GAIN     3.0f
 #define POST_EXCIT_MID_Q        0.8f
 
-#define POST_EXCIT_HIGH_FREQ    SECONDARY_NOTCH_BASE_FREQ   /* 11000 Hz */
+#define POST_EXCIT_HIGH_FREQ    SECONDARY_NOTCH_BASE_FREQ   /* 11000 Hz – secondary notch boost */
 #define POST_EXCIT_HIGH_GAIN    3.0f
 #define POST_EXCIT_HIGH_Q       0.8f
+
+/* ---- Frequency-Dependent ILD Crossover ---- */
+#define CROSSOVER_FREQ          1200.0f
+
+/* ---- Torso Shadow ---- */
+#define TORSO_BOOST_REFERENCE_DB  2.0f
 
 #include "audiomixer.h"
 #include <string.h>
@@ -115,8 +126,8 @@ static void reverb_init(reverb_t *rv, int sample_rate)
 
     rv->sample_rate = sample_rate;
     rv->wet = 0.2f;
-    rv->decay = 0.4f;    /* Medium‑small room – tight, clean */
-    rv->damping = 0.7f;  /* Darker tail to hide metallic ringing */
+    rv->decay = 0.4f;
+    rv->damping = 0.7f;
     rv->ap_gain = 0.7f;
 
     for (i = 0; i < 8; i++) {
@@ -140,7 +151,6 @@ static void reverb_init(reverb_t *rv, int sample_rate)
 
     rv->initialized = 1;
 
-    /* Init geometry targets to current values */
     rv->target_decay = rv->decay;
     rv->target_damping = rv->damping;
     rv->smooth_decay = rv->decay;
@@ -290,7 +300,7 @@ static float distance_attenuation(float distance, float rolloff)
 }
 
 /* ========================================================================
-   PAN GAINS (Constant Power)
+   PAN GAINS (Constant Power) – Used as base for frequency‑dependent ILD
    ======================================================================== */
 static void pan_gains(float angle_rad, float *left_gain, float *right_gain)
 {
@@ -325,16 +335,42 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
         reverb_update(&ctx->reverb);
     }
 
-    float lf_x = ctx->listener.forward_x;
-    float lf_y = ctx->listener.forward_y;
-    float lf_z = ctx->listener.forward_z;
-    float up_x = 0.0f, up_y = 1.0f, up_z = 0.0f;
+    /* ---- Smooth listener rotation (internal) ---- */
+    float target_fx = ctx->listener.forward_x;
+    float target_fy = ctx->listener.forward_y;
+    float target_fz = ctx->listener.forward_z;
+
+    if (!ctx->listener.smooth_forward_initialized) {
+        ctx->listener.smooth_forward_x = target_fx;
+        ctx->listener.smooth_forward_y = target_fy;
+        ctx->listener.smooth_forward_z = target_fz;
+        ctx->listener.smooth_forward_initialized = 1;
+    }
+
+    ctx->listener.smooth_forward_x += HEAD_SMOOTH_ALPHA * (target_fx - ctx->listener.smooth_forward_x);
+    ctx->listener.smooth_forward_y += HEAD_SMOOTH_ALPHA * (target_fy - ctx->listener.smooth_forward_y);
+    ctx->listener.smooth_forward_z += HEAD_SMOOTH_ALPHA * (target_fz - ctx->listener.smooth_forward_z);
+
+    float lf_x = ctx->listener.smooth_forward_x;
+    float lf_y = ctx->listener.smooth_forward_y;
+    float lf_z = ctx->listener.smooth_forward_z;
+
+    float up_x = ctx->listener.up_x;
+    float up_y = ctx->listener.up_y;
+    float up_z = ctx->listener.up_z;
+    float up_len = sqrtf(up_x*up_x + up_y*up_y + up_z*up_z);
+    if (up_len > 0.001f) {
+        up_x /= up_len; up_y /= up_len; up_z /= up_len;
+    } else {
+        up_x = 0.0f; up_y = 1.0f; up_z = 0.0f;
+    }
+
     float right_x = lf_y * up_z - lf_z * up_y;
     float right_y = lf_z * up_x - lf_x * up_z;
     float right_z = lf_x * up_y - lf_y * up_x;
-    float len = sqrtf(right_x*right_x + right_y*right_y + right_z*right_z);
-    if (len > 0.0f) {
-        right_x /= len; right_y /= len; right_z /= len;
+    float right_len = sqrtf(right_x*right_x + right_y*right_y + right_z*right_z);
+    if (right_len > 0.001f) {
+        right_x /= right_len; right_y /= right_len; right_z /= right_len;
     } else {
         right_x = 1.0f; right_y = 0.0f; right_z = 0.0f;
     }
@@ -374,22 +410,30 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
             float atten = distance_attenuation(distance, vo->rolloff);
             if (atten <= 0.0f) continue;
 
+            /* ---- Head-relative azimuth ---- */
             float proj_forward = dx * lf_x + dy * lf_y + dz * lf_z;
             float proj_right   = dx * right_x + dy * right_y + dz * right_z;
             float angle = atan2f(proj_right, proj_forward);
+            float frontness = proj_forward / (distance + 0.001f);
+            frontness = fminf(fmaxf(frontness, -1.0f), 1.0f);
+
             float left_pan_gain, right_pan_gain;
             pan_gains(angle, &left_pan_gain, &right_pan_gain);
 
+            /* ---- Head-relative elevation ---- */
+            float proj_up = dx * up_x + dy * up_y + dz * up_z;
+            float elevation = asinf(proj_up / (distance + 0.001f));
+            float elev_norm = elevation / (3.14159265f / 2.0f);
+            if (elev_norm > 1.0f) elev_norm = 1.0f;
+            if (elev_norm < -1.0f) elev_norm = -1.0f;
+
+            /* ---- Distance low‑pass (air absorption) ---- */
             float cutoff = 1.0f - atten;
             if (cutoff < 0.0f) cutoff = 0.0f;
             if (cutoff > 0.95f) cutoff = 0.95f;
             float dist_cutoff = 1.0f - cutoff * DIST_CUTOFF_SCALE;
 
-            float elevation = asinf(dy / (distance + 0.001f));
-            float elev_norm = elevation / (3.14159265f / 2.0f);
-            if (elev_norm > 1.0f) elev_norm = 1.0f;
-            if (elev_norm < -1.0f) elev_norm = -1.0f;
-
+            /* ---- Elevation low‑pass (log mapping) ---- */
             float elev_norm_smooth = (elevation + 1.5708f) / 3.14159265f;
             if (elev_norm_smooth < 0.0f) elev_norm_smooth = 0.0f;
             if (elev_norm_smooth > 1.0f) elev_norm_smooth = 1.0f;
@@ -442,11 +486,7 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 }
             }
 
-            /* ================================================================
-               SIGNAL CHAIN – ARTISTIC → SPATIAL
-               ================================================================ */
-
-            /* 1. Downmix to mono */
+            /* ---- Downmix to mono ---- */
             float mono_sample = 0.0f;
             for (c = 0; c < vo->channels; c++) {
                 mono_sample += src[c];
@@ -454,47 +494,34 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
             mono_sample /= (float)vo->channels;
 
             /* ================================================================
-               2. PRE‑SATURATION EXCITERS (Low + Mid)
+               SIGNAL CHAIN – ARTISTIC → SPATIAL
                ================================================================ */
-            float b0, b1, b2, a1, a2;
 
-            /* ---- Pre‑Low (1500 Hz) – drives low harmonics into saturation ---- */
+            /* 2. PRE‑SATURATION EXCITER (Low only) */
+            float b0, b1, b2, a1, a2;
             compute_peak_coeffs(PRE_EXCIT_LOW_FREQ, sample_rate, PRE_EXCIT_LOW_Q, PRE_EXCIT_LOW_GAIN,
                                 &b0, &b1, &b2, &a1, &a2);
             mono_sample = biquad_process(mono_sample, vo->pre_excit_state[0],
                                          b0, b1, b2, a1, a2);
 
-            /* ---- Pre‑Mid (7500 Hz) – primary notch range ---- */
-            compute_peak_coeffs(PRE_EXCIT_MID_FREQ, sample_rate, PRE_EXCIT_MID_Q, PRE_EXCIT_MID_GAIN,
-                                &b0, &b1, &b2, &a1, &a2);
-            mono_sample = biquad_process(mono_sample, vo->pre_excit_state[1],
-                                         b0, b1, b2, a1, a2);
-
-            /* ================================================================
-               3. Tube Saturation (compresses + generates harmonics)
-               ================================================================ */
+            /* 3. Tube Saturation */
             if (vo->drive > 0.0f) {
                 float saturated = tube_saturate(mono_sample, vo->drive);
                 mono_sample = mono_sample * (1.0f - vo->sat_mix) + saturated * vo->sat_mix;
             }
 
-            /* ================================================================
-               4. POST‑SATURATION EXCITERS (Mid + High)
-               ================================================================ */
-
-            /* ---- Post‑Mid (7500 Hz) – primary notch range ---- */
+            /* 4. POST‑SATURATION EXCITERS (Mid + High) */
             compute_peak_coeffs(POST_EXCIT_MID_FREQ, sample_rate, POST_EXCIT_MID_Q, POST_EXCIT_MID_GAIN,
                                 &b0, &b1, &b2, &a1, &a2);
             mono_sample = biquad_process(mono_sample, vo->post_excit_state[0],
                                          b0, b1, b2, a1, a2);
 
-            /* ---- Post‑High (11000 Hz) – secondary notch range ---- */
             compute_peak_coeffs(POST_EXCIT_HIGH_FREQ, sample_rate, POST_EXCIT_HIGH_Q, POST_EXCIT_HIGH_GAIN,
                                 &b0, &b1, &b2, &a1, &a2);
             mono_sample = biquad_process(mono_sample, vo->post_excit_state[1],
                                          b0, b1, b2, a1, a2);
 
-            /* 5. Artistic EQ (After Saturation – clean tone shaping) */
+            /* 5. Artistic EQ */
             if (vo->eq_gain_db != 0.0f) {
                 float b0_e, b1_e, b2_e, a1_e, a2_e;
                 compute_peak_coeffs(vo->eq_freq, sample_rate, vo->eq_q, vo->eq_gain_db,
@@ -507,33 +534,7 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
             if (vol < 0.0001f) vol = 0.0001f;
             mono_sample *= vol;
 
-            /* ================================================================
-               SPATIALIZATION – PER‑EAR HRTF
-               ================================================================ */
-
-            float ear_angle_rad = EAR_ANGLE_DEGREES * 3.14159265f / 180.0f;
-            float cos_a = cosf(ear_angle_rad);
-            float sin_a = sinf(ear_angle_rad);
-
-            float right_forward_x = lf_x * cos_a + right_x * sin_a;
-            float right_forward_y = lf_y * cos_a + right_y * sin_a;
-            float right_forward_z = lf_z * cos_a + right_z * sin_a;
-
-            float left_forward_x = lf_x * cos_a - right_x * sin_a;
-            float left_forward_y = lf_y * cos_a - right_y * sin_a;
-            float left_forward_z = lf_z * cos_a - right_z * sin_a;
-
-            float left_ear_proj = dx * left_forward_x + dy * left_forward_y + dz * left_forward_z;
-            float right_ear_proj = dx * right_forward_x + dy * right_forward_y + dz * right_forward_z;
-
-            float left_frontness = left_ear_proj / (distance + 0.001f);
-            float right_frontness = right_ear_proj / (distance + 0.001f);
-            left_frontness = fminf(fmaxf(left_frontness, -1.0f), 1.0f);
-            right_frontness = fminf(fmaxf(right_frontness, -1.0f), 1.0f);
-
-            /* ================================================================
-               ITD with SMOOTH CROSSFADE (eliminates pops when crossing center)
-               ================================================================ */
+            /* ---- ITD (smooth crossfade) ---- */
             int max_delay_samples = (int)(ITD_MAX_DELAY_SEC * sample_rate + 0.5f);
             if (max_delay_samples < 1) max_delay_samples = 1;
             if (max_delay_samples > 127) max_delay_samples = 127;
@@ -553,7 +554,6 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 delayed_sample = vo->delay_buffer[0][read_pos];
             }
 
-            /* ---- Continuous crossfade instead of hard switch ---- */
             float pan = sinf(angle);
             float left_blend = (pan > 0.0f) ? pan : 0.0f;
             float right_blend = (pan < 0.0f) ? -pan : 0.0f;
@@ -561,50 +561,53 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
             float left_hrtf_input = (1.0f - left_blend) * mono_sample + left_blend * delayed_sample;
             float right_hrtf_input = (1.0f - right_blend) * mono_sample + right_blend * delayed_sample;
 
-            /* HRTF Parameters */
+            /* ---- HRTF parameters (smoothed) ---- */
             float side_factor = fabsf(angle) / 1.5708f;
             if (side_factor > 1.0f) side_factor = 1.0f;
 
-            float left_behind_factor = (left_frontness < 0.0f) ? -left_frontness : 0.0f;
-            float right_behind_factor = (right_frontness < 0.0f) ? -right_frontness : 0.0f;
+            static int first_frame = 1;
+            if (first_frame) {
+                vo->smooth_side_factor = side_factor;
+                vo->smooth_elev_norm = elev_norm;
+                first_frame = 0;
+            }
+            float mod_alpha = NOTCH_MOD_SMOOTH_ALPHA;
+            vo->smooth_side_factor += mod_alpha * (side_factor - vo->smooth_side_factor);
+            vo->smooth_elev_norm += mod_alpha * (elev_norm - vo->smooth_elev_norm);
 
-            float left_notch_gain_side = NOTCH_GAIN_SIDE * side_factor;
-            float left_notch_gain_behind = NOTCH_GAIN_BEHIND * left_behind_factor;
-            float left_notch_gain_elev = NOTCH_GAIN_ELEV * elev_norm;
+            float smooth_side = vo->smooth_side_factor;
+            float smooth_elev = vo->smooth_elev_norm;
+
+            float behind_factor = (frontness < 0.0f) ? -frontness : 0.0f;
+
+            float left_notch_gain_side = NOTCH_GAIN_SIDE * smooth_side;
+            float left_notch_gain_behind = NOTCH_GAIN_BEHIND * behind_factor;
+            float left_notch_gain_elev = NOTCH_GAIN_ELEV * smooth_elev;
             float left_total_notch_gain = left_notch_gain_side + left_notch_gain_behind + left_notch_gain_elev;
             if (left_total_notch_gain > 0.0f) left_total_notch_gain = 0.0f;
             if (left_total_notch_gain < NOTCH_GAIN_MIN) left_total_notch_gain = NOTCH_GAIN_MIN;
 
-            float right_notch_gain_side = NOTCH_GAIN_SIDE * side_factor;
-            float right_notch_gain_behind = NOTCH_GAIN_BEHIND * right_behind_factor;
-            float right_notch_gain_elev = NOTCH_GAIN_ELEV * elev_norm;
+            float right_notch_gain_side = NOTCH_GAIN_SIDE * smooth_side;
+            float right_notch_gain_behind = NOTCH_GAIN_BEHIND * behind_factor;
+            float right_notch_gain_elev = NOTCH_GAIN_ELEV * smooth_elev;
             float right_total_notch_gain = right_notch_gain_side + right_notch_gain_behind + right_notch_gain_elev;
             if (right_total_notch_gain > 0.0f) right_total_notch_gain = 0.0f;
             if (right_total_notch_gain < NOTCH_GAIN_MIN) right_total_notch_gain = NOTCH_GAIN_MIN;
 
-            float raw_left_notch_freq = NOTCH_BASE_FREQ + NOTCH_FRONT_SHIFT * left_frontness + NOTCH_ELEV_SHIFT * elev_norm;
+            float raw_left_notch_freq = NOTCH_BASE_FREQ + NOTCH_FRONT_SHIFT * frontness + NOTCH_ELEV_SHIFT * smooth_elev;
             raw_left_notch_freq = fminf(fmaxf(raw_left_notch_freq, NOTCH_MIN_FREQ), NOTCH_MAX_FREQ);
-
-            float raw_right_notch_freq = NOTCH_BASE_FREQ + NOTCH_FRONT_SHIFT * right_frontness + NOTCH_ELEV_SHIFT * elev_norm;
-            raw_right_notch_freq = fminf(fmaxf(raw_right_notch_freq, NOTCH_MIN_FREQ), NOTCH_MAX_FREQ);
+            float raw_right_notch_freq = raw_left_notch_freq; /* symmetric */
 
             float left_behind_cutoff = 1.0f;
-            if (left_behind_factor > 0.01f) {
-                float freq = 4000.0f - 3000.0f * left_behind_factor;
+            if (behind_factor > 0.01f) {
+                float freq = 4000.0f - 3000.0f * behind_factor;
                 freq = fmaxf(freq, 800.0f);
                 left_behind_cutoff = freq / sample_rate;
                 left_behind_cutoff = fminf(fmaxf(left_behind_cutoff, 0.01f), 1.0f);
             }
+            float right_behind_cutoff = left_behind_cutoff;
 
-            float right_behind_cutoff = 1.0f;
-            if (right_behind_factor > 0.01f) {
-                float freq = 4000.0f - 3000.0f * right_behind_factor;
-                freq = fmaxf(freq, 800.0f);
-                right_behind_cutoff = freq / sample_rate;
-                right_behind_cutoff = fminf(fmaxf(right_behind_cutoff, 0.01f), 1.0f);
-            }
-
-            float side_cutoff = 1.0f - SIDE_CUTOFF_SCALE * side_factor;
+            float side_cutoff = 1.0f - SIDE_CUTOFF_SCALE * smooth_side;
 
             float raw_left_cutoff = dist_cutoff;
             if (elev_cutoff < raw_left_cutoff) raw_left_cutoff = elev_cutoff;
@@ -614,18 +617,13 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
             if (elev_cutoff < raw_right_cutoff) raw_right_cutoff = elev_cutoff;
             if (right_behind_cutoff < raw_right_cutoff) raw_right_cutoff = right_behind_cutoff;
 
-            /* Smooth HRTF */
             float hrtf_alpha = HRTF_SMOOTH_ALPHA;
-
-            static int first_frame = 1;
             if (first_frame) {
                 vo->smooth_left_notch_freq = raw_left_notch_freq;
                 vo->smooth_right_notch_freq = raw_right_notch_freq;
                 vo->smooth_left_cutoff = raw_left_cutoff;
                 vo->smooth_right_cutoff = raw_right_cutoff;
-                first_frame = 0;
             }
-
             vo->smooth_left_notch_freq += hrtf_alpha * (raw_left_notch_freq - vo->smooth_left_notch_freq);
             vo->smooth_right_notch_freq += hrtf_alpha * (raw_right_notch_freq - vo->smooth_right_notch_freq);
             vo->smooth_left_cutoff += hrtf_alpha * (raw_left_cutoff - vo->smooth_left_cutoff);
@@ -642,28 +640,21 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 if (side_cutoff < right_cutoff) right_cutoff = side_cutoff;
             }
 
-            /* Apply HRTF */
             float Q = NOTCH_Q;
             float b0_notch, b1_notch, b2_notch, a1_notch, a2_notch;
 
-            /* ---- LEFT EAR ---- */
-
-            /* Primary Notch */
+            /* ---- LEFT EAR HRTF ---- */
             if (left_total_notch_gain < -0.1f) {
                 compute_peak_coeffs(left_notch_freq, sample_rate, Q, left_total_notch_gain,
                                     &b0_notch, &b1_notch, &b2_notch, &a1_notch, &a2_notch);
                 left_hrtf_input = biquad_process(left_hrtf_input, &vo->hrtf_bq_state[0],
                                                  b0_notch, b1_notch, b2_notch, a1_notch, a2_notch);
             }
-
-            /* ---- DYNAMIC SECONDARY NOTCH (Shifts with frontness & elevation) ---- */
+            /* Secondary notch (left) */
             float left_secondary_freq = SECONDARY_NOTCH_BASE_FREQ
-                                      + SECONDARY_NOTCH_SHIFT * left_frontness
-                                      + SECONDARY_NOTCH_ELEV_SHIFT * elev_norm;
-            left_secondary_freq = fminf(fmaxf(left_secondary_freq,
-                                              SECONDARY_NOTCH_MIN_FREQ),
-                                        SECONDARY_NOTCH_MAX_FREQ);
-
+                                      + SECONDARY_NOTCH_SHIFT * frontness
+                                      + SECONDARY_NOTCH_ELEV_SHIFT * smooth_elev;
+            left_secondary_freq = fminf(fmaxf(left_secondary_freq, SECONDARY_NOTCH_MIN_FREQ), SECONDARY_NOTCH_MAX_FREQ);
             float left_secondary_gain = left_total_notch_gain * SECONDARY_NOTCH_SCALE;
             if (left_secondary_gain < -0.1f) {
                 float b0_s, b1_s, b2_s, a1_s, a2_s;
@@ -672,9 +663,17 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 left_hrtf_input = biquad_process(left_hrtf_input, &vo->secondary_bq_state[0],
                                                  b0_s, b1_s, b2_s, a1_s, a2_s);
             }
-
-            /* Pinna Resonance */
-            float left_res_gain_db = RESONANCE_GAIN_MAX * fmaxf(left_frontness, 0.0f);
+            /* Tertiary notch (left) */
+            float left_tertiary_gain = left_total_notch_gain * TERTIARY_NOTCH_SCALE;
+            if (left_tertiary_gain < -0.1f) {
+                float b0_t, b1_t, b2_t, a1_t, a2_t;
+                compute_peak_coeffs(TERTIARY_NOTCH_FREQ, sample_rate, Q, left_tertiary_gain,
+                                    &b0_t, &b1_t, &b2_t, &a1_t, &a2_t);
+                left_hrtf_input = biquad_process(left_hrtf_input, &vo->tertiary_bq_state[0],
+                                                 b0_t, b1_t, b2_t, a1_t, a2_t);
+            }
+            /* Resonance (left) */
+            float left_res_gain_db = RESONANCE_GAIN_MAX * fmaxf(frontness, 0.0f);
             vo->smooth_res_gain_left += HRTF_SMOOTH_ALPHA * (left_res_gain_db - vo->smooth_res_gain_left);
             left_res_gain_db = vo->smooth_res_gain_left;
             if (left_res_gain_db > RESONANCE_THRESHOLD) {
@@ -684,31 +683,24 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 left_hrtf_input = biquad_process(left_hrtf_input, &vo->resonance_state[0],
                                                  b0_r, b1_r, b2_r, a1_r, a2_r);
             }
-
-            /* 2‑pole Low‑Pass */
+            /* Low-pass (left) */
             if (left_cutoff < 0.9999f) {
                 left_hrtf_input = lowpass(left_hrtf_input, &vo->hrtf_lp_state[0], left_cutoff);
                 left_hrtf_input = lowpass(left_hrtf_input, &vo->hrtf_lp2_state[0], left_cutoff);
             }
 
-            /* ---- RIGHT EAR ---- */
-
-            /* Primary Notch */
+            /* ---- RIGHT EAR HRTF (mirrors left, using right_notch_freq) ---- */
             if (right_total_notch_gain < -0.1f) {
                 compute_peak_coeffs(right_notch_freq, sample_rate, Q, right_total_notch_gain,
                                     &b0_notch, &b1_notch, &b2_notch, &a1_notch, &a2_notch);
                 right_hrtf_input = biquad_process(right_hrtf_input, &vo->hrtf_bq_state[2],
                                                   b0_notch, b1_notch, b2_notch, a1_notch, a2_notch);
             }
-
-            /* ---- DYNAMIC SECONDARY NOTCH (Right ear) ---- */
+            /* Secondary notch (right) */
             float right_secondary_freq = SECONDARY_NOTCH_BASE_FREQ
-                                       + SECONDARY_NOTCH_SHIFT * right_frontness
-                                       + SECONDARY_NOTCH_ELEV_SHIFT * elev_norm;
-            right_secondary_freq = fminf(fmaxf(right_secondary_freq,
-                                               SECONDARY_NOTCH_MIN_FREQ),
-                                         SECONDARY_NOTCH_MAX_FREQ);
-
+                                       + SECONDARY_NOTCH_SHIFT * frontness
+                                       + SECONDARY_NOTCH_ELEV_SHIFT * smooth_elev;
+            right_secondary_freq = fminf(fmaxf(right_secondary_freq, SECONDARY_NOTCH_MIN_FREQ), SECONDARY_NOTCH_MAX_FREQ);
             float right_secondary_gain = right_total_notch_gain * SECONDARY_NOTCH_SCALE;
             if (right_secondary_gain < -0.1f) {
                 float b0_s, b1_s, b2_s, a1_s, a2_s;
@@ -717,9 +709,17 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 right_hrtf_input = biquad_process(right_hrtf_input, &vo->secondary_bq_state[2],
                                                   b0_s, b1_s, b2_s, a1_s, a2_s);
             }
-
-            /* Pinna Resonance */
-            float right_res_gain_db = RESONANCE_GAIN_MAX * fmaxf(right_frontness, 0.0f);
+            /* Tertiary notch (right) */
+            float right_tertiary_gain = right_total_notch_gain * TERTIARY_NOTCH_SCALE;
+            if (right_tertiary_gain < -0.1f) {
+                float b0_t, b1_t, b2_t, a1_t, a2_t;
+                compute_peak_coeffs(TERTIARY_NOTCH_FREQ, sample_rate, Q, right_tertiary_gain,
+                                    &b0_t, &b1_t, &b2_t, &a1_t, &a2_t);
+                right_hrtf_input = biquad_process(right_hrtf_input, &vo->tertiary_bq_state[2],
+                                                  b0_t, b1_t, b2_t, a1_t, a2_t);
+            }
+            /* Resonance (right) */
+            float right_res_gain_db = RESONANCE_GAIN_MAX * fmaxf(frontness, 0.0f);
             vo->smooth_res_gain_right += HRTF_SMOOTH_ALPHA * (right_res_gain_db - vo->smooth_res_gain_right);
             right_res_gain_db = vo->smooth_res_gain_right;
             if (right_res_gain_db > RESONANCE_THRESHOLD) {
@@ -729,16 +729,43 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
                 right_hrtf_input = biquad_process(right_hrtf_input, &vo->resonance_state[2],
                                                   b0_r, b1_r, b2_r, a1_r, a2_r);
             }
-
-            /* 2‑pole Low‑Pass */
+            /* Low-pass (right) */
             if (right_cutoff < 0.9999f) {
                 right_hrtf_input = lowpass(right_hrtf_input, &vo->hrtf_lp_state[1], right_cutoff);
                 right_hrtf_input = lowpass(right_hrtf_input, &vo->hrtf_lp2_state[1], right_cutoff);
             }
 
-            /* PAN (ILD) */
-            float left_signal = left_hrtf_input * left_pan_gain;
-            float right_signal = right_hrtf_input * right_pan_gain;
+            /* ---- Frequency-Dependent ILD (Head Shadow) ---- */
+            float cross_coeff = expf(-2.0f * 3.14159265f * CROSSOVER_FREQ / sample_rate);
+
+            float low_left = left_hrtf_input * (1.0f - cross_coeff) + vo->crossover_lpf_state[0] * cross_coeff;
+            vo->crossover_lpf_state[0] = low_left;
+            float low_right = right_hrtf_input * (1.0f - cross_coeff) + vo->crossover_lpf_state[1] * cross_coeff;
+            vo->crossover_lpf_state[1] = low_right;
+
+            float high_left = left_hrtf_input - low_left;
+            float high_right = right_hrtf_input - low_right;
+
+            /* Aggressive high-band panning */
+            float side_aggressive = vo->smooth_side_factor;
+            float high_left_gain = 1.0f - 0.9f * side_aggressive * (angle > 0.0f ? 1.0f : 0.0f);
+            float high_right_gain = 1.0f - 0.9f * side_aggressive * (angle < 0.0f ? 1.0f : 0.0f);
+            if (high_left_gain < 0.0f) high_left_gain = 0.0f;
+            if (high_right_gain < 0.0f) high_right_gain = 0.0f;
+
+            /* ---- TORSO SHADOW (Broad Low-Mid EQ) ---- */
+            float torso_boost_db = TORSO_BOOST_REFERENCE_DB * frontness * (1.0f - fabsf(smooth_side) * 0.5f);
+            if (torso_boost_db > 3.0f) torso_boost_db = 3.0f;
+            if (torso_boost_db < -3.0f) torso_boost_db = -3.0f;
+            float torso_gain = powf(10.0f, torso_boost_db / 20.0f);
+
+            /* Apply torso shadow to the low bands only */
+            low_left *= torso_gain;
+            low_right *= torso_gain;
+
+            /* ---- Recombine ---- */
+            float left_signal = low_left * left_pan_gain + high_left * high_left_gain;
+            float right_signal = low_right * right_pan_gain + high_right * high_right_gain;
 
             float frame[AP_MAX_CHANNELS];
             frame[0] = left_signal;
@@ -754,11 +781,7 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
         }
     }
 
-    /* ================================================================
-       DYNAMIC REVERB WET (Calculated from distance + room size)
-       ================================================================ */
-
-    /* 1. Compute average distance of all active voices */
+    /* ---- Dynamic Reverb Wet ---- */
     float total_dist = 0.0f;
     int voice_count = 0;
     for (v = 0; v < ctx->count; v++) {
@@ -781,33 +804,21 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata)
 
     if (voice_count > 0) {
         float avg_dist = total_dist / (float)voice_count;
-
-        /* Room scale: 0 = small (closet), 1 = large (cathedral) */
         float room_scale = fminf(ctx->reverb.target_decay / 2.0f, 1.0f);
-        if (ctx->reverb.target_decay <= 0.01f) room_scale = 0.5f; /* fallback */
-
-        /* Distance factor: 0 at 0m, asymptotically approaches 1 at ~20m */
+        if (ctx->reverb.target_decay <= 0.01f) room_scale = 0.5f;
         float distance_factor = 1.0f - expf(-avg_dist * 0.1f);
-
-        /* Calculate target wet: 0.05 (close) to 0.45 (far) scaled by room size */
         float target_wet = 0.05f + 0.40f * distance_factor * (0.5f + 0.5f * room_scale);
-
-        /* Clamp */
         if (target_wet > 0.5f) target_wet = 0.5f;
         if (target_wet < 0.0f) target_wet = 0.0f;
 
-        /* Smooth to avoid pops (alpha = 0.05) */
         static float smooth_wet = 0.0f;
         smooth_wet += 0.05f * (target_wet - smooth_wet);
         ctx->reverb.wet = smooth_wet;
     }
 
-    /* ---- Reverb on final mix ---- */
     reverb_process(&ctx->reverb, buffer, frames, out_channels);
 
-    /* ================================================================
-       MASTER SOFT‑KNEE LIMITER (Artistic Glue)
-       ================================================================ */
+    /* ---- Master Soft-Knee Limiter ---- */
     int total_samples = frames * out_channels;
     float master_gain = 1.0f;
     float threshold = 0.8f;
