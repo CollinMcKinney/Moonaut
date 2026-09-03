@@ -14,6 +14,7 @@ libs/menus/** linguist-vendored
 *.frag linguist-language=GLSL
 *.geom linguist-language=GLSL
 *.vert linguist-language=GLSL
+*.comp linguist-language=GLSL
 
 *.hlsl linguist-language=HLSL
 
