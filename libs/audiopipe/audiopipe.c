@@ -263,7 +263,7 @@ int ap_init(int sample_rate, int channels, int buffer_frames,
         goto error;
     }
     minPeriodFrames = (UINT32)((hnsRequestedDuration * sample_rate) / 10000000.0);
-    g_periodFrames = minPeriodFrames > 0 ? minPeriodFrames : buffer_frames;
+    g_periodFrames = g_bufferFrameCount;
     if (g_periodFrames > g_bufferFrameCount) g_periodFrames = g_bufferFrameCount;
     printf("Period frames: %u (will write this many per update)\n", g_periodFrames);
 

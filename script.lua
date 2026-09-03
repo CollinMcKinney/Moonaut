@@ -9,34 +9,35 @@ clear_color(0, 32, 64)
 -- --------------------------------------------------------
 light_clear()
 
-local I = 20
+local I = 300
+local R = 10
 
 -- Point light 0: blue, follows sphere (updated in update())
 light_set_type(0, LIGHT_POINT)
 light_set_position(0, 0, 5, 0)
 light_set_color(0, 0, 0, I)
-light_set_range(0, 7)
+light_set_range(0, R)
 light_set_enabled(0, true)
 
 -- Point light 1: red, at (0,5,0)
 light_set_type(1, LIGHT_POINT)
 light_set_position(1, 0, 5, 2)
 light_set_color(1, I, 0, 0)          
-light_set_range(1, 7)
+light_set_range(1, R)
 light_set_enabled(1, true)
 
 -- Point light 2: green, at (0,5,10)
 light_set_type(2, LIGHT_POINT)
 light_set_position(2, 0, 5, 10)
 light_set_color(2, 0, I, 0)           -- intense green
-light_set_range(2, 7)
+light_set_range(2, R)
 light_set_enabled(2, true)
 
 -- Point light 3: blue, at (0,5,-6)
 light_set_type(3, LIGHT_POINT)
 light_set_position(3, 0, 5, -6)
 light_set_color(3, 0, 0, I)          -- intense blue
-light_set_range(3, 10)
+light_set_range(3, R)
 light_set_enabled(3, true)
 
 -- Spot light 4: magenta, at (10,5,1) pointing toward origin
@@ -108,8 +109,8 @@ light_set_enabled(11, true)
 -- White spot light that follows the camera
 -- --------------------------------------------------------
 light_set_type(12, LIGHT_SPOT)
-light_set_color(12, 1, 1, 1)               -- white
-light_set_range(12, 100)
+light_set_color(12, 50, 50, 50)               -- white
+light_set_range(12, 1000)
 light_set_spot_params(12, 0.25, 0.5, 2.0)   -- inner cone 0.25 rad, outer 0.5 rad, falloff 2
 light_set_enabled(12, true)
 
@@ -122,7 +123,22 @@ particle_set_color(1, 0.5, 1)
 particle_set_alpha(1)
 particle_set_rate(4096)
 
--- Two separate material pools – both contain the same list initially
+-- --------------------------------------------------------
+-- Audio 
+-- --------------------------------------------------------
+local sound_handle = audio_load_wav("test.wav")
+if sound_handle >= 0 then
+    audio_set_rolloff(sound_handle, 1.0)    -- realistic rolloff.
+    audio_set_volume(sound_handle, 1.0)     -- Full volume
+    audio_play(sound_handle, true)          -- loop = true
+    print("Audio loaded and playing")
+else
+    print("Failed to load audio (make sure test.wav is in the executable folder)")
+end
+
+-- --------------------------------------------------------
+-- Material pools (unchanged)
+-- --------------------------------------------------------
 local sphere_material_pool = {
     "default_material_grass",
     "default_material_cloth",
@@ -138,14 +154,11 @@ local sphere_material_pool = {
     "default_material_snow",
     "default_material_dirt",
     "default_material_velvet",
-    "default_material_marble",
     "default_material_pearl",
-    "default_material_ceramic",
     "default_material_chalk",
     "default_material_rust",
     "default_material_carbon",
     "default_material_chrome",
-    "default_material_emerald",
     "default_material_oilslick"
 }
 
@@ -164,14 +177,11 @@ local station_material_pool = {
     "default_material_snow",
     "default_material_dirt",
     "default_material_velvet",
-    "default_material_marble",
     "default_material_pearl",
-    "default_material_ceramic",
     "default_material_chalk",
     "default_material_rust",
     "default_material_carbon",
     "default_material_chrome",
-    "default_material_emerald",
     "default_material_oilslick"
 }
 
@@ -222,9 +232,14 @@ local station_interval = 5  -- seconds (can be different)
 local station_index = 2     -- start offset so they're on different materials
 
 -- seconds for all animations to complete their cycles
-local cam_cycle_time = 15
+local cam_cycle_time = 10
 local light_dir_cycle_time = 10
 local light_col_cycle_time = 5
+
+-- ---- Listener velocity smoothing state ----
+local prev_eye_x, prev_eye_y, prev_eye_z = 0, 0, 0
+local smooth_cam_vx, smooth_cam_vy, smooth_cam_vz = 0, 0, 0
+local listener_velocity_initialized = false
 
 local total_time = 0
 function update(dt)
@@ -232,12 +247,46 @@ function update(dt)
 
     -- Orbit camera around (0,0,0)
     local cam_angle = (total_time / cam_cycle_time) * 2 * math.pi
-    local radius = 12
+    local radius = 11
     local height = 2
     local cam_x = radius * math.cos(cam_angle)
     local cam_z = radius * math.sin(cam_angle)
     camera_eye(cam_x, height, cam_z)
-    camera_lookat(0, 0, 0, 0, 1, 0)
+    camera_lookat(-5, 0, 0, 0, 1, 0)
+
+    -- ---- Smooth listener velocity (FIXED) ----
+    if dt > 0 then
+        local raw_vx = (cam_x - prev_eye_x) / dt
+        local raw_vy = (height - prev_eye_y) / dt
+        local raw_vz = (cam_z - prev_eye_z) / dt
+
+        -- Initialize on first frame
+        if not listener_velocity_initialized then
+            smooth_cam_vx, smooth_cam_vy, smooth_cam_vz = raw_vx, raw_vy, raw_vz
+            listener_velocity_initialized = true
+        else
+            -- Heavy smoothing (alpha = 0.1 => 90% old, 10% new)
+            local alpha = 0.1
+            smooth_cam_vx = smooth_cam_vx + alpha * (raw_vx - smooth_cam_vx)
+            smooth_cam_vy = smooth_cam_vy + alpha * (raw_vy - smooth_cam_vy)
+            smooth_cam_vz = smooth_cam_vz + alpha * (raw_vz - smooth_cam_vz)
+        end
+
+        -- Clamp to safe maximum (prevents dt spikes)
+        local max_vel = 30.0
+        local mag = math.sqrt(smooth_cam_vx^2 + smooth_cam_vy^2 + smooth_cam_vz^2)
+        if mag > max_vel then
+            smooth_cam_vx = smooth_cam_vx / mag * max_vel
+            smooth_cam_vy = smooth_cam_vy / mag * max_vel
+            smooth_cam_vz = smooth_cam_vz / mag * max_vel
+        end
+
+        -- Send smoothed velocity to mixer
+        audio_set_listener_velocity(smooth_cam_vx, smooth_cam_vy, smooth_cam_vz)
+    end
+
+    -- Update previous position for next frame
+    prev_eye_x, prev_eye_y, prev_eye_z = cam_x, height, cam_z
 
     -- ---- Update global (main) directional light ----
     --light_ambient(0.1, 0.1, 0.1)
@@ -270,6 +319,7 @@ function update(dt)
     -- --------------------------------------------------------
     sphere_timer = sphere_timer + dt
     if sphere_timer >= sphere_interval then
+
         sphere_timer = 0
         sphere_index = (sphere_index % sphere_pool_size) + 1
         local sphere_mat = sphere_handles[sphere_index]
@@ -341,6 +391,20 @@ function update(dt)
         if pos then
             particle_set_position(pos.x, pos.y, pos.z)
             light_set_position(0, pos.x, pos.y, pos.z)
+
+            -- ---- Update audio position to follow the sphere ----
+            if sound_handle and sound_handle >= 0 then
+                audio_set_position(sound_handle, pos.x, pos.y, pos.z)
+            end
+        end
+
+        -- ---- Update audio velocity from rigid body ----
+        local rb = tag_get_field(sphere_entity_handle, "rigid_body")
+        if rb and rb >= 0 then
+            local vel = tag_get_field(rb, "velocity")
+            if vel then
+                audio_set_velocity(sound_handle, vel.x, vel.y, vel.z)
+            end
         end
     end
 end

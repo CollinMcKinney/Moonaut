@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define SCENARIO_MAX_ENTITIES PHYSICS_MAX_BODIES
-#define SCENARIO_WINDOW_SCALE 6
+#define SCENARIO_WINDOW_SCALE 4
 #define SCENARIO_DEFAULT_WIDTH  (256 * SCENARIO_WINDOW_SCALE)
 #define SCENARIO_DEFAULT_HEIGHT (144 * SCENARIO_WINDOW_SCALE)
 
@@ -1206,10 +1206,6 @@ static i32 lua_audio_set_position(lua_State *L) {
     v->pos_x = (float)luaL_checknumber(L, 2);
     v->pos_y = (float)luaL_checknumber(L, 3);
     v->pos_z = (float)luaL_checknumber(L, 4);
-    // Reset smoothing to match new position instantly
-    v->smooth_x = v->pos_x;
-    v->smooth_y = v->pos_y;
-    v->smooth_z = v->pos_z;
     return 0;
 }
 
@@ -1405,7 +1401,7 @@ static void runtime_init(void) {
     {
         int audio_sample_rate = 48000; /* Will be adjusted by the device */
         int audio_channels = 2;
-        int audio_buffer_frames = 256;
+        int audio_buffer_frames = 1056;
 
         memset(&g_audio_ctx, 0, sizeof(g_audio_ctx));
         g_audio_ctx.sample_rate = audio_sample_rate;
