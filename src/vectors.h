@@ -2296,6 +2296,58 @@ static INLINE vec3 mat4_mul_vec3(mat4 m, vec3 v)
     return vec3_init_from_3(r.position.x, r.position.y, r.position.z);
 }
 
+/* Inverse of a 4x4 matrix using Gauss-Jordan elimination.
+   Returns identity if the matrix is singular (non-invertible). */
+static INLINE mat4 mat4_inverse(mat4 m) {
+    mat4 inv = mat4_identity();
+    mat4 src = m;
+    int i, j, k;
+    real pivot;
+
+    for (i = 0; i < 4; i++) {
+        pivot = src.transpose[i][i];
+        if (pivot == 0.0f) {
+            /* Try to swap with a row below */
+            int swap = -1;
+            for (j = i + 1; j < 4; j++) {
+                if (src.transpose[j][i] != 0.0f) {
+                    swap = j;
+                    break;
+                }
+            }
+            if (swap == -1) {
+                /* Singular matrix – return identity (or you could return a zero matrix) */
+                return mat4_identity();
+            }
+            for (k = 0; k < 4; k++) {
+                real tmp = src.transpose[i][k];
+                src.transpose[i][k] = src.transpose[swap][k];
+                src.transpose[swap][k] = tmp;
+                tmp = inv.transpose[i][k];
+                inv.transpose[i][k] = inv.transpose[swap][k];
+                inv.transpose[swap][k] = tmp;
+            }
+            pivot = src.transpose[i][i];
+        }
+
+        real inv_pivot = 1.0f / pivot;
+        for (j = 0; j < 4; j++) {
+            src.transpose[i][j] *= inv_pivot;
+            inv.transpose[i][j] *= inv_pivot;
+        }
+
+        for (j = 0; j < 4; j++) {
+            if (j == i) continue;
+            real factor = src.transpose[j][i];
+            for (k = 0; k < 4; k++) {
+                src.transpose[j][k] -= factor * src.transpose[i][k];
+                inv.transpose[j][k] -= factor * inv.transpose[i][k];
+            }
+        }
+    }
+    return inv;
+}
+
 /* Create a perspective projection mat4. */
 static INLINE mat4 mat4_perspective(real fov_y, real aspect, real near_plane, real far_plane)
 {

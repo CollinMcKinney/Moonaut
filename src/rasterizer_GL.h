@@ -10,15 +10,25 @@
  *   cluster.comp     – compute shader for light culling
  *   particle.vert    – particle vertex shader
  *   particle.frag    – particle fragment shader
+ *   audio_occlusion.comp – compute shader for per‑voice occlusion
+ *   audio_reverb.comp   – compute shader for room statistics
+ *   audio_portal.comp   – compute shader for portal search (dedicated)
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
+ *   #define AUDIO_OCCLUSION
+ *   #define AUDIO_REVERB
+ *   #define AUDIO_PORTAL   (optional)
  *   #include "rasterizer_GL.h"
  *   render_init(win_w, win_h);
  *   render_set_render_resolution(512, 288);
  *   ... draw ...
- *   render_finish();  // does depth pre‑pass, compute, colour pass, upscale & swap
+ *   render_finish();
  */
+
+#define AUDIO_OCCLUSION
+#define AUDIO_REVERB
+#define AUDIO_PORTAL
 
 #ifndef RASTERIZER_GL_H
 #define RASTERIZER_GL_H
@@ -29,9 +39,23 @@
 #include "tags/material.h"
 #include "tags/particle_emitter.h"
 #include "tags/light.h"
+#include "window.h"
 
 #define C89GL_IMPLEMENTATION
 #include "../libs/C89FW/C89GL.h"
+
+/* ---- Audio propagation struct (matches occlusion shader output) ---- */
+typedef struct audio_propagation_output {
+    float occlusion;
+} audio_propagation_output_t;
+
+/* ---- Global audio stats (reverb) ---- */
+typedef struct audio_global_stats {
+    real avg_depth;
+    real min_depth;
+    real max_depth;
+    real variance;
+} audio_global_stats_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +96,21 @@ void render_particle_system_emit_burst(int count);
 void render_clear_lights(void);
 void render_set_light_at_index(int index, const struct light_definition *def);
 
+/* ---- Audio Analysis ---- */
+#ifdef AUDIO_OCCLUSION
+void render_set_audio_voice_data(const vec3 *positions, int count);
+int  render_poll_audio_propagation(audio_propagation_output_t *out, int max_voices);
+#endif
+
+#ifdef AUDIO_REVERB
+int  render_poll_audio_global_stats(audio_global_stats_t *stats);
+#endif
+
+#ifdef AUDIO_PORTAL
+void render_trigger_portal_search(void);   /* NEW: called from runtime when needed */
+int  render_poll_audio_portal(vec3 *portal_pos, int *portal_active);
+#endif
+
 /* ---- Public constants ---- */
 #define RENDER_MAX_LIGHTS (MAX_EXTRA_DIR_LIGHTS + MAX_EXTRA_POINT_LIGHTS + MAX_EXTRA_SPOT_LIGHTS)
 
@@ -84,6 +123,7 @@ void render_set_light_at_index(int index, const struct light_definition *def);
 /* ================================================================
    IMPLEMENTATION
    ================================================================ */
+#define RASTERIZER_GL_IMPLEMENTATION
 #ifdef RASTERIZER_GL_IMPLEMENTATION
 
 #include <stdlib.h>
@@ -102,11 +142,45 @@ void render_set_light_at_index(int index, const struct light_definition *def);
 #define CLUSTER_DEPTH_SLICES    24
 #define CLUSTER_MAX_LIGHTS_PER  64
 
+/* ---- Audio analysis constants ---- */
+#ifdef AUDIO_OCCLUSION
+#define MAX_AUDIO_VOICES_GPU    8
+#endif
+
+#ifdef AUDIO_REVERB
+#define MAX_REVERB_GROUPS ((64 + 7) / 8 * ((36 + 7) / 8))  /* = 8 * 5 = 40 */
+#define REVERB_ACCUM_SIZE (MAX_REVERB_GROUPS * sizeof(reverb_group_accum_t))
+typedef struct reverb_group_accum {
+    float sum;
+    float sumsq;
+    u32   count;
+    u32   min_bits;
+    u32   max_bits;
+} reverb_group_accum_t;
+#endif
+
+#ifdef AUDIO_PORTAL
+typedef struct portal_candidate {
+    float dist;
+    float pos_x;
+    float pos_y;
+    float pos_z;
+} portal_candidate_t;
+#define PORTAL_CANDIDATE_SIZE (MAX_REVERB_GROUPS * sizeof(portal_candidate_t))
+#endif
+
+/* ---- Helper conversion (u32 -> real) ---- */
+static INLINE real u32_to_real(u32 u) {
+    union { u32 i; float f; } conv;
+    conv.i = u;
+    return (real)conv.f;
+}
+
 /* ---- GPU light structure (matches shader) ---- */
 typedef struct {
-    float pos[4];      // .xyz = position, .w = type (0=dir,1=point,2=spot)
-    float dir[4];      // .xyz = direction (normalised)
-    float color[4];    // .rgb = colour, .w = intensity scale (unused)
+    float pos[4];
+    float dir[4];
+    float color[4];
     float range;
     float inner_cos;
     float outer_cos;
@@ -153,9 +227,10 @@ typedef struct {
     float uClearcoatStrength;       float _pad5[3];
     float uSheenColor[3];           float uSheenExponent;
     float uSheenStrength;
-    float uMatAnisotropic;          // new anisotropy uniform
+    float uMatAnisotropic;
     float uMatTransmissionTint[3];  float _pad6;
 } material_ubo_t;
+STATIC_ASSERT(sizeof(material_ubo_t) == 312, material_ubo_t__size__wrong);
 
 #define MAX_MODEL_MATRICES 1024
 
@@ -163,7 +238,7 @@ typedef struct {
 typedef struct {
     render_method key;
     GLuint program;
-    int   is_depth;              // 1 for depth‑only variant
+    int   is_depth;
     int   hit_logged;
     GLint u_view_proj;
     GLint u_light_dir;
@@ -175,7 +250,6 @@ typedef struct {
     GLint u_fog_start;
     GLint u_fog_end;
     GLint u_gouraud_blend;
-    /* Uniforms for clustered */
     GLint u_depth_tex;
     GLint u_screen_size;
     GLint u_num_lights;
@@ -229,8 +303,14 @@ static size_t gl_ibo_capacity_bytes = 0;
 /* ---- FBO (upscaling) ---- */
 static GLuint gl_fbo = 0;
 static GLuint gl_color_tex = 0;
-static GLuint gl_depth_tex = 0;      // depth texture (sampled in compute)
+static GLuint gl_depth_tex = 0;
 static GLint gl_default_fbo = 0;
+
+/* ---- Low‑resolution FBO for audio analysis (64x36) ---- */
+static GLuint gl_fbo_low = 0;
+static GLuint gl_depth_tex_low = 0;
+static const int gl_low_width = 64;
+static const int gl_low_height = 36;
 
 /* ---- Batching state ---- */
 #define MAX_BATCHES         128
@@ -296,6 +376,43 @@ static GLint cluster_u_num_tiles_y = -1;
 static GLint cluster_u_depth_slices = -1;
 static GLint cluster_u_near = -1;
 static GLint cluster_u_far = -1;
+
+/* ================================================================
+   AUDIO SSBOs & STATE (DOUBLE-BUFFERED) – CONDITIONALLY COMPILED
+   ================================================================ */
+#ifdef AUDIO_OCCLUSION
+static GLuint gl_audio_occlusion_program = 0;
+static GLint occ_u_depth_tex = -1;
+static GLint occ_u_view_proj = -1;
+static GLint occ_u_inv_view_proj = -1;
+static GLint occ_u_listener_pos = -1;
+static GLint occ_u_num_voices = -1;
+static GLuint gl_audio_voice_input_ssbo = 0;
+static GLuint gl_audio_propagation_ssbo[2] = {0, 0};
+static int g_audio_voice_count_gpu = 0;
+static GLsync gl_audio_occlusion_fence = NULL;
+#endif
+
+#ifdef AUDIO_REVERB
+static GLuint gl_audio_reverb_program = 0;
+static GLint rev_u_depth_tex = -1;
+static GLint rev_u_inv_view_proj = -1;
+static GLint rev_u_listener_pos = -1;
+static GLuint gl_audio_global_stats_ssbo[2] = {0, 0};
+static GLsync gl_audio_reverb_fence = NULL;
+#endif
+
+#ifdef AUDIO_PORTAL
+static GLuint gl_audio_portal_program = 0;
+static GLint port_u_depth_tex = -1;
+static GLint port_u_inv_view_proj = -1;
+static GLint port_u_listener_pos = -1;
+static GLint port_u_threshold = -1;
+static GLuint gl_audio_portal_candidates_ssbo[2] = {0, 0};
+static GLsync gl_audio_portal_fence = NULL;
+#endif
+
+static int gl_audio_stats_frame = 0;   /* Used by any audio feature for double-buffering */
 
 /* ---- Particle system (unchanged) ---- */
 typedef struct {
@@ -376,29 +493,29 @@ static void extract_frustum_planes(void) {
     vec4 c3 = gl_view_proj.columns[3];
     int i;
     gl_frustum[0].normal = vec3_add(
-        vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
-        vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
-    gl_frustum[0].d = c3.components[3] + c0.components[3];
+        vec3_init_from_3(c3.position.x, c3.position.y, c3.position.z),
+        vec3_init_from_3(c0.position.x, c0.position.y, c0.position.z));
+    gl_frustum[0].d = c3.position.w + c0.position.w;
     gl_frustum[1].normal = vec3_sub(
-        vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
-        vec3_init_from_3(c0.components[0], c0.components[1], c0.components[2]));
-    gl_frustum[1].d = c3.components[3] - c0.components[3];
+        vec3_init_from_3(c3.position.x, c3.position.y, c3.position.z),
+        vec3_init_from_3(c0.position.x, c0.position.y, c0.position.z));
+    gl_frustum[1].d = c3.position.w - c0.position.w;
     gl_frustum[2].normal = vec3_add(
-        vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
-        vec3_init_from_3(c1.components[0], c1.components[1], c1.components[2]));
-    gl_frustum[2].d = c3.components[3] + c1.components[3];
+        vec3_init_from_3(c3.position.x, c3.position.y, c3.position.z),
+        vec3_init_from_3(c1.position.x, c1.position.y, c1.position.z));
+    gl_frustum[2].d = c3.position.w + c1.position.w;
     gl_frustum[3].normal = vec3_sub(
-        vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
-        vec3_init_from_3(c1.components[0], c1.components[1], c1.components[2]));
-    gl_frustum[3].d = c3.components[3] - c1.components[3];
+        vec3_init_from_3(c3.position.x, c3.position.y, c3.position.z),
+        vec3_init_from_3(c1.position.x, c1.position.y, c1.position.z));
+    gl_frustum[3].d = c3.position.w - c1.position.w;
     gl_frustum[4].normal = vec3_add(
-        vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
-        vec3_init_from_3(c2.components[0], c2.components[1], c2.components[2]));
-    gl_frustum[4].d = c3.components[3] + c2.components[3];
+        vec3_init_from_3(c3.position.x, c3.position.y, c3.position.z),
+        vec3_init_from_3(c2.position.x, c2.position.y, c2.position.z));
+    gl_frustum[4].d = c3.position.w + c2.position.w;
     gl_frustum[5].normal = vec3_sub(
-        vec3_init_from_3(c3.components[0], c3.components[1], c3.components[2]),
-        vec3_init_from_3(c2.components[0], c2.components[1], c2.components[2]));
-    gl_frustum[5].d = c3.components[3] - c2.components[3];
+        vec3_init_from_3(c3.position.x, c3.position.y, c3.position.z),
+        vec3_init_from_3(c2.position.x, c2.position.y, c2.position.z));
+    gl_frustum[5].d = c3.position.w - c2.position.w;
 
     for (i = 0; i < FRUSTUM_PLANES; i++) {
         real len = vec3_magnitude(gl_frustum[i].normal);
@@ -552,10 +669,9 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
     GLuint vs, fs, prog;
     int index, link_status, blockIndex, modelBlock;
     char defines[4096];
-    char name[32];
     GLint len;
     char log[512];
-    int i;   // declared at top for C89
+    int i;   /* declared at top for C89 */
 
     if (!gl_shader_cache) {
         gl_shader_cache_size = SHADER_CACHE_INITIAL_SIZE;
@@ -563,7 +679,7 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
         gl_shader_cache_count = 0;
     }
 
-    render_method cache_key = key | (is_depth ? (1u << 31) : 0);
+    u32 cache_key = key | (is_depth ? (1u << 31) : 0);
 
     index = (unsigned)cache_key % gl_shader_cache_size;
     while (gl_shader_cache[index].program != 0) {
@@ -613,7 +729,7 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
         C89GL_glUniformBlockBinding(prog, modelBlock, MODEL_UBO_BINDING);
 
     entry = &gl_shader_cache[index];
-    entry->key = cache_key;
+    entry->key = (render_method)cache_key;
     entry->program = prog;
     entry->is_depth = is_depth;
     entry->hit_logged = 0;
@@ -719,13 +835,10 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uSheenExponent = mat->sheen_exponent;
     ubo.uSheenStrength = mat->sheen_strength;
 
-    /* NEW: copy anisotropic value */
     ubo.uMatAnisotropic = mat->anisotropic;
     ubo.uMatTransmissionTint[0] = mat->transmission_tint.color.r;
     ubo.uMatTransmissionTint[1] = mat->transmission_tint.color.g;
     ubo.uMatTransmissionTint[2] = mat->transmission_tint.color.b;
-
-    /* _pad6[2] is left zero (was 3 floats, now 2) */
 
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(material_ubo_t), &ubo);
@@ -773,7 +886,7 @@ static void upload_lights_to_ssbo(void) {
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-/* ---- Dispatch compute shader ---- */
+/* ---- Dispatch cluster build ---- */
 static void dispatch_cluster_build(void) {
     if (!gl_cluster_program) return;
     upload_lights_to_ssbo();
@@ -861,12 +974,399 @@ static void init_cluster_resources(void) {
            gl_num_tiles_x, gl_num_tiles_y, gl_num_clusters);
 }
 
+/* ================================================================
+   AUDIO RESOURCES – CONDITIONALLY COMPILED
+   ================================================================ */
+static void init_audio_resources(void) {
+#ifdef AUDIO_OCCLUSION
+    {
+        GLuint cs_occ = compile_shader_with_defines(GL_COMPUTE_SHADER, "audio_occlusion.comp", "#version 430 core\n");
+        if (cs_occ) {
+            gl_audio_occlusion_program = C89GL_glCreateProgram();
+            C89GL_glAttachShader(gl_audio_occlusion_program, cs_occ);
+            C89GL_glLinkProgram(gl_audio_occlusion_program);
+            GLint status;
+            C89GL_glGetProgramiv(gl_audio_occlusion_program, GL_LINK_STATUS, &status);
+            if (status) {
+                occ_u_depth_tex      = C89GL_glGetUniformLocation(gl_audio_occlusion_program, "uDepthTex");
+                occ_u_view_proj      = C89GL_glGetUniformLocation(gl_audio_occlusion_program, "uViewProj");
+                occ_u_inv_view_proj  = C89GL_glGetUniformLocation(gl_audio_occlusion_program, "uInvViewProj");
+                occ_u_listener_pos   = C89GL_glGetUniformLocation(gl_audio_occlusion_program, "uListenerPos");
+                occ_u_num_voices     = C89GL_glGetUniformLocation(gl_audio_occlusion_program, "uNumVoices");
+            } else {
+                char log[512];
+                C89GL_glGetProgramInfoLog(gl_audio_occlusion_program, sizeof(log), NULL, log);
+                printf("Occlusion program link error: %s\n", log);
+                C89GL_glDeleteProgram(gl_audio_occlusion_program);
+                gl_audio_occlusion_program = 0;
+            }
+            C89GL_glDeleteShader(cs_occ);
+        }
+
+        C89GL_glGenBuffers(1, &gl_audio_voice_input_ssbo);
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_voice_input_ssbo);
+        C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(vec3) * MAX_AUDIO_VOICES_GPU, NULL, GL_STREAM_DRAW);
+
+        C89GL_glGenBuffers(2, gl_audio_propagation_ssbo);
+        {
+            int i;
+            for (i = 0; i < 2; i++) {
+                C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo[i]);
+                C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER,
+                                   sizeof(audio_propagation_output_t) * MAX_AUDIO_VOICES_GPU,
+                                   NULL, GL_STREAM_READ);
+            }
+        }
+    }
+#endif
+
+#ifdef AUDIO_REVERB
+    {
+        GLuint cs_rev = compile_shader_with_defines(GL_COMPUTE_SHADER, "audio_reverb.comp", "#version 430 core\n");
+        if (cs_rev) {
+            gl_audio_reverb_program = C89GL_glCreateProgram();
+            C89GL_glAttachShader(gl_audio_reverb_program, cs_rev);
+            C89GL_glLinkProgram(gl_audio_reverb_program);
+            GLint status;
+            C89GL_glGetProgramiv(gl_audio_reverb_program, GL_LINK_STATUS, &status);
+            if (status) {
+                rev_u_depth_tex         = C89GL_glGetUniformLocation(gl_audio_reverb_program, "uDepthTex");
+                rev_u_inv_view_proj     = C89GL_glGetUniformLocation(gl_audio_reverb_program, "uInvViewProj");
+                rev_u_listener_pos      = C89GL_glGetUniformLocation(gl_audio_reverb_program, "uListenerPos");
+            } else {
+                char log[512];
+                C89GL_glGetProgramInfoLog(gl_audio_reverb_program, sizeof(log), NULL, log);
+                printf("Reverb program link error: %s\n", log);
+                C89GL_glDeleteProgram(gl_audio_reverb_program);
+                gl_audio_reverb_program = 0;
+            }
+            C89GL_glDeleteShader(cs_rev);
+        }
+
+        C89GL_glGenBuffers(2, gl_audio_global_stats_ssbo);
+        {
+            int i;
+            for (i = 0; i < 2; i++) {
+                C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[i]);
+                C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, REVERB_ACCUM_SIZE, NULL, GL_STREAM_READ);
+            }
+        }
+    }
+#endif
+
+#ifdef AUDIO_PORTAL
+    {
+        GLuint cs_port = compile_shader_with_defines(GL_COMPUTE_SHADER, "audio_portal.comp", "#version 430 core\n");
+        if (cs_port) {
+            gl_audio_portal_program = C89GL_glCreateProgram();
+            C89GL_glAttachShader(gl_audio_portal_program, cs_port);
+            C89GL_glLinkProgram(gl_audio_portal_program);
+            GLint status;
+            C89GL_glGetProgramiv(gl_audio_portal_program, GL_LINK_STATUS, &status);
+            if (status) {
+                port_u_depth_tex        = C89GL_glGetUniformLocation(gl_audio_portal_program, "uDepthTex");
+                port_u_inv_view_proj    = C89GL_glGetUniformLocation(gl_audio_portal_program, "uInvViewProj");
+                port_u_listener_pos     = C89GL_glGetUniformLocation(gl_audio_portal_program, "uListenerPos");
+                port_u_threshold        = C89GL_glGetUniformLocation(gl_audio_portal_program, "uPortalThreshold");
+            } else {
+                char log[512];
+                C89GL_glGetProgramInfoLog(gl_audio_portal_program, sizeof(log), NULL, log);
+                printf("Portal program link error: %s\n", log);
+                C89GL_glDeleteProgram(gl_audio_portal_program);
+                gl_audio_portal_program = 0;
+            }
+            C89GL_glDeleteShader(cs_port);
+        }
+
+        C89GL_glGenBuffers(2, gl_audio_portal_candidates_ssbo);
+        {
+            int i;
+            for (i = 0; i < 2; i++) {
+                C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[i]);
+                C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, PORTAL_CANDIDATE_SIZE, NULL, GL_STREAM_READ);
+            }
+        }
+    }
+#endif
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    printf("Audio resources initialised (occlusion:%s, reverb:%s, portal:%s).\n",
+           #ifdef AUDIO_OCCLUSION
+           "yes"
+           #else
+           "no"
+           #endif
+           ,
+           #ifdef AUDIO_REVERB
+           "yes"
+           #else
+           "no"
+           #endif
+           ,
+           #ifdef AUDIO_PORTAL
+           "yes"
+           #else
+           "no"
+           #endif
+          );
+}
+
+/* ---- Dispatch all audio compute shaders (conditionally) ---- */
+static void dispatch_audio_compute(void) {
+    int write_idx = gl_audio_stats_frame & 1;
+    int i;
+
+#ifdef AUDIO_REVERB
+    if (gl_audio_reverb_program) {
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[write_idx]);
+        C89GL_glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, 0, REVERB_ACCUM_SIZE,
+                                   GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
+        C89GL_glUseProgram(gl_audio_reverb_program);
+        C89GL_glUniform1i(rev_u_depth_tex, 0);
+        mat4 inv_view_proj = mat4_inverse(gl_view_proj);
+        C89GL_glUniformMatrix4fv(rev_u_inv_view_proj, 1, GL_TRUE, (float*)&inv_view_proj);
+        C89GL_glUniform3fv(rev_u_listener_pos, 1, (float*)&gl_cam_eye);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_audio_global_stats_ssbo[write_idx]);
+        GLuint groups_x = (gl_low_width + 7) / 8;
+        GLuint groups_y = (gl_low_height + 7) / 8;
+        C89GL_glDispatchCompute(groups_x, groups_y, 1);
+        C89GL_glUseProgram(0);
+        C89GL_glActiveTexture(GL_TEXTURE0);
+
+        if (gl_audio_reverb_fence) {
+            C89GL_glDeleteSync(gl_audio_reverb_fence);
+        }
+        gl_audio_reverb_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
+#endif
+
+#ifdef AUDIO_OCCLUSION
+    if (gl_audio_occlusion_program && g_audio_voice_count_gpu > 0) {
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
+        C89GL_glUseProgram(gl_audio_occlusion_program);
+        C89GL_glUniform1i(occ_u_depth_tex, 0);
+        C89GL_glUniformMatrix4fv(occ_u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
+        mat4 inv_view_proj = mat4_inverse(gl_view_proj);
+        C89GL_glUniformMatrix4fv(occ_u_inv_view_proj, 1, GL_TRUE, (float*)&inv_view_proj);
+        C89GL_glUniform3fv(occ_u_listener_pos, 1, (float*)&gl_cam_eye);
+        C89GL_glUniform1i(occ_u_num_voices, g_audio_voice_count_gpu);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_audio_voice_input_ssbo);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl_audio_propagation_ssbo[write_idx]);
+        GLuint groups = (g_audio_voice_count_gpu + 7) / 8;
+        C89GL_glDispatchCompute(groups, 1, 1);
+        C89GL_glUseProgram(0);
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        C89GL_glActiveTexture(GL_TEXTURE0);
+
+        if (gl_audio_occlusion_fence) {
+            C89GL_glDeleteSync(gl_audio_occlusion_fence);
+        }
+        gl_audio_occlusion_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
+#endif
+
+    gl_audio_stats_frame++;
+}
+
+/* ---- Public: feed audio voice positions (only if occlusion) ---- */
+#ifdef AUDIO_OCCLUSION
+void render_set_audio_voice_data(const vec3 *positions, int count) {
+    g_audio_voice_count_gpu = count;
+    if (count <= 0 || !gl_audio_voice_input_ssbo) return;
+    if (count > MAX_AUDIO_VOICES_GPU) count = MAX_AUDIO_VOICES_GPU;
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_voice_input_ssbo);
+    C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vec3) * count, positions);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voices) {
+    if (!gl_audio_propagation_ssbo[0] || !gl_audio_propagation_ssbo[1]) return 0;
+
+    if (!gl_audio_occlusion_fence) return 0;
+    GLenum status = C89GL_glClientWaitSync(gl_audio_occlusion_fence, 0, 0);
+    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+        return 0;
+    }
+
+    C89GL_glDeleteSync(gl_audio_occlusion_fence);
+    gl_audio_occlusion_fence = NULL;
+
+    int read_idx = (gl_audio_stats_frame & 1) ^ 1;
+    int count = 0;
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo[read_idx]);
+    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                                       sizeof(audio_propagation_output_t) * MAX_AUDIO_VOICES_GPU,
+                                       GL_MAP_READ_BIT);
+    if (ptr) {
+        count = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
+        memcpy(out, ptr, sizeof(audio_propagation_output_t) * count);
+        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    }
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return count;
+}
+#endif
+
+#ifdef AUDIO_REVERB
+int render_poll_audio_global_stats(audio_global_stats_t *stats) {
+    if (!gl_audio_global_stats_ssbo[0] || !gl_audio_global_stats_ssbo[1]) return 0;
+
+    if (!gl_audio_reverb_fence) return 0;
+    GLenum status = C89GL_glClientWaitSync(gl_audio_reverb_fence, 0, 0);
+    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+        return 0;
+    }
+
+    C89GL_glDeleteSync(gl_audio_reverb_fence);
+    gl_audio_reverb_fence = NULL;
+
+    int read_idx = (gl_audio_stats_frame & 1) ^ 1;
+    int ok = 0;
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[read_idx]);
+    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                                       REVERB_ACCUM_SIZE,
+                                       GL_MAP_READ_BIT);
+    if (ptr) {
+        reverb_group_accum_t *groups = (reverb_group_accum_t*)ptr;
+        float total_sum = 0.0f, total_sumsq = 0.0f;
+        u32 total_count = 0;
+        u32 total_min_bits = 0xFFFFFFFF;
+        u32 total_max_bits = 0;
+        int i;
+        for (i = 0; i < MAX_REVERB_GROUPS; i++) {
+            if (groups[i].count > 0) {
+                total_sum += groups[i].sum;
+                total_sumsq += groups[i].sumsq;
+                total_count += groups[i].count;
+                if (groups[i].min_bits < total_min_bits) total_min_bits = groups[i].min_bits;
+                if (groups[i].max_bits > total_max_bits) total_max_bits = groups[i].max_bits;
+            }
+        }
+        if (total_count > 0) {
+            stats->avg_depth = (real)(total_sum / total_count);
+            stats->min_depth = u32_to_real(total_min_bits);
+            stats->max_depth = u32_to_real(total_max_bits);
+            real mean = stats->avg_depth;
+            stats->variance = (real)(total_sumsq / total_count) - mean * mean;
+        } else {
+            stats->avg_depth = (real)5.0f;
+            stats->min_depth = (real)0.5f;
+            stats->max_depth = (real)10.0f;
+            stats->variance = (real)1.0f;
+        }
+        ok = 1;
+        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    }
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return ok;
+}
+#endif
+
+#ifdef AUDIO_PORTAL
+void render_trigger_portal_search(void) {
+    if (!gl_audio_portal_program) return;
+
+    /* If a previous search is still pending, do not overwrite its fence.
+       The poll function will delete the fence when it reads the result. */
+    if (gl_audio_portal_fence) {
+        return;
+    }
+
+    int write_idx = gl_audio_stats_frame & 1;
+
+    /* Reset portal candidates buffer for write_idx (map/invalidate) */
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[write_idx]);
+    portal_candidate_t *reset_ptr = (portal_candidate_t*)C89GL_glMapBufferRange(
+        GL_SHADER_STORAGE_BUFFER, 0, PORTAL_CANDIDATE_SIZE,
+        GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (reset_ptr) {
+        int i;
+        for (i = 0; i < MAX_REVERB_GROUPS; i++) {
+            reset_ptr[i].dist = 1e10f;
+            reset_ptr[i].pos_x = 0.0f;
+            reset_ptr[i].pos_y = 0.0f;
+            reset_ptr[i].pos_z = 0.0f;
+        }
+        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    }
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    C89GL_glActiveTexture(GL_TEXTURE0);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
+    C89GL_glUseProgram(gl_audio_portal_program);
+    C89GL_glUniform1i(port_u_depth_tex, 0);
+    mat4 inv_view_proj = mat4_inverse(gl_view_proj);
+    C89GL_glUniformMatrix4fv(port_u_inv_view_proj, 1, GL_TRUE, (float*)&inv_view_proj);
+    C89GL_glUniform3fv(port_u_listener_pos, 1, (float*)&gl_cam_eye);
+    C89GL_glUniform1f(port_u_threshold, 0.5f);
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, gl_audio_portal_candidates_ssbo[write_idx]);
+    GLuint groups_x = (gl_low_width + 7) / 8;
+    GLuint groups_y = (gl_low_height + 7) / 8;
+    C89GL_glDispatchCompute(groups_x, groups_y, 1);
+    C89GL_glUseProgram(0);
+    C89GL_glActiveTexture(GL_TEXTURE0);
+
+    /* Create fence only if there was no pending fence (we checked above) */
+    gl_audio_portal_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+}
+
+int render_poll_audio_portal(vec3 *portal_pos, int *portal_active) {
+    if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1])
+        return 0;
+
+    if (!gl_audio_portal_fence) return 0;
+    GLenum status = C89GL_glClientWaitSync(gl_audio_portal_fence, 0, 0);
+    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+        return 0;
+    }
+
+    C89GL_glDeleteSync(gl_audio_portal_fence);
+    gl_audio_portal_fence = NULL;
+
+    int read_idx = (gl_audio_stats_frame & 1) ^ 1;
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[read_idx]);
+    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                                       PORTAL_CANDIDATE_SIZE,
+                                       GL_MAP_READ_BIT);
+    if (!ptr) {
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        return 0;
+    }
+
+    portal_candidate_t *cands = (portal_candidate_t*)ptr;
+    float best_dist = 1e10f;
+    vec3 best_pos = {0.0f, 0.0f, 0.0f};
+    int found = 0;
+    int i;
+    for (i = 0; i < MAX_REVERB_GROUPS; i++) {
+        if (cands[i].dist < best_dist) {
+            best_dist = cands[i].dist;
+            best_pos.position.x = cands[i].pos_x;
+            best_pos.position.y = cands[i].pos_y;
+            best_pos.position.z = cands[i].pos_z;
+            found = 1;
+        }
+    }
+    C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    if (portal_pos) *portal_pos = best_pos;
+    if (portal_active) *portal_active = (found && best_dist < 1e9f) ? 1 : 0;
+
+    return found ? 1 : 0;
+}
+#endif
+
 /* ---- Public API: Light management ---- */
-void render_clear_lights(void) {
+INLINE void render_clear_lights(void) {
     g_light_count = 0;
 }
 
-void render_set_light_at_index(int index, const light_definition *def) {
+INLINE void render_set_light_at_index(int index, const light_definition *def) {
     if (index < 0 || index >= MAX_LIGHTS) return;
     g_lights[index] = *def;
     if (index + 1 > g_light_count) g_light_count = index + 1;
@@ -1169,7 +1669,7 @@ static void draw_triangle_internal_legacy(
    PUBLIC API IMPLEMENTATION
    ================================================================ */
 
-int render_init(i32 window_width, i32 window_height) {
+INLINE int render_init(i32 window_width, i32 window_height) {
     printf("render_init: width=%d height=%d\n", window_width, window_height);
     if (gl_vao) return 1;
 
@@ -1263,6 +1763,27 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
 
+    /* ---- Create low‑resolution FBO for audio analysis (64x36) ---- */
+    C89GL_glGenFramebuffers(1, &gl_fbo_low);
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo_low);
+
+    C89GL_glGenTextures(1, &gl_depth_tex_low);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_low_width, gl_low_height, 0,
+                       GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex_low, 0);
+
+    GLenum fbo_status_low = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (fbo_status_low != GL_FRAMEBUFFER_COMPLETE) {
+        printf("Low‑res FBO incomplete! status=0x%x\n", fbo_status_low);
+    }
+
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+
     GLenum fbo_status = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (fbo_status != GL_FRAMEBUFFER_COMPLETE) {
         printf("FBO incomplete! status=0x%x\n", fbo_status);
@@ -1277,12 +1798,13 @@ int render_init(i32 window_width, i32 window_height) {
     C89GL_glFrontFace(GL_CCW);
 
     init_cluster_resources();
+    init_audio_resources();
 
     printf("render_init returning 1 (success)\n");
     return 1;
 }
 
-void render_shutdown(void) {
+INLINE void render_shutdown(void) {
     int i;
     if (gl_vertex_vbo) { C89GL_glDeleteBuffers(1, &gl_vertex_vbo); gl_vertex_vbo = 0; }
     if (gl_index_vbo) { C89GL_glDeleteBuffers(1, &gl_index_vbo); gl_index_vbo = 0; }
@@ -1290,6 +1812,8 @@ void render_shutdown(void) {
     if (gl_fbo) { C89GL_glDeleteFramebuffers(1, &gl_fbo); gl_fbo = 0; }
     if (gl_color_tex) { C89GL_glDeleteTextures(1, &gl_color_tex); gl_color_tex = 0; }
     if (gl_depth_tex) { C89GL_glDeleteTextures(1, &gl_depth_tex); gl_depth_tex = 0; }
+    if (gl_fbo_low) { C89GL_glDeleteFramebuffers(1, &gl_fbo_low); gl_fbo_low = 0; }
+    if (gl_depth_tex_low) { C89GL_glDeleteTextures(1, &gl_depth_tex_low); gl_depth_tex_low = 0; }
     if (gl_material_ubo) { C89GL_glDeleteBuffers(1, &gl_material_ubo); gl_material_ubo = 0; }
     if (gl_model_ubo) { C89GL_glDeleteBuffers(1, &gl_model_ubo); gl_model_ubo = 0; }
     if (gl_light_ssbo) { C89GL_glDeleteBuffers(1, &gl_light_ssbo); gl_light_ssbo = 0; }
@@ -1305,6 +1829,49 @@ void render_shutdown(void) {
         free(gl_shader_cache);
         gl_shader_cache = NULL;
     }
+
+    /* Audio cleanup conditionally */
+#ifdef AUDIO_OCCLUSION
+    if (gl_audio_occlusion_program) C89GL_glDeleteProgram(gl_audio_occlusion_program);
+    if (gl_audio_voice_input_ssbo) C89GL_glDeleteBuffers(1, &gl_audio_voice_input_ssbo);
+    {
+        int j;
+        for (j = 0; j < 2; j++) {
+            if (gl_audio_propagation_ssbo[j]) {
+                C89GL_glDeleteBuffers(1, &gl_audio_propagation_ssbo[j]);
+                gl_audio_propagation_ssbo[j] = 0;
+            }
+        }
+    }
+    if (gl_audio_occlusion_fence) C89GL_glDeleteSync(gl_audio_occlusion_fence);
+#endif
+#ifdef AUDIO_REVERB
+    if (gl_audio_reverb_program) C89GL_glDeleteProgram(gl_audio_reverb_program);
+    {
+        int j;
+        for (j = 0; j < 2; j++) {
+            if (gl_audio_global_stats_ssbo[j]) {
+                C89GL_glDeleteBuffers(1, &gl_audio_global_stats_ssbo[j]);
+                gl_audio_global_stats_ssbo[j] = 0;
+            }
+        }
+    }
+    if (gl_audio_reverb_fence) C89GL_glDeleteSync(gl_audio_reverb_fence);
+#endif
+#ifdef AUDIO_PORTAL
+    if (gl_audio_portal_program) C89GL_glDeleteProgram(gl_audio_portal_program);
+    {
+        int j;
+        for (j = 0; j < 2; j++) {
+            if (gl_audio_portal_candidates_ssbo[j]) {
+                C89GL_glDeleteBuffers(1, &gl_audio_portal_candidates_ssbo[j]);
+                gl_audio_portal_candidates_ssbo[j] = 0;
+            }
+        }
+    }
+    if (gl_audio_portal_fence) C89GL_glDeleteSync(gl_audio_portal_fence);
+#endif
+
     if (gl_ctx.initialized) C89GL_destroy_context(&gl_ctx);
     gl_transparent_count = 0;
     gl_batch_count = 0;
@@ -1313,7 +1880,7 @@ void render_shutdown(void) {
     render_particle_system_shutdown();
 }
 
-void render_draw_entities(struct entity_definition **entities, int count) {
+INLINE void render_draw_entities(struct entity_definition **entities, int count) {
     int i, valid_count;
     if (!entities || count <= 0) return;
 
@@ -1349,18 +1916,18 @@ void render_draw_entities(struct entity_definition **entities, int count) {
     free(sorted);
 }
 
-void render_draw_entity(const struct entity_definition *ent) {
+INLINE void render_draw_entity(const struct entity_definition *ent) {
     if (!ent) return;
     struct entity_definition *ents[1] = { (struct entity_definition*)ent };
     render_draw_entities(ents, 1);
 }
 
 /* ---- Other API functions ---- */
-void render_set_light(vec3 dir, vec3 col, vec3 amb) {
+INLINE void render_set_light(vec3 dir, vec3 col, vec3 amb) {
     gl_light_dir = dir; gl_light_col = col; gl_ambient_col = amb;
 }
 
-void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
+INLINE void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
     gl_cam_eye = eye;
     gl_view = mat4_lookat(eye, center, up);
     gl_proj = mat4_perspective(fov, aspect, 0.05f, 1000.0f);
@@ -1370,27 +1937,27 @@ void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real aspect) {
     gl_far = 1000.0f;
 }
 
-void render_set_fog(vec3 color, real start, real end) {
+INLINE void render_set_fog(vec3 color, real start, real end) {
     gl_fog_color = color; gl_fog_start = start; gl_fog_end = end;
 }
-void render_set_time(real t) { gl_time = t; }
-void render_clear(u8 r, u8 g, u8 b) { render_clear_color(r/255.0f, g/255.0f, b/255.0f); }
-void render_clear_color(real r, real g, real b) {
+INLINE void render_set_time(real t) { gl_time = t; }
+INLINE void render_clear(u8 r, u8 g, u8 b) { render_clear_color(r/255.0f, g/255.0f, b/255.0f); }
+INLINE void render_clear_color(real r, real g, real b) {
     if (!gl_fbo) return;
     bind_fbo();
     C89GL_glClearColor(r, g, b, 1.0f);
     C89GL_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
-const u32* render_get_fb(void) { return NULL; }
+INLINE const u32* render_get_fb(void) { return NULL; }
 
-int render_resize(i32 new_w, i32 new_h) {
+INLINE int render_resize(i32 new_w, i32 new_h) {
     if (gl_win_width == new_w && gl_win_height == new_h) return 0;
     gl_win_width = new_w;
     gl_win_height = new_h;
     return 0;
 }
 
-void render_set_render_resolution(i32 rw, i32 rh) {
+INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     if (rw <= 0 || rh <= 0) return;
     if (gl_render_width == rw && gl_render_height == rh) return;
     gl_render_width = rw; gl_render_height = rh;
@@ -1401,6 +1968,7 @@ void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
                        GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
+    /* Low‑res depth stays at 64x36, so we don't need to recreate it */
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
     gl_num_tiles_x = (gl_render_width + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
     gl_num_tiles_y = (gl_render_height + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
@@ -1413,8 +1981,9 @@ void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, off_size, NULL, GL_DYNAMIC_DRAW);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
-i32 render_get_render_width(void) { return gl_render_width; }
-i32 render_get_render_height(void) { return gl_render_height; }
+
+INLINE i32 render_get_render_width(void) { return gl_render_width; }
+INLINE i32 render_get_render_height(void) { return gl_render_height; }
 
 /* ---- Batch comparator ---- */
 static int batch_compare_mode(const void* a, const void* b) {
@@ -1432,11 +2001,14 @@ static int batch_compare_mode(const void* a, const void* b) {
 static void render_particle_system_draw_internal(void);
 
 /* ---- render_finish ---- */
-void render_finish(void) {
+INLINE void render_finish(void) {
     int i;
     GLuint current_program = 0;
 
     flush_transparent_batches();
+
+    /* ---- Dispatch audio compute at the very beginning (uses last frame's low‑res depth) ---- */
+    dispatch_audio_compute();
 
     if (gl_batch_count > 0) {
         size_t vert_bytes = gl_pool_used_floats * sizeof(float);
@@ -1463,14 +2035,14 @@ void render_finish(void) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glBindVertexArray(gl_vao);
 
-        // ---- Depth pre‑pass ----
+        /* ---- Depth pre‑pass ---- */
         C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         C89GL_glDepthMask(GL_TRUE);
         current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 1);
+            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 1);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -1483,19 +2055,30 @@ void render_finish(void) {
         }
         if (current_program) C89GL_glUseProgram(0);
 
-        // ---- Compute cluster lists ----
+        /* ---- Blit depth to low‑res FBO (for next frame's audio) ---- */
+        C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
+        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_fbo_low);
+        C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
+                                0, 0, gl_low_width, gl_low_height,
+                                GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+
+        /* ---- Re‑bind the main render FBO for subsequent drawing ---- */
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+        C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
+
+        /* ---- Compute cluster lists ---- */
         dispatch_cluster_build();
 
         C89GL_glDepthFunc(GL_LEQUAL);
 
-        // ---- Colour pass (opaque) ----
+        /* ---- Colour pass (opaque) ---- */
         C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         C89GL_glDepthMask(GL_TRUE);
         current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 0);
+            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 0);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -1508,7 +2091,7 @@ void render_finish(void) {
         }
         if (current_program) C89GL_glUseProgram(0);
 
-        // ---- Transparent pass ----
+        /* ---- Transparent pass ---- */
         C89GL_glEnable(GL_BLEND);
         C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         C89GL_glDepthMask(GL_FALSE);
@@ -1516,7 +2099,7 @@ void render_finish(void) {
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (!b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method(b->mat->render_method, 0);
+            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 0);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -1533,6 +2116,12 @@ void render_finish(void) {
 
         C89GL_glBindVertexArray(0);
         render_particle_system_draw_internal();
+    } else {
+        /* Even if no geometry, still run audio if voices are present. */
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+        /* No need to dispatch audio here; it was already dispatched above */
+        /* But we still need to blit depth to low‑res FBO? If no geometry, low‑res depth is not updated. */
+        /* That's fine; audio will use the previous frame's depth. */
     }
 
     C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
@@ -1593,7 +2182,7 @@ static void spawn_particle(void) {
     g_particle_count++;
 }
 
-void render_particle_system_init(int max_particles) {
+INLINE void render_particle_system_init(int max_particles) {
     if (g_particles) return;
     g_particle_capacity = max_particles > 0 ? max_particles : 4096;
     g_particles = (particle_instance_t*)malloc(g_particle_capacity * sizeof(particle_instance_t));
@@ -1663,7 +2252,7 @@ void render_particle_system_init(int max_particles) {
     g_particle_u_cam_up = C89GL_glGetUniformLocation(g_particle_program, "uCamUp");
 }
 
-void render_particle_system_shutdown(void) {
+INLINE void render_particle_system_shutdown(void) {
     if (g_particles) { free(g_particles); g_particles = NULL; }
     if (g_particle_velocities) { free(g_particle_velocities); g_particle_velocities = NULL; }
     if (g_particle_lifetimes) { free(g_particle_lifetimes); g_particle_lifetimes = NULL; }
@@ -1676,7 +2265,7 @@ void render_particle_system_shutdown(void) {
     g_particle_program = 0;
 }
 
-void render_particle_system_set_emitter(const struct particle_emitter_definition *def) {
+INLINE void render_particle_system_set_emitter(const struct particle_emitter_definition *def) {
     if (!def) return;
     g_emitter_pos       = def->position;
     g_emitter_color     = def->color;
@@ -1692,7 +2281,7 @@ void render_particle_system_set_emitter(const struct particle_emitter_definition
     g_burst_done        = 0;
 }
 
-void render_particle_system_update(float dt) {
+INLINE void render_particle_system_update(float dt) {
     int i;
     if (!g_particles) return;
 
@@ -1735,7 +2324,7 @@ void render_particle_system_update(float dt) {
     }
 }
 
-void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up) {
+INLINE void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up) {
     g_particle_view_proj = *view_proj;
     g_particle_cam_right = cam_right;
     g_particle_cam_up = cam_up;
@@ -1782,7 +2371,7 @@ static void render_particle_system_draw_internal(void) {
     C89GL_glEnable(GL_DEPTH_TEST);
 }
 
-void render_particle_system_emit_burst(int count) {
+INLINE void render_particle_system_emit_burst(int count) {
     int i;
     if (!g_particles) return;
     for (i = 0; i < count; ++i) {

@@ -1,0 +1,82 @@
+#version 430 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+uniform sampler2D uDepthTex;
+uniform mat4 uInvViewProj;
+uniform vec3 uListenerPos;
+
+struct GroupAccum {
+    float sum;
+    float sumsq;
+    uint  count;
+    uint  min_bits;
+    uint  max_bits;
+};
+layout(std430, binding = 2) buffer ReverbAccum {
+    GroupAccum groups[];
+} accum;
+
+shared float sh_sum[64];
+shared float sh_sumsq[64];
+shared uint  sh_count[64];
+shared uint  sh_min_bits[64];
+shared uint  sh_max_bits[64];
+
+vec3 world_from_uv_depth(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 world = uInvViewProj * clip;
+    return world.xyz / world.w;
+}
+
+void main() {
+    ivec2 tex_size = textureSize(uDepthTex, 0);
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    uint idx = gl_LocalInvocationIndex;
+
+    // Initialize shared arrays
+    sh_sum[idx] = 0.0;
+    sh_sumsq[idx] = 0.0;
+    sh_count[idx] = 0;
+    sh_min_bits[idx] = floatBitsToUint(1e10);
+    sh_max_bits[idx] = floatBitsToUint(0.0);
+    barrier();
+
+    if (pix.x < tex_size.x && pix.y < tex_size.y) {
+        float d = texelFetch(uDepthTex, pix, 0).r;
+        if (d > 0.001 && d < 0.999) {
+            vec2 uv = (vec2(pix) + 0.5) / vec2(tex_size);
+            vec3 world_pos = world_from_uv_depth(uv, d);
+            float dist = length(world_pos - uListenerPos);
+            sh_sum[idx] = dist;
+            sh_sumsq[idx] = dist * dist;
+            sh_count[idx] = 1;
+            uint dbits = floatBitsToUint(dist);
+            sh_min_bits[idx] = dbits;
+            sh_max_bits[idx] = dbits;
+        }
+    }
+    barrier();
+
+    // Reduction
+    for (uint stride = 32; stride > 0; stride >>= 1) {
+        if (idx < stride) {
+            sh_sum[idx] += sh_sum[idx + stride];
+            sh_sumsq[idx] += sh_sumsq[idx + stride];
+            sh_count[idx] += sh_count[idx + stride];
+            sh_min_bits[idx] = min(sh_min_bits[idx], sh_min_bits[idx + stride]);
+            sh_max_bits[idx] = max(sh_max_bits[idx], sh_max_bits[idx + stride]);
+        }
+        barrier();
+    }
+
+    // Thread 0 writes group accumulation
+    if (idx == 0) {
+        uint group_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        accum.groups[group_id].sum = sh_sum[0];
+        accum.groups[group_id].sumsq = sh_sumsq[0];
+        accum.groups[group_id].count = sh_count[0];
+        accum.groups[group_id].min_bits = sh_min_bits[0];
+        accum.groups[group_id].max_bits = sh_max_bits[0];
+    }
+}

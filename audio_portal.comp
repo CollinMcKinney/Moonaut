@@ -1,0 +1,90 @@
+#version 430 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+uniform sampler2D uDepthTex;
+uniform mat4 uInvViewProj;
+uniform vec3 uListenerPos;
+uniform float uPortalThreshold; // e.g. 0.5 metres
+
+struct PortalCandidate {
+    float dist;
+    float pos_x;
+    float pos_y;
+    float pos_z;
+};
+layout(std430, binding = 3) buffer PortalCandidates {
+    PortalCandidate candidates[];
+};
+
+shared float sh_dist[64];
+shared vec3  sh_pos[64];
+
+vec3 world_from_uv_depth(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 world = uInvViewProj * clip;
+    return world.xyz / world.w;
+}
+
+void main() {
+    ivec2 tex_size = textureSize(uDepthTex, 0);
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    uint idx = gl_LocalInvocationIndex;
+
+    sh_dist[idx] = 1e10;
+    sh_pos[idx] = vec3(0.0);
+    barrier();
+
+    if (pix.x < tex_size.x && pix.y < tex_size.y) {
+        float d_center = texelFetch(uDepthTex, pix, 0).r;
+        if (d_center > 0.001 && d_center < 0.999) {
+            // Sample 4 neighbours to detect a depth jump
+            ivec2 offsets[4] = ivec2[4](ivec2(0,1), ivec2(0,-1), ivec2(1,0), ivec2(-1,0));
+            float min_neighbor = 1.0;
+            bool valid = true;
+            for (int i = 0; i < 4; i++) {
+                ivec2 np = pix + offsets[i];
+                if (np.x < 0 || np.x >= tex_size.x || np.y < 0 || np.y >= tex_size.y) {
+                    valid = false;
+                    break;
+                }
+                float dn = texelFetch(uDepthTex, np, 0).r;
+                if (dn > 0.001 && dn < 0.999) {
+                    min_neighbor = min(min_neighbor, dn);
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            // Portal if central depth is significantly larger than the nearest wall
+            if (valid && (d_center > min_neighbor + uPortalThreshold)) {
+                vec2 uv = (vec2(pix) + 0.5) / vec2(tex_size);
+                vec3 world_pos = world_from_uv_depth(uv, d_center);
+                float dist = length(world_pos - uListenerPos);
+                sh_dist[idx] = dist;
+                sh_pos[idx] = world_pos;
+            }
+        }
+    }
+    barrier();
+
+    // Workgroup reduction
+    for (uint stride = 32; stride > 0; stride >>= 1) {
+        if (idx < stride) {
+            if (sh_dist[idx + stride] < sh_dist[idx]) {
+                sh_dist[idx] = sh_dist[idx + stride];
+                sh_pos[idx] = sh_pos[idx + stride];
+            }
+        }
+        barrier();
+    }
+
+    // Thread 0 writes this workgroup's best to global SSBO
+    if (idx == 0) {
+        uint group_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        candidates[group_id].dist = sh_dist[0];
+        candidates[group_id].pos_x = sh_pos[0].x;
+        candidates[group_id].pos_y = sh_pos[0].y;
+        candidates[group_id].pos_z = sh_pos[0].z;
+    }
+}

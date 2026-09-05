@@ -6,7 +6,6 @@
 #include "common.h"
 #include "physics.h"
 
-
 #define USE_GL
 #if defined(USE_DX11)
 #define RASTERIZER_DX11_IMPLEMENTATION
@@ -97,7 +96,7 @@ static int g_last_height = 0;
 static i32 g_particle_emitter_handle = -1;   /* current emitter tag handle */
 
 /* ========================================================================
-   AUDIO SYSTEM STATE (NEW)
+   AUDIO SYSTEM STATE (UPDATED FOR GEOMETRY)
    ======================================================================== */
 #define MAX_AUDIO_VOICES AP_MAX_MIXER_VOICES
 
@@ -113,6 +112,18 @@ typedef struct audio_voice_slot {
 static audio_voice_slot_t g_audio_slots[MAX_AUDIO_VOICES];
 static effect_mixer_ctx_t g_audio_ctx;
 static int g_audio_initialized = 0;
+
+/* ---- Per‑frame voice positions for geometry analysis ---- */
+static vec3 g_audio_voice_positions[MAX_AUDIO_VOICES];
+static int g_audio_active_count = 0;
+
+/* ========================================================================
+   NEW HELPER: apply GPU propagation results to a mixer voice
+   ======================================================================== */
+static inline void audio_voice_set_propagation(voice_t *v, const audio_propagation_output_t *prop) {
+    if (!v || !prop) return;
+    v->occlusion = prop->occlusion;
+}
 
 /* ------------------------------------------------------------------------
    Lua helper - return the internal physics_body for a given entity index,
@@ -1014,7 +1025,7 @@ static i32 lua_particle_emit_burst(lua_State *L)
 }
 
 /* ========================================================================
-   Light Lua bindings (NEW)
+   Light Lua bindings
    ======================================================================== */
 
 static i32 lua_light_clear(lua_State *L) {
@@ -1126,7 +1137,7 @@ static i32 lua_light_set_enabled(lua_State *L) {
 }
 
 /* ========================================================================
-   Audio Lua bindings (NEW)
+   Audio Lua bindings
    ======================================================================== */
 
 static i32 lua_audio_load_wav(lua_State *L) {
@@ -1170,6 +1181,8 @@ static i32 lua_audio_load_wav(lua_State *L) {
     v->rolloff = 1.0f;
     v->active = 0; // not playing yet
     v->looping = 0;
+    memset(v->reflection_buffer, 0, sizeof(v->reflection_buffer));
+    v->reflection_write_pos = 0;
 
     lua_pushinteger(L, slot);
     return 1;
@@ -1611,6 +1624,97 @@ static void runtime_start(void)
             }
         }
 
+        /* ================================================================
+           AUDIO GEOMETRY – Collect voice positions and dispatch analysis
+           ================================================================ */
+        /* ---- Collect active audio voice positions ---- */
+        g_audio_active_count = 0;
+        for (int i = 0; i < MAX_AUDIO_VOICES && g_audio_active_count < MAX_AUDIO_VOICES; i++) {
+            voice_t *v = &g_audio_slots[i].voice;
+            if (v->active && v->volume > 0.0f) {
+                g_audio_voice_positions[g_audio_active_count] = vec3_init_from_3(v->smooth_x, v->smooth_y, v->smooth_z);
+                g_audio_active_count++;
+            }
+        }
+
+        /* ---- Debug: print active voices occasionally ---- */
+        static int voice_count_debug_frames = 0;
+        if (++voice_count_debug_frames % 60 == 0) {
+            /*printf("Active audio voices: %d\n", g_audio_active_count);*/
+        }
+
+        #ifdef AUDIO_OCCLUSION
+        /* ---- Feed positions to the GPU compute shader ---- */
+        render_set_audio_voice_data(g_audio_voice_positions, g_audio_active_count);
+        #endif
+
+        /* ---- Render scene (depth pre‑pass triggers audio analysis) ---- */
+        render_set_time((real)now);
+        scenario_render();
+
+        #ifdef AUDIO_OCCLUSION
+        /* ---- Poll audio analysis results and update mixer ---- */
+        if (g_audio_active_count > 0) {
+            audio_propagation_output_t props[MAX_AUDIO_VOICES];
+            int received = render_poll_audio_propagation(props, g_audio_active_count);
+            if (received > 0) {
+                int i;
+                /* Update occlusion for each voice */
+                for (i = 0; i < received && i < MAX_AUDIO_VOICES; i++) {
+                    voice_t *v = &g_audio_slots[i].voice;
+                    audio_voice_set_propagation(v, &props[i]);
+                }
+
+                #ifdef AUDIO_PORTAL
+                /* Check if any voice is occluded */
+                int any_occluded = 0;
+                for (i = 0; i < received; i++) {
+                    if (props[i].occlusion > 0.05f) {
+                        any_occluded = 1;
+                        break;
+                    }
+                }
+
+                /* Trigger portal search if needed */
+                if (any_occluded) {
+                    render_trigger_portal_search();
+                }
+
+                /* Poll portal result (non‑blocking) */
+                vec3 portal_pos;
+                int portal_active = 0;
+                if (render_poll_audio_portal(&portal_pos, &portal_active)) {
+                    for (int i = 0; i < received && i < MAX_AUDIO_VOICES; i++) {
+                        voice_t *v = &g_audio_slots[i].voice;
+                        if (props[i].occlusion > 0.05f && portal_active) {
+                            v->portal_active = 1;
+                            v->portal_pos_x = portal_pos.position.x;
+                            v->portal_pos_y = portal_pos.position.y;
+                            v->portal_pos_z = portal_pos.position.z;
+                            v->portal_dampening = 0.1f;  /* fixed dampening for now */
+                        } else {
+                            v->portal_active = 0;
+                        }
+                    }
+                }
+                #endif /* AUDIO_PORTAL */
+            }
+        }
+        #endif /* AUDIO_OCCLUSION */
+
+        /* ---- Poll global stats for reverb ---- */
+        #ifdef AUDIO_REVERB
+        audio_global_stats_t stats;
+        if (render_poll_audio_global_stats(&stats) == 1) {
+            audio_set_room_geometry(stats.max_depth, stats.avg_depth, stats.variance);
+        } else {
+            static int stat_fail_count = 0;
+            if (++stat_fail_count % 60 == 0) {
+                /*printf("Stats not ready yet (waiting for fence)\n");*/
+            }
+        }
+        #endif
+
         /* ---- Update audio listener and feed pipe ---- */
         if (g_audio_initialized) {
             vec3 forward = vec3_normalize(vec3_sub(sc_cam_center, sc_cam_eye));
@@ -1624,10 +1728,7 @@ static void runtime_start(void)
             ap_update();
         }
 
-        render_set_time((real)now);
-        scenario_render();
-
-
+        /* ---- Present frame ---- */
         const u32 *fb = render_get_fb();
         present_frame((void*)fb);
 
