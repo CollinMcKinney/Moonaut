@@ -677,19 +677,44 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
 
             /* Add main voice to output */
             float frame[AP_MAX_CHANNELS];
+            float *output = buffer + i * out_channels;
+
             frame[0] = main_left;
             frame[1] = main_right;
             for (c = 2; c < out_channels; c++) frame[c] = (main_left + main_right) * 0.5f;
-            float *output = buffer + i * out_channels;
             for (c = 0; c < out_channels; c++) output[c] += frame[c];
 
-            /* Portal secondary voice (if active) */
+            /* ---- Portal secondary voice (if active) ---- */
             if (vo->portal_active) {
-                float pdx = vo->portal_pos_x - ctx->listener.pos_x;
-                float pdy = vo->portal_pos_y - ctx->listener.pos_y;
-                float pdz = vo->portal_pos_z - ctx->listener.pos_z;
-                float p_dist = sqrtf(pdx*pdx + pdy*pdy + pdz*pdz);
-                float p_atten = distance_attenuation(p_dist, vo->rolloff);
+                /* ---- Smooth portal position and activation ---- */
+                float pos_alpha_portal = 0.15f;  /* adjust for desired smoothing speed */
+                vo->portal_smooth_x += pos_alpha_portal * (vo->portal_pos_x - vo->portal_smooth_x);
+                vo->portal_smooth_y += pos_alpha_portal * (vo->portal_pos_y - vo->portal_smooth_y);
+                vo->portal_smooth_z += pos_alpha_portal * (vo->portal_pos_z - vo->portal_smooth_z);
+
+                float act_alpha = 0.1f;
+                vo->portal_smooth_active += act_alpha * (1.0f - vo->portal_smooth_active);
+                if (vo->portal_smooth_active > 0.999f) vo->portal_smooth_active = 1.0f;
+            } else {
+                /* Fade out portal */
+                float act_alpha = 0.1f;
+                vo->portal_smooth_active += act_alpha * (0.0f - vo->portal_smooth_active);
+                if (vo->portal_smooth_active < 0.001f) {
+                    vo->portal_smooth_active = 0.0f;
+                    /* Optionally reset portal HRTF state to avoid stale filters */
+                    // memset(&vo->hrtf_portal, 0, sizeof(hrtf_state_t));
+                }
+            }
+
+            /* Only process portal if smoothing gain is above threshold */
+            if (vo->portal_smooth_active > 0.001f) {
+                /* Use smoothed position for direction */
+                float pdx = vo->portal_smooth_x - ctx->listener.pos_x;
+                float pdy = vo->portal_smooth_y - ctx->listener.pos_y;
+                float pdz = vo->portal_smooth_z - ctx->listener.pos_z;
+
+                /* ----- FIX: use total path distance from shader ----- */
+                float p_atten = distance_attenuation(vo->portal_total_dist, vo->rolloff);
                 float p_vol = vo->volume * p_atten * gain;
 
                 /* Portal dampening as a simple low-pass */
@@ -709,15 +734,17 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
                     right_x, right_y, right_z,
                     up_x, up_y, up_z,
                     p_atten, vo->volume, gain,
-                    dist_cutoff, elev_cutoff, /* reusing same distance cutoff for simplicity; could compute own */
+                    dist_cutoff, elev_cutoff,
                     sample_rate,
                     &vo->hrtf_portal,
                     &portal_left, &portal_right
                 );
 
-                frame[0] = portal_left;
-                frame[1] = portal_right;
-                for (c = 2; c < out_channels; c++) frame[c] = (portal_left + portal_right) * 0.5f;
+                /* Apply smooth crossfade gain */
+                float portal_gain = vo->portal_smooth_active;
+                frame[0] = portal_left * portal_gain;
+                frame[1] = portal_right * portal_gain;
+                for (c = 2; c < out_channels; c++) frame[c] = (portal_left + portal_right) * 0.5f * portal_gain;
                 for (c = 0; c < out_channels; c++) output[c] += frame[c];
             }
         } /* end voice loop */

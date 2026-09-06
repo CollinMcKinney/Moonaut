@@ -1666,32 +1666,28 @@ static void runtime_start(void)
                 }
 
                 #ifdef AUDIO_PORTAL
-                /* Check if any voice is occluded */
-                int any_occluded = 0;
-                for (i = 0; i < received; i++) {
-                    if (props[i].occlusion > 0.05f) {
-                        any_occluded = 1;
-                        break;
-                    }
+                /* Always trigger portal search if any voices are active */
+                if (g_audio_active_count > 0) {
+                    render_trigger_portal_search();  /* checks fence internally */
                 }
 
-                /* Trigger portal search if needed */
-                if (any_occluded) {
-                    render_trigger_portal_search();
-                }
+                /* Poll per‑voice portal results – only if we have data */
+                vec3 portal_positions[MAX_AUDIO_VOICES];
+                float portal_distances[MAX_AUDIO_VOICES];
+                int portal_active_flags[MAX_AUDIO_VOICES] = {0};
+                int portal_count = render_poll_audio_portal(portal_positions, portal_distances, portal_active_flags, g_audio_active_count);
 
-                /* Poll portal result (non‑blocking) */
-                vec3 portal_pos;
-                int portal_active = 0;
-                if (render_poll_audio_portal(&portal_pos, &portal_active)) {
-                    for (int i = 0; i < received && i < MAX_AUDIO_VOICES; i++) {
+                /* Only update portal state when fresh data is available */
+                if (portal_count > 0) {
+                    for (i = 0; i < g_audio_active_count && i < MAX_AUDIO_VOICES; i++) {
                         voice_t *v = &g_audio_slots[i].voice;
-                        if (props[i].occlusion > 0.05f && portal_active) {
+                        if (portal_active_flags[i] && v->occlusion > 0.01f) {
                             v->portal_active = 1;
-                            v->portal_pos_x = portal_pos.position.x;
-                            v->portal_pos_y = portal_pos.position.y;
-                            v->portal_pos_z = portal_pos.position.z;
-                            v->portal_dampening = 0.1f;  /* fixed dampening for now */
+                            v->portal_pos_x = portal_positions[i].position.x;
+                            v->portal_pos_y = portal_positions[i].position.y;
+                            v->portal_pos_z = portal_positions[i].position.z;
+                            v->portal_total_dist = portal_distances[i];
+                            v->portal_dampening = 0.1f;
                         } else {
                             v->portal_active = 0;
                         }

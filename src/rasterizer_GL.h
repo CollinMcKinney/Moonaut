@@ -108,7 +108,8 @@ int  render_poll_audio_global_stats(audio_global_stats_t *stats);
 
 #ifdef AUDIO_PORTAL
 void render_trigger_portal_search(void);
-int  render_poll_audio_portal(vec3 *portal_pos, int *portal_active);
+/* CHANGED: returns portal positions and distances (total path length) */
+int  render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices);
 #endif
 
 /* ---- Public constants ---- */
@@ -166,7 +167,8 @@ typedef struct portal_candidate {
     float pos_y;
     float pos_z;
 } portal_candidate_t;
-#define PORTAL_CANDIDATE_SIZE (MAX_REVERB_GROUPS * sizeof(portal_candidate_t))
+/* FIX: use per‑voice size, not reverb groups */
+#define PORTAL_CANDIDATE_SIZE (MAX_AUDIO_VOICES_GPU * sizeof(portal_candidate_t))
 #endif
 
 /* ---- Helper conversion (u32 -> real) ---- */
@@ -1287,7 +1289,7 @@ void render_trigger_portal_search(void) {
         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (reset_ptr) {
         int i;
-        for (i = 0; i < MAX_REVERB_GROUPS; i++) {
+        for (i = 0; i < MAX_AUDIO_VOICES_GPU; i++) {
             reset_ptr[i].dist = 1e10f;
             reset_ptr[i].pos_x = 0.0f;
             reset_ptr[i].pos_y = 0.0f;
@@ -1332,7 +1334,8 @@ void render_trigger_portal_search(void) {
     gl_audio_portal_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 }
 
-int render_poll_audio_portal(vec3 *portal_pos, int *portal_active) {
+/* CHANGED: per‑voice portal poll returns distances */
+int render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices) {
     if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1])
         return 0;
 
@@ -1346,36 +1349,29 @@ int render_poll_audio_portal(vec3 *portal_pos, int *portal_active) {
     gl_audio_portal_fence = NULL;
 
     int read_idx = (gl_audio_stats_frame & 1) ^ 1;
+    int count = 0;
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[read_idx]);
     void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
                                        PORTAL_CANDIDATE_SIZE,
                                        GL_MAP_READ_BIT);
-    if (!ptr) {
-        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-        return 0;
-    }
-
-    portal_candidate_t *cands = (portal_candidate_t*)ptr;
-    float best_dist = 1e10f;
-    vec3 best_pos = {0.0f, 0.0f, 0.0f};
-    int found = 0;
-    int i;
-    for (i = 0; i < MAX_REVERB_GROUPS; i++) {
-        if (cands[i].dist < best_dist) {
-            best_dist = cands[i].dist;
-            best_pos.position.x = cands[i].pos_x;
-            best_pos.position.y = cands[i].pos_y;
-            best_pos.position.z = cands[i].pos_z;
-            found = 1;
+    if (ptr) {
+        portal_candidate_t *cands = (portal_candidate_t*)ptr;
+        int num_to_read = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
+        for (int i = 0; i < num_to_read; i++) {
+            if (cands[i].dist < 1e9f) {
+                portal_positions[i] = vec3_init_from_3(cands[i].pos_x, cands[i].pos_y, cands[i].pos_z);
+                portal_distances[i] = cands[i].dist;   /* total path from shader */
+                portal_active_flags[i] = 1;
+                count++;
+            } else {
+                portal_active_flags[i] = 0;
+                portal_distances[i] = 0.0f;
+            }
         }
+        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     }
-    C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    if (portal_pos) *portal_pos = best_pos;
-    if (portal_active) *portal_active = (found && best_dist < 1e9f) ? 1 : 0;
-
-    return found ? 1 : 0;
+    return count;
 }
 #endif
 

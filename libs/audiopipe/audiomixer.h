@@ -89,6 +89,13 @@ typedef struct {
     float        portal_buffer[256];     /* extra delay line if needed, currently unused */
     int          portal_write_pos;
 
+    /* ---- Portal Smoothing (NEW) ---- */
+    float        portal_smooth_x;
+    float        portal_smooth_y;
+    float        portal_smooth_z;
+    float        portal_smooth_active;   /* 0..1 smooth transition for enabling/disabling portal */
+    float        portal_total_dist;      /* total path length from shader: source→portal + portal→listener */
+
     /* ---- Early Reflections (Slap Echo) ---- */
     float        reflection_delay_sec;
     float        reflection_gain;

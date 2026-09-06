@@ -1,6 +1,6 @@
 #version 430 core
 
-layout(local_size_x = 8, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 uniform sampler2D uDepthTex;
 uniform mat4 uViewProj;
@@ -27,7 +27,8 @@ layout(std430, binding = 3) buffer PortalCandidates {
 };
 
 vec3 world_from_uv_depth(vec2 uv, float depth) {
-    vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    float clip_z = depth * 2.0 - 1.0;
+    vec4 clip = vec4(uv * 2.0 - 1.0, clip_z, 1.0);
     vec4 world = uInvViewProj * clip;
     return world.xyz / world.w;
 }
@@ -40,63 +41,62 @@ void main() {
 
     vec3 source_world = voices[voice_idx].worldPos;
 
-    // Project source to screen space
     vec4 clip = uViewProj * vec4(source_world, 1.0);
     vec2 uv = clip.xy / clip.w;
     uv = uv * 0.5 + 0.5;
-    float source_depth = clip.z / clip.w;
+    float source_depth_01 = clip.z / clip.w * 0.5 + 0.5;
 
-    // If source is behind the camera or off‑screen, skip
     if (clip.w <= 0.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        candidates[voice_idx].dist = 1e10;
+        candidates[voice_idx].dist = length(source_world - uListenerPos);
+        candidates[voice_idx].pos_x = source_world.x;
+        candidates[voice_idx].pos_y = source_world.y;
+        candidates[voice_idx].pos_z = source_world.z;
         return;
     }
 
     ivec2 tex_size = textureSize(uDepthTex, 0);
     ivec2 center_pix = ivec2(uv * vec2(tex_size));
-
-    // Check if the source is already visible (line‑of‑sight)
     float depth_at_center = texelFetch(uDepthTex, center_pix, 0).r;
-    if (depth_at_center > source_depth + 0.001) {
-        // Already visible – no portal needed
+
+    if (depth_at_center >= source_depth_01 - 0.001) {
         candidates[voice_idx].dist = 1e10;
         return;
     }
 
-    // Radial scan: 8 directions, stepping outward
-    vec2 dirs[8] = vec2[8](
-        vec2(1,0), vec2(1,1), vec2(0,1), vec2(-1,1),
-        vec2(-1,0), vec2(-1,-1), vec2(0,-1), vec2(1,-1)
-    );
+    // ---- Brute‑force all pixels, keep closest (by squared distance) ----
+    float best_sq_dist = 1e10;
+    vec2 best_uv = uv;
 
-    float max_radius = 0.5;           // scan up to 50% of the screen
-    float step = 1.0 / max(tex_size.x, tex_size.y); // 1 pixel step
+    for (int py = 0; py < tex_size.y; py++) {
+        for (int px = 0; px < tex_size.x; px++) {
+            vec2 sample_uv = vec2(px, py) / vec2(tex_size);
+            float sample_depth = texelFetch(uDepthTex, ivec2(px, py), 0).r;
 
-    for (float radius = step; radius < max_radius; radius += step) {
-        for (int d = 0; d < 8; d++) {
-            vec2 sample_uv = uv + dirs[d] * radius;
-            if (sample_uv.x < 0.0 || sample_uv.x > 1.0 ||
-                sample_uv.y < 0.0 || sample_uv.y > 1.0) {
-                continue;
-            }
-
-            ivec2 sample_pix = ivec2(sample_uv * vec2(tex_size));
-            float sample_depth = texelFetch(uDepthTex, sample_pix, 0).r;
-
-            // If this pixel is farther than the source, we found a portal
-            if (sample_depth > source_depth + 0.001) {
-                vec3 world_pos = world_from_uv_depth(sample_uv, sample_depth);
-                float dist = length(world_pos - uListenerPos);
-
-                candidates[voice_idx].dist = dist;
-                candidates[voice_idx].pos_x = world_pos.x;
-                candidates[voice_idx].pos_y = world_pos.y;
-                candidates[voice_idx].pos_z = world_pos.z;
-                return;
+            if (sample_depth > source_depth_01 + 0.001) {
+                vec2 delta = sample_uv - uv;
+                float sq_dist = delta.x * delta.x + delta.y * delta.y;
+                if (sq_dist < best_sq_dist) {
+                    best_sq_dist = sq_dist;
+                    best_uv = sample_uv;
+                }
             }
         }
     }
 
-    // No portal found within the scan radius
-    candidates[voice_idx].dist = 1e10;
+    if (best_sq_dist < 1e9) {
+        float best_depth = texelFetch(uDepthTex, ivec2(best_uv * vec2(tex_size)), 0).r;
+        vec3 portal_world = world_from_uv_depth(best_uv, best_depth);
+        float total_path = length(source_world - portal_world) + length(portal_world - uListenerPos);
+        candidates[voice_idx].dist = total_path;
+        candidates[voice_idx].pos_x = portal_world.x;
+        candidates[voice_idx].pos_y = portal_world.y;
+        candidates[voice_idx].pos_z = portal_world.z;
+        return;
+    }
+
+    // ---- Fallback ----
+    candidates[voice_idx].dist = length(source_world - uListenerPos);
+    candidates[voice_idx].pos_x = source_world.x;
+    candidates[voice_idx].pos_y = source_world.y;
+    candidates[voice_idx].pos_z = source_world.z;
 }
