@@ -76,15 +76,15 @@
 
 /* ---- Reverb tuning constants (unchanged) ---- */
 #define REVERB_DECAY_MIN         0.1f
-#define REVERB_DECAY_MAX         16.0f
+#define REVERB_DECAY_MAX         1.2f
 #define REVERB_DEPTH_MAX_CLAMP   15.0f
-#define REVERB_DEPTH_MIN         0.5f
+#define REVERB_DEPTH_MIN         0.1f
 #define REVERB_DEPTH_MAPPING_POWER 2.0f
-#define REVERB_DAMPING_MIN       0.0f
+#define REVERB_DAMPING_MIN       0.1f
 #define REVERB_DAMPING_MAX       1.0f
 #define REVERB_VARIANCE_MAX_CLAMP 80.0f
-#define REVERB_WET_MIN           0.1f
-#define REVERB_WET_MAX           1.0f
+#define REVERB_WET_MIN           0.01f
+#define REVERB_WET_MAX           0.25f
 #define REVERB_WET_POWER         2.0f
 #define REVERB_WET_SMOOTH_ALPHA  1.0f
 #define REVERB_WET_START_ALPHA   1.0f
