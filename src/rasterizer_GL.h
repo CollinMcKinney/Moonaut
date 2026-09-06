@@ -12,7 +12,7 @@
  *   particle.frag    – particle fragment shader
  *   audio_occlusion.comp – compute shader for per‑voice occlusion
  *   audio_reverb.comp   – compute shader for room statistics
- *   audio_portal.comp   – compute shader for portal search (dedicated)
+ *   audio_portal.comp   – compute shader for per‑voice portal search
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
@@ -107,7 +107,7 @@ int  render_poll_audio_global_stats(audio_global_stats_t *stats);
 #endif
 
 #ifdef AUDIO_PORTAL
-void render_trigger_portal_search(void);   /* NEW: called from runtime when needed */
+void render_trigger_portal_search(void);
 int  render_poll_audio_portal(vec3 *portal_pos, int *portal_active);
 #endif
 
@@ -408,6 +408,8 @@ static GLint port_u_depth_tex = -1;
 static GLint port_u_inv_view_proj = -1;
 static GLint port_u_listener_pos = -1;
 static GLint port_u_threshold = -1;
+static GLint port_u_num_voices = -1;   /* NEW */
+static GLint port_u_view_proj = -1;    /* NEW */
 static GLuint gl_audio_portal_candidates_ssbo[2] = {0, 0};
 static GLsync gl_audio_portal_fence = NULL;
 #endif
@@ -1068,6 +1070,8 @@ static void init_audio_resources(void) {
                 port_u_inv_view_proj    = C89GL_glGetUniformLocation(gl_audio_portal_program, "uInvViewProj");
                 port_u_listener_pos     = C89GL_glGetUniformLocation(gl_audio_portal_program, "uListenerPos");
                 port_u_threshold        = C89GL_glGetUniformLocation(gl_audio_portal_program, "uPortalThreshold");
+                port_u_num_voices       = C89GL_glGetUniformLocation(gl_audio_portal_program, "uNumVoices");
+                port_u_view_proj        = C89GL_glGetUniformLocation(gl_audio_portal_program, "uViewProj");
             } else {
                 char log[512];
                 C89GL_glGetProgramInfoLog(gl_audio_portal_program, sizeof(log), NULL, log);
@@ -1270,15 +1274,13 @@ int render_poll_audio_global_stats(audio_global_stats_t *stats) {
 void render_trigger_portal_search(void) {
     if (!gl_audio_portal_program) return;
 
-    /* If a previous search is still pending, do not overwrite its fence.
-       The poll function will delete the fence when it reads the result. */
     if (gl_audio_portal_fence) {
         return;
     }
 
     int write_idx = gl_audio_stats_frame & 1;
 
-    /* Reset portal candidates buffer for write_idx (map/invalidate) */
+    /* Reset portal candidates buffer for write_idx */
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[write_idx]);
     portal_candidate_t *reset_ptr = (portal_candidate_t*)C89GL_glMapBufferRange(
         GL_SHADER_STORAGE_BUFFER, 0, PORTAL_CANDIDATE_SIZE,
@@ -1298,19 +1300,35 @@ void render_trigger_portal_search(void) {
     C89GL_glActiveTexture(GL_TEXTURE0);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
     C89GL_glUseProgram(gl_audio_portal_program);
+
     C89GL_glUniform1i(port_u_depth_tex, 0);
+    C89GL_glUniform1f(port_u_threshold, 0.5f);  // Unused by the new shader, kept for compatibility
+
     mat4 inv_view_proj = mat4_inverse(gl_view_proj);
     C89GL_glUniformMatrix4fv(port_u_inv_view_proj, 1, GL_TRUE, (float*)&inv_view_proj);
     C89GL_glUniform3fv(port_u_listener_pos, 1, (float*)&gl_cam_eye);
-    C89GL_glUniform1f(port_u_threshold, 0.5f);
+
+    #ifdef AUDIO_OCCLUSION
+    /* Bind voice input SSBO to binding 0 and set uniforms */
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_audio_voice_input_ssbo);
+    C89GL_glUniform1i(port_u_num_voices, g_audio_voice_count_gpu);
+    C89GL_glUniformMatrix4fv(port_u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
+    #endif
+
     C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, gl_audio_portal_candidates_ssbo[write_idx]);
-    GLuint groups_x = (gl_low_width + 7) / 8;
-    GLuint groups_y = (gl_low_height + 7) / 8;
-    C89GL_glDispatchCompute(groups_x, groups_y, 1);
+
+    #ifdef AUDIO_OCCLUSION
+    GLuint groups = (g_audio_voice_count_gpu + 7) / 8;
+    if (groups == 0) groups = 1;
+    C89GL_glDispatchCompute(groups, 1, 1);
+    #else
+    /* Fallback: dispatch one group even if no voices (shouldn't happen if AUDIO_OCCLUSION is on) */
+    C89GL_glDispatchCompute(1, 1, 1);
+    #endif
+
     C89GL_glUseProgram(0);
     C89GL_glActiveTexture(GL_TEXTURE0);
 
-    /* Create fence only if there was no pending fence (we checked above) */
     gl_audio_portal_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 }
 
