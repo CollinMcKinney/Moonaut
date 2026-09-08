@@ -108,7 +108,6 @@ int  render_poll_audio_global_stats(audio_global_stats_t *stats);
 
 #ifdef AUDIO_PORTAL
 void render_trigger_portal_search(void);
-/* CHANGED: returns portal positions and distances (total path length) */
 int  render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices);
 #endif
 
@@ -167,7 +166,6 @@ typedef struct portal_candidate {
     float pos_y;
     float pos_z;
 } portal_candidate_t;
-/* FIX: use per‑voice size, not reverb groups */
 #define PORTAL_CANDIDATE_SIZE (MAX_AUDIO_VOICES_GPU * sizeof(portal_candidate_t))
 #endif
 
@@ -315,9 +313,9 @@ static const int gl_low_width = 64;
 static const int gl_low_height = 36;
 
 /* ---- Batching state ---- */
-#define MAX_BATCHES         128
+#define MAX_BATCHES         256      /* increased for many materials */
 #define MAX_TRANSPARENT_TRIS 8192
-#define MAX_VERTICES_PER_FRAME (1024 * 1024)
+#define MAX_VERTICES_PER_FRAME (4 * 1024 * 1024)   /* 4M – dynamic, but used as limit */
 #define MAX_INDICES_PER_FRAME  (MAX_VERTICES_PER_FRAME * 3)
 #define VERTEX_STRIDE_FLOATS 16
 #define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
@@ -346,7 +344,8 @@ static float *gl_vertex_pool = NULL;
 static size_t gl_pool_capacity_floats = 0;
 static size_t gl_pool_used_floats = 0;
 
-static GLushort *gl_index_pool = NULL;
+/* ---- INDICES ARE NOW 32‑BIT ---- */
+static GLuint *gl_index_pool = NULL;          /* changed from GLushort */
 static size_t gl_index_pool_capacity = 0;
 static size_t gl_index_pool_used = 0;
 
@@ -410,8 +409,8 @@ static GLint port_u_depth_tex = -1;
 static GLint port_u_inv_view_proj = -1;
 static GLint port_u_listener_pos = -1;
 static GLint port_u_threshold = -1;
-static GLint port_u_num_voices = -1;   /* NEW */
-static GLint port_u_view_proj = -1;    /* NEW */
+static GLint port_u_num_voices = -1;
+static GLint port_u_view_proj = -1;
 static GLuint gl_audio_portal_candidates_ssbo[2] = {0, 0};
 static GLsync gl_audio_portal_fence = NULL;
 #endif
@@ -675,7 +674,7 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
     char defines[4096];
     GLint len;
     char log[512];
-    int i;   /* declared at top for C89 */
+    int i;
 
     if (!gl_shader_cache) {
         gl_shader_cache_size = SHADER_CACHE_INITIAL_SIZE;
@@ -1122,7 +1121,7 @@ static void dispatch_audio_compute(void) {
     int i;
 
 #ifdef AUDIO_REVERB
-    if (gl_audio_reverb_program) {
+    if (gl_audio_reverb_program && gl_audio_global_stats_ssbo[0] && gl_audio_global_stats_ssbo[1]) {
         C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[write_idx]);
         C89GL_glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, 0, REVERB_ACCUM_SIZE,
                                    GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
@@ -1150,7 +1149,8 @@ static void dispatch_audio_compute(void) {
 #endif
 
 #ifdef AUDIO_OCCLUSION
-    if (gl_audio_occlusion_program && g_audio_voice_count_gpu > 0) {
+    if (gl_audio_occlusion_program && g_audio_voice_count_gpu > 0 &&
+        gl_audio_voice_input_ssbo && gl_audio_propagation_ssbo[0] && gl_audio_propagation_ssbo[1]) {
         C89GL_glActiveTexture(GL_TEXTURE0);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
         C89GL_glUseProgram(gl_audio_occlusion_program);
@@ -1191,7 +1191,6 @@ void render_set_audio_voice_data(const vec3 *positions, int count) {
 
 int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voices) {
     if (!gl_audio_propagation_ssbo[0] || !gl_audio_propagation_ssbo[1]) return 0;
-
     if (!gl_audio_occlusion_fence) return 0;
     GLenum status = C89GL_glClientWaitSync(gl_audio_occlusion_fence, 0, 0);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
@@ -1220,7 +1219,6 @@ int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voice
 #ifdef AUDIO_REVERB
 int render_poll_audio_global_stats(audio_global_stats_t *stats) {
     if (!gl_audio_global_stats_ssbo[0] || !gl_audio_global_stats_ssbo[1]) return 0;
-
     if (!gl_audio_reverb_fence) return 0;
     GLenum status = C89GL_glClientWaitSync(gl_audio_reverb_fence, 0, 0);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
@@ -1275,21 +1273,18 @@ int render_poll_audio_global_stats(audio_global_stats_t *stats) {
 #ifdef AUDIO_PORTAL
 void render_trigger_portal_search(void) {
     if (!gl_audio_portal_program) return;
-
-    if (gl_audio_portal_fence) {
-        return;
-    }
+    if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1]) return;
+    if (gl_audio_portal_fence) return;   // already waiting
 
     int write_idx = gl_audio_stats_frame & 1;
 
-    /* Reset portal candidates buffer for write_idx */
+    // Reset buffer (optional, but safe)
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[write_idx]);
     portal_candidate_t *reset_ptr = (portal_candidate_t*)C89GL_glMapBufferRange(
         GL_SHADER_STORAGE_BUFFER, 0, PORTAL_CANDIDATE_SIZE,
         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (reset_ptr) {
-        int i;
-        for (i = 0; i < MAX_AUDIO_VOICES_GPU; i++) {
+        for (int i = 0; i < MAX_AUDIO_VOICES_GPU; i++) {
             reset_ptr[i].dist = 1e10f;
             reset_ptr[i].pos_x = 0.0f;
             reset_ptr[i].pos_y = 0.0f;
@@ -1304,29 +1299,35 @@ void render_trigger_portal_search(void) {
     C89GL_glUseProgram(gl_audio_portal_program);
 
     C89GL_glUniform1i(port_u_depth_tex, 0);
-    C89GL_glUniform1f(port_u_threshold, 0.5f);  // Unused by the new shader, kept for compatibility
+    C89GL_glUniform1f(port_u_threshold, 0.5f);
 
     mat4 inv_view_proj = mat4_inverse(gl_view_proj);
     C89GL_glUniformMatrix4fv(port_u_inv_view_proj, 1, GL_TRUE, (float*)&inv_view_proj);
     C89GL_glUniform3fv(port_u_listener_pos, 1, (float*)&gl_cam_eye);
 
-    #ifdef AUDIO_OCCLUSION
-    /* Bind voice input SSBO to binding 0 and set uniforms */
-    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_audio_voice_input_ssbo);
-    C89GL_glUniform1i(port_u_num_voices, g_audio_voice_count_gpu);
-    C89GL_glUniformMatrix4fv(port_u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
-    #endif
+#ifdef AUDIO_OCCLUSION
+    if (gl_audio_voice_input_ssbo && g_audio_voice_count_gpu > 0) {
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_audio_voice_input_ssbo);
+        C89GL_glUniform1i(port_u_num_voices, g_audio_voice_count_gpu);
+        C89GL_glUniformMatrix4fv(port_u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
+    } else {
+        // No voices – skip dispatch
+        C89GL_glUseProgram(0);
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        return;
+    }
+#else
+    // If AUDIO_OCCLUSION is off, we cannot get voice data – skip
+    C89GL_glUseProgram(0);
+    C89GL_glActiveTexture(GL_TEXTURE0);
+    return;
+#endif
 
     C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, gl_audio_portal_candidates_ssbo[write_idx]);
 
-    #ifdef AUDIO_OCCLUSION
     GLuint groups = (g_audio_voice_count_gpu + 7) / 8;
     if (groups == 0) groups = 1;
     C89GL_glDispatchCompute(groups, 1, 1);
-    #else
-    /* Fallback: dispatch one group even if no voices (shouldn't happen if AUDIO_OCCLUSION is on) */
-    C89GL_glDispatchCompute(1, 1, 1);
-    #endif
 
     C89GL_glUseProgram(0);
     C89GL_glActiveTexture(GL_TEXTURE0);
@@ -1334,16 +1335,12 @@ void render_trigger_portal_search(void) {
     gl_audio_portal_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 }
 
-/* CHANGED: per‑voice portal poll returns distances */
 int render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices) {
-    if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1])
-        return 0;
-
+    if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1]) return 0;
     if (!gl_audio_portal_fence) return 0;
+
     GLenum status = C89GL_glClientWaitSync(gl_audio_portal_fence, 0, 0);
-    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
-        return 0;
-    }
+    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) return 0;
 
     C89GL_glDeleteSync(gl_audio_portal_fence);
     gl_audio_portal_fence = NULL;
@@ -1351,16 +1348,14 @@ int render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, in
     int read_idx = (gl_audio_stats_frame & 1) ^ 1;
     int count = 0;
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[read_idx]);
-    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
-                                       PORTAL_CANDIDATE_SIZE,
-                                       GL_MAP_READ_BIT);
+    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, PORTAL_CANDIDATE_SIZE, GL_MAP_READ_BIT);
     if (ptr) {
         portal_candidate_t *cands = (portal_candidate_t*)ptr;
         int num_to_read = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
         for (int i = 0; i < num_to_read; i++) {
             if (cands[i].dist < 1e9f) {
                 portal_positions[i] = vec3_init_from_3(cands[i].pos_x, cands[i].pos_y, cands[i].pos_z);
-                portal_distances[i] = cands[i].dist;   /* total path from shader */
+                portal_distances[i] = cands[i].dist;
                 portal_active_flags[i] = 1;
                 count++;
             } else {
@@ -1448,7 +1443,7 @@ static int transparent_compare(const void* a, const void* b) {
     return (ta->id < tb->id) ? -1 : (ta->id > tb->id) ? 1 : 0;
 }
 
-/* ---- Flush transparent batches ---- */
+/* ---- Flush transparent batches (FIXED: pointer reassignment after realloc) ---- */
 static void flush_transparent_batches(void) {
     int i, j;
     if (gl_transparent_count == 0) return;
@@ -1471,6 +1466,7 @@ static void flush_transparent_batches(void) {
 
             for (j = start; j < i; j++) {
                 transparent_tri_t *t = &gl_transparent_tris[j];
+                /* Check and grow pools before writing */
                 if (gl_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > gl_pool_capacity_floats ||
                     gl_index_pool_used + 3 > gl_index_pool_capacity) {
                     size_t new_cap = gl_pool_capacity_floats ? gl_pool_capacity_floats * 2 : 1024 * VERTEX_STRIDE_FLOATS;
@@ -1479,11 +1475,12 @@ static void flush_transparent_batches(void) {
                     gl_vertex_pool = new_pool;
                     gl_pool_capacity_floats = new_cap;
                     size_t new_idx_cap = gl_index_pool_capacity ? gl_index_pool_capacity * 2 : 1024 * 3;
-                    GLushort *new_idx = (GLushort*)realloc(gl_index_pool, new_idx_cap * sizeof(GLushort));
+                    GLuint *new_idx = (GLuint*)realloc(gl_index_pool, new_idx_cap * sizeof(GLuint));
                     if (!new_idx) return;
                     gl_index_pool = new_idx;
                     gl_index_pool_capacity = new_idx_cap;
                 }
+                /* NOW get pointer after possible realloc */
                 float *ptr = &gl_vertex_pool[gl_pool_used_floats];
                 vec3 localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(t->v1, t->v0), vec3_sub(t->v2, t->v0)));
                 vec3 localCentroid = vec3_div_scalar(vec3_add(vec3_add(t->v0, t->v1), t->v2), 3.0f);
@@ -1498,7 +1495,7 @@ static void flush_transparent_batches(void) {
                 PACK_V(t->v1, t->n1, t->v1, localFaceNormal, localCentroid, t->model_index);
                 PACK_V(t->v2, t->n2, t->v2, localFaceNormal, localCentroid, t->model_index);
                 #undef PACK_V
-                GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
+                GLuint base = (GLuint)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
                 gl_index_pool[gl_index_pool_used++] = base;
                 gl_index_pool[gl_index_pool_used++] = base + 1;
                 gl_index_pool[gl_index_pool_used++] = base + 2;
@@ -1522,6 +1519,7 @@ static void bind_fbo(void) {
    INTERNAL DRAW HELPERS (indexed, GPU transforms)
    ================================================================ */
 
+/* ---- draw_triangle_indexed (FIXED: pointer reassignment after realloc) ---- */
 static void draw_triangle_indexed(
     vec3 local_v0, vec3 local_v1, vec3 local_v2,
     vec3 local_n0, vec3 local_n1, vec3 local_n2,
@@ -1587,6 +1585,7 @@ static void draw_triangle_indexed(
 
     batch_t *b = &gl_batches[batch_idx];
 
+    /* Check and grow pools */
     if (gl_pool_used_floats + (3 * VERTEX_STRIDE_FLOATS) > gl_pool_capacity_floats ||
         gl_index_pool_used + 3 > gl_index_pool_capacity) {
         size_t new_cap = gl_pool_capacity_floats ? gl_pool_capacity_floats * 2 : 1024 * VERTEX_STRIDE_FLOATS;
@@ -1594,14 +1593,17 @@ static void draw_triangle_indexed(
         if (!new_pool) { render_finish(); return; }
         gl_vertex_pool = new_pool;
         gl_pool_capacity_floats = new_cap;
+
         size_t new_idx_cap = gl_index_pool_capacity ? gl_index_pool_capacity * 2 : 1024 * 3;
-        GLushort *new_idx = (GLushort*)realloc(gl_index_pool, new_idx_cap * sizeof(GLushort));
+        GLuint *new_idx = (GLuint*)realloc(gl_index_pool, new_idx_cap * sizeof(GLuint));
         if (!new_idx) { render_finish(); return; }
         gl_index_pool = new_idx;
         gl_index_pool_capacity = new_idx_cap;
     }
 
+    /* NOW get pointer after possible realloc */
     float *ptr = &gl_vertex_pool[gl_pool_used_floats];
+
     #define PACK_V(v, n, l, lfn, lc, mi) \
         *(ptr++) = (v).position.x; *(ptr++) = (v).position.y; *(ptr++) = (v).position.z; \
         *(ptr++) = (n).position.x; *(ptr++) = (n).position.y; *(ptr++) = (n).position.z; \
@@ -1614,7 +1616,7 @@ static void draw_triangle_indexed(
     PACK_V(local_v2, local_n2, local_v2, localFaceNormal, localCentroid, model_index);
     #undef PACK_V
 
-    GLushort base = (GLushort)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
+    GLuint base = (GLuint)(gl_pool_used_floats / VERTEX_STRIDE_FLOATS);
     gl_index_pool[gl_index_pool_used++] = base;
     gl_index_pool[gl_index_pool_used++] = base + 1;
     gl_index_pool[gl_index_pool_used++] = base + 2;
@@ -1624,7 +1626,7 @@ static void draw_triangle_indexed(
     b->index_count += 3;
 }
 
-/* ---- Entity draw with model index ---- */
+/* ---- Entity draw with model index (32‑bit indices) ---- */
 static void draw_entity_with_model_index(const struct entity_definition *ent, int model_index) {
     if (!ent || ent->model.handle < 0) return;
     model_definition *mod = (model_definition*)tag_get(ent->model.handle, TAG_model);
@@ -1654,10 +1656,10 @@ static void draw_entity_with_model_index(const struct entity_definition *ent, in
         }
 
         model_vertex *verts = (model_vertex*)prim->vertices.address;
-        u16 *indices = (u16*)prim->indices.address;
+        u32 *indices = (u32*)prim->indices.address;   /* 32‑bit indices */
         u32 tri_count = prim->indices.count / 3;
         for (t = 0; t < tri_count; ++t) {
-            u16 i0 = indices[t*3+0], i1 = indices[t*3+1], i2 = indices[t*3+2];
+            u32 i0 = indices[t*3+0], i1 = indices[t*3+1], i2 = indices[t*3+2];
             vec3 local_v0 = verts[i0].position;
             vec3 local_v1 = verts[i1].position;
             vec3 local_v2 = verts[i2].position;
@@ -1982,7 +1984,6 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
                        GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
-    /* Low‑res depth stays at 64x36, so we don't need to recreate it */
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
     gl_num_tiles_x = (gl_render_width + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
     gl_num_tiles_y = (gl_render_height + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
@@ -2014,7 +2015,7 @@ static int batch_compare_mode(const void* a, const void* b) {
 
 static void render_particle_system_draw_internal(void);
 
-/* ---- render_finish ---- */
+/* ---- render_finish (uses GL_UNSIGNED_INT) ---- */
 INLINE void render_finish(void) {
     int i;
     GLuint current_program = 0;
@@ -2026,7 +2027,7 @@ INLINE void render_finish(void) {
 
     if (gl_batch_count > 0) {
         size_t vert_bytes = gl_pool_used_floats * sizeof(float);
-        size_t idx_bytes  = gl_index_pool_used * sizeof(GLushort);
+        size_t idx_bytes  = gl_index_pool_used * sizeof(GLuint);
 
         C89GL_glBindBuffer(GL_ARRAY_BUFFER, gl_vertex_vbo);
         if (gl_vbo_capacity_bytes < vert_bytes) {
@@ -2064,8 +2065,8 @@ INLINE void render_finish(void) {
             }
             update_material_ubo(b->mat);
             set_uniforms_for_variant(variant, 1);
-            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                 (void*)(b->index_offset * sizeof(GLushort)));
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
+                                 (void*)(b->index_offset * sizeof(GLuint)));
         }
         if (current_program) C89GL_glUseProgram(0);
 
@@ -2100,8 +2101,8 @@ INLINE void render_finish(void) {
             }
             update_material_ubo(b->mat);
             set_uniforms_for_variant(variant, 0);
-            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                 (void*)(b->index_offset * sizeof(GLushort)));
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
+                                 (void*)(b->index_offset * sizeof(GLuint)));
         }
         if (current_program) C89GL_glUseProgram(0);
 
@@ -2121,8 +2122,8 @@ INLINE void render_finish(void) {
             }
             update_material_ubo(b->mat);
             set_uniforms_for_variant(variant, 0);
-            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_SHORT,
-                                 (void*)(b->index_offset * sizeof(GLushort)));
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
+                                 (void*)(b->index_offset * sizeof(GLuint)));
         }
         if (current_program) C89GL_glUseProgram(0);
         C89GL_glDisable(GL_BLEND);
@@ -2131,11 +2132,7 @@ INLINE void render_finish(void) {
         C89GL_glBindVertexArray(0);
         render_particle_system_draw_internal();
     } else {
-        /* Even if no geometry, still run audio if voices are present. */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-        /* No need to dispatch audio here; it was already dispatched above */
-        /* But we still need to blit depth to low‑res FBO? If no geometry, low‑res depth is not updated. */
-        /* That's fine; audio will use the previous frame's depth. */
     }
 
     C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);

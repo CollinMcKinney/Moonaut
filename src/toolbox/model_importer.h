@@ -26,9 +26,10 @@ extern "C" {
  *   - Each glTF mesh primitive becomes one model_primitive and one material
  *     slot. This is the unit Blender/glTF commonly uses for submeshes.
  *   - POSITION and NORMAL accessors must be FLOAT VEC3.
- *   - Indices may be UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT, but the
- *     final engine primitive must fit u16 indices.
+ *   - Indices may be UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT – the
+ *     final engine primitive uses u32 indices.
  *   - Animation, skins, textures, and glTF material properties are ignored.
+ *   - Extra vertex attributes (UVs, tangents, colours, bone data) are zeroed.
  */
 
 #define MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_BYTE  5121u
@@ -1541,8 +1542,9 @@ static void model_importer_bounds_include(real_bounding_box *bounds, vec3 point,
     if (point.position.z > bounds->z.upper) bounds->z.upper = point.position.z;
 }
 
+/* FIX: indices are now u32 */
 static void model_importer_compute_normals(model_vertex *vertices, u32 vertex_count,
-                                           const u16 *indices, u32 index_count)
+                                           const u32 *indices, u32 index_count)
 {
     u32 i;
 
@@ -1553,23 +1555,16 @@ static void model_importer_compute_normals(model_vertex *vertices, u32 vertex_co
     }
 
     for (i = 0; i + 2u < index_count; i += 3u) {
-        u16 i0;
-        u16 i1;
-        u16 i2;
-        vec3 edge_a;
-        vec3 edge_b;
-        vec3 face_normal;
+        u32 i0 = indices[i + 0u];
+        u32 i1 = indices[i + 1u];
+        u32 i2 = indices[i + 2u];
 
-        i0 = indices[i + 0u];
-        i1 = indices[i + 1u];
-        i2 = indices[i + 2u];
-
-        if ((u32)i0 >= vertex_count || (u32)i1 >= vertex_count || (u32)i2 >= vertex_count)
+        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
             continue;
 
-        edge_a = model_importer_vec3_sub(vertices[i1].position, vertices[i0].position);
-        edge_b = model_importer_vec3_sub(vertices[i2].position, vertices[i0].position);
-        face_normal = model_importer_vec3_cross(edge_a, edge_b);
+        vec3 edge_a = model_importer_vec3_sub(vertices[i1].position, vertices[i0].position);
+        vec3 edge_b = model_importer_vec3_sub(vertices[i2].position, vertices[i0].position);
+        vec3 face_normal = model_importer_vec3_cross(edge_a, edge_b);
 
         vertices[i0].normal = model_importer_vec3_add(vertices[i0].normal, face_normal);
         vertices[i1].normal = model_importer_vec3_add(vertices[i1].normal, face_normal);
@@ -1590,7 +1585,7 @@ static int model_importer_fill_mesh_primitive(model_importer_context *ctx,
                                               i32 *has_bounds)
 {
     model_vertex *vertices;
-    u16 *indices;
+    u32 *indices;   /* FIX: changed from u16* */
     u32 vertex_count;
     u32 index_count;
     i32 needs_normals;
@@ -1605,7 +1600,7 @@ static int model_importer_fill_mesh_primitive(model_importer_context *ctx,
         return 0;
 
     vertices = (model_vertex*)model_importer_calloc_count(vertex_count, sizeof(model_vertex));
-    indices = (u16*)model_importer_calloc_count(index_count, sizeof(u16));
+    indices = (u32*)model_importer_calloc_count(index_count, sizeof(u32));   /* FIX: u32 allocation */
     if (!vertices || !indices) {
         if (vertices) TAG_FREE(vertices);
         if (indices) TAG_FREE(indices);
@@ -1617,6 +1612,7 @@ static int model_importer_fill_mesh_primitive(model_importer_context *ctx,
     out_primitive->indices.count = index_count;
     out_primitive->indices.address = indices;
     out_primitive->material_index = (i32)material_index;
+    /* morph_targets block already zero-initialised by calloc on the primitive itself */
 
     transform = ctx->mesh_transforms ? ctx->mesh_transforms[mesh_index] : model_importer_mat4_identity();
 
@@ -1654,10 +1650,9 @@ static int model_importer_fill_mesh_primitive(model_importer_context *ctx,
 
         if (local_index >= vertex_count)
             return model_importer_set_error("mesh index references a missing vertex");
-        if (local_index > 0xFFFFu)
-            return model_importer_set_error("mesh index exceeds u16");
 
-        indices[i] = (u16)local_index;
+        /* FIX: no > 0xFFFFu check – we store u32 directly */
+        indices[i] = local_index;
     }
 
     if (needs_normals)
@@ -1679,12 +1674,17 @@ static void model_importer_free_model(model_definition *model)
         for (i = 0; i < model->primitives.count; ++i) {
             if (primitives[i].vertices.address) TAG_FREE(primitives[i].vertices.address);
             if (primitives[i].indices.address) TAG_FREE(primitives[i].indices.address);
+            /* morph_targets block may be allocated; if we ever allocate it, free it */
+            if (primitives[i].morph_targets.address) TAG_FREE(primitives[i].morph_targets.address);
         }
         TAG_FREE(model->primitives.address);
     }
 
     if (model->materials.address)
         TAG_FREE(model->materials.address);
+
+    if (model->skeleton.address)
+        TAG_FREE(model->skeleton.address);
 
     memset(model, 0, sizeof(*model));
 }
@@ -1742,6 +1742,10 @@ static int model_importer_import_glb_with_material(const char *path,
     model.primitives.address = primitives;
     model.materials.count = ctx.model_primitive_count;
     model.materials.address = materials;
+
+    /* skeleton block is empty; we leave it zeroed */
+    model.skeleton.count = 0;
+    model.skeleton.address = NULL;
 
     for (i = 0; i < ctx.model_primitive_count; ++i) {
         materials[i].handle = default_material_handle;

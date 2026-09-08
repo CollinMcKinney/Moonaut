@@ -9,48 +9,181 @@
 extern "C" {
 #endif
 
+/* --------------------------------------------------------------------------
+ * Configuration – adjust these to your project's needs.
+ * These are compile‑time constants and affect the vertex size.
+ * -------------------------------------------------------------------------- */
+#define MODEL_MAX_UV_SETS          8
+#define MODEL_MAX_COLOR_SETS       4
+#define MODEL_MAX_BONE_INFLUENCES  8
+
+/* --------------------------------------------------------------------------
+ * Vertex – all fields explicit, no arrays in the struct to keep reflection simple.
+ * Total size: 192 bytes.
+ * -------------------------------------------------------------------------- */
 typedef struct model_vertex {
     vec3 position;
     vec3 normal;
+    vec4 tangent;          /* w = ±1 (handedness) */
+
+    /* UV sets: TEXCOORD_0 .. TEXCOORD_7 */
+    vec2 uv0;  vec2 uv1;  vec2 uv2;  vec2 uv3;
+    vec2 uv4;  vec2 uv5;  vec2 uv6;  vec2 uv7;
+
+    /* Color sets: COLOR_0 .. COLOR_3 */
+    vec4 color0;  vec4 color1;  vec4 color2;  vec4 color3;
+
+    /* Bone influences – each influence is a pair (index, weight) */
+    u16  bone_index0;  u8  bone_weight0;
+    u16  bone_index1;  u8  bone_weight1;
+    u16  bone_index2;  u8  bone_weight2;
+    u16  bone_index3;  u8  bone_weight3;
+    u16  bone_index4;  u8  bone_weight4;
+    u16  bone_index5;  u8  bone_weight5;
+    u16  bone_index6;  u8  bone_weight6;
+    u16  bone_index7;  u8  bone_weight7;
 } model_vertex;
 
-TAG_BLOCK_BEGIN(model_vertex_block, 65535, sizeof(struct model_vertex))
+/* Reflection – fields must match the struct layout exactly */
+TAG_BLOCK_BEGIN(model_vertex_block, -1, sizeof(model_vertex))
     FIELD_VEC3("position"),
     FIELD_VEC3("normal"),
+    FIELD_VEC4("tangent"),
+    FIELD_VEC2("uv0"),
+    FIELD_VEC2("uv1"),
+    FIELD_VEC2("uv2"),
+    FIELD_VEC2("uv3"),
+    FIELD_VEC2("uv4"),
+    FIELD_VEC2("uv5"),
+    FIELD_VEC2("uv6"),
+    FIELD_VEC2("uv7"),
+    FIELD_VEC4("color0"),
+    FIELD_VEC4("color1"),
+    FIELD_VEC4("color2"),
+    FIELD_VEC4("color3"),
+    FIELD_U16("bone_index0"),  FIELD_U8("bone_weight0"),
+    FIELD_U16("bone_index1"),  FIELD_U8("bone_weight1"),
+    FIELD_U16("bone_index2"),  FIELD_U8("bone_weight2"),
+    FIELD_U16("bone_index3"),  FIELD_U8("bone_weight3"),
+    FIELD_U16("bone_index4"),  FIELD_U8("bone_weight4"),
+    FIELD_U16("bone_index5"),  FIELD_U8("bone_weight5"),
+    FIELD_U16("bone_index6"),  FIELD_U8("bone_weight6"),
+    FIELD_U16("bone_index7"),  FIELD_U8("bone_weight7"),
     FIELD_TERMINATOR
-TAG_BLOCK_END(model_vertex_block, 65535, sizeof(struct model_vertex))
+TAG_BLOCK_END(model_vertex_block, -1, sizeof(model_vertex))
 
-TAG_BLOCK_BEGIN(model_index_block, 1048576, sizeof(u16))
-    FIELD_U16("model_index"),
+/* --------------------------------------------------------------------------
+ * Indices – stored as 32‑bit to support large meshes (>65535 vertices)
+ * -------------------------------------------------------------------------- */
+TAG_BLOCK_BEGIN(model_index_block, -1, sizeof(u32))
+    FIELD_U32("index"),
     FIELD_TERMINATOR
-TAG_BLOCK_END(model_index_block, 1048576, sizeof(u16))
+TAG_BLOCK_END(model_index_block, -1, sizeof(u32))
 
-TAG_REFERENCE(model_material_ref, TAG_material);   /* keep if used elsewhere */
+/* --------------------------------------------------------------------------
+ * Skeleton joint
+ * -------------------------------------------------------------------------- */
+typedef struct model_joint {
+    i32      parent;              /* -1 for root */
+    string_id name;               /* interned string (from string table) */
+    mat4     inv_bind_matrix;     /* row‑major, world‑to‑joint space */
+} model_joint;
 
-/* Block of tag references - each element is a single handle (4 bytes) */
+TAG_BLOCK_BEGIN(model_joint_block, 256, sizeof(model_joint))
+    FIELD_I32("parent"),
+    FIELD_STRING_ID("name"),
+    FIELD_MAT4("inv_bind_matrix"),
+    FIELD_TERMINATOR
+TAG_BLOCK_END(model_joint_block, 256, sizeof(model_joint))
+
+/* --------------------------------------------------------------------------
+ * Helper blocks for morph targets and animations
+ * -------------------------------------------------------------------------- */
+TAG_BLOCK_BEGIN(model_real_block, 1048576, sizeof(real))
+    FIELD_REAL("value"),
+    FIELD_TERMINATOR
+TAG_BLOCK_END(model_real_block, 1048576, sizeof(real))
+
+TAG_BLOCK_BEGIN(model_vec3_block, 65535, sizeof(vec3))
+    FIELD_VEC3("value"),
+    FIELD_TERMINATOR
+TAG_BLOCK_END(model_vec3_block, 65535, sizeof(vec3))
+
+TAG_BLOCK_BEGIN(model_vec4_block, 65535, sizeof(vec4))
+    FIELD_VEC4("value"),
+    FIELD_TERMINATOR
+TAG_BLOCK_END(model_vec4_block, 65535, sizeof(vec4))
+
+/* --------------------------------------------------------------------------
+ * Morph target – per‑primitive deltas (blend shapes)
+ * -------------------------------------------------------------------------- */
+typedef struct model_morph_target {
+    struct tag_block position_deltas;   /* block of vec3, count = vertex count */
+    struct tag_block normal_deltas;     /* block of vec3, may be empty */
+    struct tag_block tangent_deltas;    /* block of vec4, may be empty */
+    real             default_weight;    /* from glTF mesh.weights */
+} model_morph_target;
+
+TAG_BLOCK_BEGIN(model_morph_target_block, 64, sizeof(model_morph_target))
+    FIELD_BLOCK("position_deltas", model_vec3_block),
+    FIELD_BLOCK("normal_deltas", model_vec3_block),
+    FIELD_BLOCK("tangent_deltas", model_vec4_block),
+    FIELD_REAL("default_weight"),
+    FIELD_TERMINATOR
+TAG_BLOCK_END(model_morph_target_block, 64, sizeof(model_morph_target))
+
+/* --------------------------------------------------------------------------
+ * Primitive – a draw call unit (one material, one set of vertex/index buffers)
+ * -------------------------------------------------------------------------- */
+typedef struct model_primitive {
+    struct tag_block vertices;          /* block of model_vertex */
+    struct tag_block indices;           /* block of u32 */
+    struct tag_block morph_targets;     /* block of model_morph_target */
+    i32              material_index;    /* index into model's material block */
+} model_primitive;
+
+TAG_BLOCK_BEGIN(model_primitive_block, -1, sizeof(model_primitive))
+    FIELD_BLOCK("vertices", model_vertex_block),
+    FIELD_BLOCK("indices", model_index_block),
+    FIELD_BLOCK("morph_targets", model_morph_target_block),
+    FIELD_I32("material_index"),
+    FIELD_TERMINATOR
+TAG_BLOCK_END(model_primitive_block, -1, sizeof(model_primitive))
+
+/* --------------------------------------------------------------------------
+ * Material reference block (used inside model)
+ * -------------------------------------------------------------------------- */
+TAG_REFERENCE(model_material_ref, TAG_material);
+
 TAG_BLOCK_BEGIN(model_material_block, 256, sizeof(tag_reference))
-    FIELD_REFERENCE("material", model_material_ref),   /* each element is a reference to an entity tag */
+    FIELD_REFERENCE("material", model_material_ref),
     FIELD_TERMINATOR
 TAG_BLOCK_END(model_material_block, 256, sizeof(tag_reference))
 
-typedef struct model_primitive {
-    struct tag_block vertices;
-    struct tag_block indices;
-    i32              material_index;
-} model_primitive;
-
-TAG_BLOCK_BEGIN(model_primitive_block, 64, sizeof(struct model_primitive))
-    FIELD_BLOCK("vertices", model_vertex_block),
-    FIELD_BLOCK("indices", model_index_block),
-    FIELD_I32("material_index"),
-    FIELD_TERMINATOR
-TAG_BLOCK_END(model_primitive_block, 64, sizeof(struct model_primitive))
-
+/* --------------------------------------------------------------------------
+ * Model definition – the main tag group
+ * -------------------------------------------------------------------------- */
 typedef struct model_definition {
-    struct tag_block primitives;
-    struct tag_block materials;
+    struct tag_block primitives;         /* block of model_primitive */
+    struct tag_block materials;          /* block of tag_reference (material handles) */
+    struct tag_block skeleton;           /* block of model_joint */
     real_bounding_box bounding_box;
+    /* Animations are stored in separate tags (animation.h) */
 } model_definition;
+
+TAG_GROUP_BEGIN(model, TAG_MAGIC_PACK(modl), sizeof(model_definition))
+    FIELD_BLOCK("primitives", model_primitive_block),
+    FIELD_BLOCK("materials", model_material_block),
+    FIELD_BLOCK("skeleton", model_joint_block),
+    FIELD_REAL_BOUNDING_BOX("bounding_box"),
+    FIELD_TERMINATOR
+TAG_GROUP_END(model, sizeof(model_definition))
+
+/* --------------------------------------------------------------------------
+ * Default models – data copied verbatim from the original file.
+ * The extra fields (tangent, UVs, colors, bone data) will be zero-initialized
+ * because they are not listed in the initializers.
+ * -------------------------------------------------------------------------- */
 
 /* Material slots for defaults */
 static struct tag_reference DEFAULT_SPHERE_MATERIAL_REF = { -1 };
@@ -224,7 +357,7 @@ static const model_vertex DEFAULT_SPHERE_VERTS[162] = {
     {{{0.850651f, 0.525731f, 0.000000f}}, {{0.850651f, 0.525731f, 0.000000f}}}
 };
 
-static const u16 DEFAULT_SPHERE_IDXS[960] = {
+static const u32 DEFAULT_SPHERE_IDXS[960] = {
     0, 42, 44,
     42, 12, 43,
     44, 43, 14,
@@ -553,6 +686,7 @@ static const struct tag_block DEFAULT_SPHERE_IDXS_BLOCK  = { 960u, (void*)DEFAUL
 static const struct model_primitive DEFAULT_SPHERE_PRIMITIVE = {
     DEFAULT_SPHERE_VERTS_BLOCK,
     DEFAULT_SPHERE_IDXS_BLOCK,
+    {0, NULL}, /* morph_targets – empty */
     0
 };
 
@@ -568,6 +702,7 @@ static const real_bounding_box DEFAULT_MODEL_SPHERE_BOUNDS = {
 static const struct model_definition DEFAULT_MODEL_SPHERE = {
     DEFAULT_SPHERE_PRIMITIVES_BLOCK,
     DEFAULT_SPHERE_MATERIALS_BLOCK,
+    {0, NULL}, /* skeleton – empty */
     DEFAULT_MODEL_SPHERE_BOUNDS
 };
 
@@ -601,7 +736,7 @@ static const model_vertex DEFAULT_BOX_VERTS[24] = {
     {{{-5.0f, -1.0f, 5.0f}}, {{0.0f, -1.0f, 0.0f}}}
 };
 
-static const u16 DEFAULT_BOX_IDXS[36] = {
+static const u32 DEFAULT_BOX_IDXS[36] = {
     0, 2, 1,  0, 3, 2,
     4, 5, 6,  4, 6, 7,
     8, 10, 9,  8, 11, 10,
@@ -616,6 +751,7 @@ static const struct tag_block DEFAULT_BOX_IDXS_BLOCK  = { 36u, (void*)DEFAULT_BO
 static const struct model_primitive DEFAULT_BOX_PRIMITIVE = {
     DEFAULT_BOX_VERTS_BLOCK,
     DEFAULT_BOX_IDXS_BLOCK,
+    {0, NULL}, /* morph_targets – empty */
     0
 };
 
@@ -631,15 +767,9 @@ static const real_bounding_box DEFAULT_MODEL_BOX_BOUNDS = {
 static const struct model_definition DEFAULT_MODEL_BOX = {
     DEFAULT_BOX_PRIMITIVES_BLOCK,
     DEFAULT_BOX_MATERIALS_BLOCK,
+    {0, NULL}, /* skeleton – empty */
     DEFAULT_MODEL_BOX_BOUNDS
 };
-
-TAG_GROUP_BEGIN(model, TAG_MAGIC_PACK(modl), sizeof(struct model_definition))
-    FIELD_BLOCK("primitives", model_primitive_block),
-    FIELD_BLOCK("materials", model_material_block),
-    FIELD_REAL_BOUNDING_BOX("bounding_box"),
-    FIELD_TERMINATOR
-TAG_GROUP_END(model, sizeof(struct model_definition))
 
 #ifdef __cplusplus
 }
