@@ -9,7 +9,7 @@
  *   material.frag    – fragment shader with #ifdef DEPTH_ONLY guard
  *   cluster.comp     – compute shader for light culling
  *   particle.vert    – particle vertex shader
- *   particle.frag    – particle fragment shader
+ *   particle.frag    – particle fragment shader (has #ifdef WBOIT_PASS branch)
  *   oit_composite.vert – full-screen triangle for WBOIT resolve
  *   oit_composite.frag – weighted-blended OIT composite
  *   audio_occlusion.comp – compute shader for per‑voice occlusion
@@ -20,7 +20,16 @@
  * (McGuire & Bavoil 2013). Transparent fragments render into an
  * accumulation buffer and a revealage buffer in any order; a full-screen
  * composite pass resolves them onto the opaque scene. No CPU sorting is
- * performed.
+ * performed. Particles are drawn as an additional WBOIT layer so they sort
+ * correctly against transparent material geometry.
+ *
+ * Audio depth: the low‑resolution depth image read by the audio compute
+ * shaders is populated from gl_depth_tex *after* the opaque pre-pass, the
+ * opaque colour pass, the WBOIT accumulation + composite, and a dedicated
+ * transparent depth-only pass. The result is
+ * gl_depth_tex = min(opaque depth, frontmost transparent depth), i.e. the
+ * true frontmost surface for every pixel, which is what the audio shaders
+ * want. Particles do not write depth and therefore do not occlude audio.
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
@@ -336,8 +345,9 @@ static const int gl_low_height = 36;
  *
  *   GL_DEPTH_ATTACHMENT  -> gl_depth_tex (shared with the main FBO)
  *
- * A full-screen composite pass reads both textures and blends the resolved
- * result over the opaque scene using standard alpha blending.
+ * Particles are drawn into this FBO as an additional WBOIT layer, between
+ * the transparent material batches and the composite, so they sort
+ * correctly against transparent geometry.
  */
 static GLuint gl_oit_fbo         = 0;
 static GLuint gl_oit_accum_tex   = 0;
@@ -452,7 +462,7 @@ static GLsync gl_audio_portal_fence = NULL;
 
 static int gl_audio_stats_frame = 0;   /* Used by any audio feature for double-buffering */
 
-/* ---- Particle system (unchanged) ---- */
+/* ---- Particle system ---- */
 typedef struct {
     vec3 center;
     vec4 color;
@@ -486,6 +496,15 @@ static GLuint g_particle_program = 0;
 static GLint  g_particle_u_view_proj = -1;
 static GLint  g_particle_u_cam_right = -1;
 static GLint  g_particle_u_cam_up = -1;
+
+/* WBOIT variant of the particle shader. Same vertex shader; fragment
+ * shader has a #ifdef WBOIT_PASS branch that writes the two WBOIT
+ * attachments. Used so particles can be composited as an additional
+ * transparent layer. */
+static GLuint g_particle_wboit_program = 0;
+static GLint  g_particle_wboit_u_view_proj = -1;
+static GLint  g_particle_wboit_u_cam_right = -1;
+static GLint  g_particle_wboit_u_cam_up = -1;
 
 static mat4 g_particle_view_proj;
 static vec3 g_particle_cam_right;
@@ -1831,7 +1850,14 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
 
-    /* ---- Create low‑resolution FBO for audio analysis (64x36) ---- */
+    /* ---- Create low‑resolution FBO for audio analysis (64x36) ----
+     *
+     * Depth-only FBO. glDrawBuffer(GL_NONE) is required because the FBO
+     * has no colour attachment; without it some drivers report
+     * GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER and blits into it become
+     * undefined. The original code omitted this, and the failure was
+     * invisible because the source depth was cleared.
+     */
     C89GL_glGenFramebuffers(1, &gl_fbo_low);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo_low);
 
@@ -1844,6 +1870,9 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex_low, 0);
+
+    C89GL_glDrawBuffer(GL_NONE);
+    C89GL_glReadBuffer(GL_NONE);
 
     GLenum fbo_status_low = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (fbo_status_low != GL_FRAMEBUFFER_COMPLETE) {
@@ -2179,6 +2208,7 @@ static int batch_compare_mode(const void* a, const void* b) {
 }
 
 static void render_particle_system_draw_internal(void);
+static void render_particle_system_draw_wboit(void);
 
 /* ---- render_finish (uses GL_UNSIGNED_INT) ---- */
 INLINE void render_finish(void) {
@@ -2215,9 +2245,22 @@ INLINE void render_finish(void) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glBindVertexArray(gl_vao);
 
-        /* ---- Depth pre‑pass ---- */
+        /* ---- Depth pre‑pass (opaque only) ----
+         *
+         * Writes opaque geometry into gl_depth_tex. Transparent geometry is
+         * deliberately excluded: the opaque colour pass and WBOIT accumulation
+         * both test against this depth with GL_LEQUAL, and would be culled by
+         * frontmost transparent geometry if it were present here.
+         *
+         * The audio depth fix adds a *second* depth pass over transparent
+         * batches at the end of the frame, after WBOIT and after particles.
+         * That later pass updates gl_depth_tex in place with GL_LESS, giving
+         * min(opaque, frontmost transparent) right before the blit to the
+         * low-resolution audio target.
+         */
         C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         C89GL_glDepthMask(GL_TRUE);
+        C89GL_glDepthFunc(GL_LESS);
         current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
@@ -2234,13 +2277,6 @@ INLINE void render_finish(void) {
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }
         if (current_program) C89GL_glUseProgram(0);
-
-        /* ---- Blit depth to low‑res FBO (for next frame's audio) ---- */
-        C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
-        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_fbo_low);
-        C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
-                                0, 0, gl_low_width, gl_low_height,
-                                GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 
         /* ---- Re‑bind the main render FBO for subsequent drawing ---- */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
@@ -2281,7 +2317,12 @@ INLINE void render_finish(void) {
          *
          * Blend state per attachment:
          *   attachment 0 (accum):    additive            src=ONE, dst=ONE
-         *   attachment 1 (revealage): multiplicative     src=ZERO, dst=ONE_MINUS_SRC_ALPHA
+         *   attachment 1 (revealage): multiplicative     src=ZERO, dst=ONE_MINUS_SRC_COLOR
+         *
+         * The revealage blend uses SRC_COLOR (not SRC_ALPHA) because the
+         * fragment shader writes the revealage as a float output, which
+         * populates only the R channel — SRC_ALPHA would read an unwritten
+         * alpha of zero and revealage would never decrease.
          *
          * Requires GL 4.0+ for glBlendFunci.
          */
@@ -2319,6 +2360,17 @@ INLINE void render_finish(void) {
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }
         if (current_program) C89GL_glUseProgram(0);
+
+        /* ---- Particles as a WBOIT layer ----
+         *
+         * Drawn while the OIT FBO and the per-attachment WBOIT blend state
+         * are still active so particles accumulate into the same two targets
+         * as the transparent material batches. This makes them sort
+         * correctly against transparent geometry in either depth order: a
+         * particle in front of a glass pane and a particle behind it both
+         * land in the right place after the composite resolves.
+         */
+        render_particle_system_draw_wboit();
 
         /* Restore standard blend state for the composite pass. */
         C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2360,7 +2412,64 @@ INLINE void render_finish(void) {
         C89GL_glDepthMask(GL_TRUE);
 
         C89GL_glBindVertexArray(0);
-        render_particle_system_draw_internal();
+        C89GL_glBindVertexArray(gl_vao);
+
+        /* ---- Transparent depth pass ------------------------------------------
+         *
+         * Writes the frontmost transparent surface into gl_depth_tex so the
+         * audio compute shaders can see it. Runs after particles and after the
+         * WBOIT composite because the opaque colour pass and the WBOIT pass
+         * both need opaque-only depth (they run with LEQUAL and would be
+         * culled by frontmost transparent geometry if it were present
+         * earlier).
+         *
+         * Uses GL_LESS so a transparent fragment only overwrites a depth
+         * entry when strictly nearer than whatever opaque surface is already
+         * there. The result is gl_depth_tex = min(opaque, frontmost
+         * transparent).
+         *
+         * No colour output: the DEPTH_ONLY fragment shader is `void main() { }`
+         * and glColorMask is off anyway. Reuses the existing DEPTH_ONLY
+         * shader variant — the same one the opaque pre-pass uses.
+         */
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+        C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
+        C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        C89GL_glDepthMask(GL_TRUE);
+        C89GL_glDepthFunc(GL_LESS);
+        C89GL_glEnable(GL_DEPTH_TEST);
+
+        current_program = 0;
+        for (i = 0; i < gl_batch_count; i++) {
+            batch_t *b = &gl_batches[i];
+            if (!b->is_transparent) continue;
+            shader_variant_t *variant = get_program_for_method(
+                (render_method)b->mat->render_method, 1, 0);   /* depth-only, not WBOIT */
+            if (!variant) continue;
+            if (current_program != variant->program) {
+                C89GL_glUseProgram(variant->program);
+                current_program = variant->program;
+            }
+            update_material_ubo(b->mat);
+            set_uniforms_for_variant(variant, 1);
+            C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
+                                 (void*)(b->index_offset * sizeof(GLuint)));
+        }
+        if (current_program) C89GL_glUseProgram(0);
+        C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        /* ---- Blit combined depth to low-res FBO for next frame's audio ----
+         *
+         * gl_depth_tex now contains min(opaque depth, frontmost transparent
+         * depth) for every pixel. The low-res target is what the audio
+         * compute shaders read on the next frame.
+         */
+        C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
+        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_fbo_low);
+        C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
+                                0, 0, gl_low_width, gl_low_height,
+                                GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
     } else {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
     }
@@ -2382,7 +2491,7 @@ INLINE void render_finish(void) {
 }
 
 /* ========================================================================
-   Particle system (unchanged)
+   Particle system
    ======================================================================== */
 
 static INLINE float rand_float(float min, float max) {
@@ -2491,6 +2600,47 @@ INLINE void render_particle_system_init(int max_particles) {
     g_particle_u_view_proj = C89GL_glGetUniformLocation(g_particle_program, "uViewProj");
     g_particle_u_cam_right = C89GL_glGetUniformLocation(g_particle_program, "uCamRight");
     g_particle_u_cam_up = C89GL_glGetUniformLocation(g_particle_program, "uCamUp");
+
+    /* ---- WBOIT variant of the particle program ----
+     *
+     * Same vertex shader; the fragment shader has a #ifdef WBOIT_PASS branch
+     * that writes the two WBOIT attachments instead of a single colour.
+     * Compiled and linked separately so it carries its own uniform locations.
+     */
+    {
+        GLuint vs_w = compile_shader_with_defines(GL_VERTEX_SHADER, "particle.vert",
+                                                  "#version 330 core\n");
+        GLuint fs_w = compile_shader_with_defines(GL_FRAGMENT_SHADER, "particle.frag",
+                                                  "#version 330 core\n#define WBOIT_PASS 1\n");
+        if (vs_w && fs_w) {
+            g_particle_wboit_program = C89GL_glCreateProgram();
+            C89GL_glAttachShader(g_particle_wboit_program, vs_w);
+            C89GL_glAttachShader(g_particle_wboit_program, fs_w);
+            C89GL_glLinkProgram(g_particle_wboit_program);
+            GLint st;
+            C89GL_glGetProgramiv(g_particle_wboit_program, GL_LINK_STATUS, &st);
+            if (!st) {
+                char log[512];
+                C89GL_glGetProgramInfoLog(g_particle_wboit_program, sizeof(log), NULL, log);
+                printf("Particle WBOIT program link error:\n%s\n", log);
+                C89GL_glDeleteProgram(g_particle_wboit_program);
+                g_particle_wboit_program = 0;
+            } else {
+                g_particle_wboit_u_view_proj =
+                    C89GL_glGetUniformLocation(g_particle_wboit_program, "uViewProj");
+                g_particle_wboit_u_cam_right =
+                    C89GL_glGetUniformLocation(g_particle_wboit_program, "uCamRight");
+                g_particle_wboit_u_cam_up =
+                    C89GL_glGetUniformLocation(g_particle_wboit_program, "uCamUp");
+            }
+            C89GL_glDeleteShader(vs_w);
+            C89GL_glDeleteShader(fs_w);
+        } else {
+            if (vs_w) C89GL_glDeleteShader(vs_w);
+            if (fs_w) C89GL_glDeleteShader(fs_w);
+            fprintf(stderr, "Failed to compile particle WBOIT shaders\n");
+        }
+    }
 }
 
 INLINE void render_particle_system_shutdown(void) {
@@ -2499,11 +2649,13 @@ INLINE void render_particle_system_shutdown(void) {
     if (g_particle_lifetimes) { free(g_particle_lifetimes); g_particle_lifetimes = NULL; }
     if (g_particle_max_lifetimes) { free(g_particle_max_lifetimes); g_particle_max_lifetimes = NULL; }
     if (g_particle_program) C89GL_glDeleteProgram(g_particle_program);
+    if (g_particle_wboit_program) C89GL_glDeleteProgram(g_particle_wboit_program);
     if (g_particle_vbo) C89GL_glDeleteBuffers(1, &g_particle_vbo);
     if (g_particle_vao) C89GL_glDeleteVertexArrays(1, &g_particle_vao);
     g_particle_count = 0;
     g_particle_capacity = 0;
     g_particle_program = 0;
+    g_particle_wboit_program = 0;
 }
 
 INLINE void render_particle_system_set_emitter(const struct particle_emitter_definition *def) {
@@ -2572,6 +2724,15 @@ INLINE void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_ri
     g_particle_cam_valid = 1;
 }
 
+/* -------------------------------------------------------------------------
+ * Particle solid (non-WBOIT) draw
+ *
+ * Retained for interface stability. In the current pipeline particles are
+ * drawn via render_particle_system_draw_wboit() inside the WBOIT pass, so
+ * this function has no callers. It remains useful as a fallback for any
+ * future non-WBOIT path or for isolating particle behaviour from the OIT
+ * pipeline during debugging.
+ * ------------------------------------------------------------------------- */
 static void render_particle_system_draw_internal(void) {
     if (g_particle_count == 0 || !g_particle_program) return;
 
@@ -2610,6 +2771,57 @@ static void render_particle_system_draw_internal(void) {
     C89GL_glDisable(GL_BLEND);
     C89GL_glUseProgram(0);
     C89GL_glEnable(GL_DEPTH_TEST);
+}
+
+/* -------------------------------------------------------------------------
+ * Particle WBOIT draw
+ *
+ * Draws the particle instances into the currently bound WBOIT FBO with the
+ * WBOIT variant of the fragment shader. Assumes the caller has already set
+ * up the OIT FBO, cleared its attachments, and installed the per-attachment
+ * blend state (ONE, ONE / ZERO, ONE_MINUS_SRC_COLOR). Inherits GL_LEQUAL
+ * against the opaque depth buffer and does not write depth, matching the
+ * transparent material pass.
+ * ------------------------------------------------------------------------- */
+static void render_particle_system_draw_wboit(void) {
+    if (g_particle_count == 0 || !g_particle_wboit_program) return;
+
+    C89GL_glBindBuffer(GL_ARRAY_BUFFER, g_particle_vbo);
+    C89GL_glBufferData(GL_ARRAY_BUFFER,
+                       g_particle_count * sizeof(particle_instance_t),
+                       g_particles, GL_STREAM_DRAW);
+
+    C89GL_glEnable(GL_DEPTH_TEST);
+    C89GL_glDepthFunc(GL_LEQUAL);
+    C89GL_glDepthMask(GL_FALSE);
+
+    if (!g_particle_cam_valid) {
+        g_particle_view_proj = gl_view_proj;
+        g_particle_cam_right = vec3_init_from_3(gl_view.transpose[0][0],
+                                                gl_view.transpose[0][1],
+                                                gl_view.transpose[0][2]);
+        g_particle_cam_up    = vec3_init_from_3(gl_view.transpose[1][0],
+                                                gl_view.transpose[1][1],
+                                                gl_view.transpose[1][2]);
+        g_particle_cam_valid = 1;
+    }
+
+    C89GL_glUseProgram(g_particle_wboit_program);
+    C89GL_glUniformMatrix4fv(g_particle_wboit_u_view_proj, 1, GL_TRUE,
+                             (float*)&g_particle_view_proj);
+
+    float aspect = (gl_render_width > 0 && gl_render_height > 0)
+                 ? ((float)gl_render_width / (float)gl_render_height)
+                 : 1.0f;
+    vec3 cam_right_scaled = vec3_mul_scalar(g_particle_cam_right, 1.0f / aspect);
+    C89GL_glUniform3fv(g_particle_wboit_u_cam_right, 1, (float*)&cam_right_scaled);
+    C89GL_glUniform3fv(g_particle_wboit_u_cam_up, 1, (float*)&g_particle_cam_up);
+
+    C89GL_glBindVertexArray(g_particle_vao);
+    C89GL_glDrawArraysInstanced(GL_TRIANGLES, 0, 6, g_particle_count);
+    C89GL_glBindVertexArray(0);
+
+    C89GL_glUseProgram(0);
 }
 
 INLINE void render_particle_system_emit_burst(int count) {
