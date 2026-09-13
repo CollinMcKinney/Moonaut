@@ -283,6 +283,9 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_FILL                                     0x1B02
 #define GL_LINE                                     0x1B01
 #define GL_POINT                                    0x1B00
+#define GL_POLYGON_OFFSET_FILL                      0x8037
+#define GL_POLYGON_OFFSET_LINE                      0x8038
+#define GL_POLYGON_OFFSET_POINT                     0x8039
 
 /* ========================================================================
    OPENGL 3.3 + 4.3 - FUNCTION POINTER TYPES

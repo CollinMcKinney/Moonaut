@@ -10,9 +10,17 @@
  *   cluster.comp     – compute shader for light culling
  *   particle.vert    – particle vertex shader
  *   particle.frag    – particle fragment shader
+ *   oit_composite.vert – full-screen triangle for WBOIT resolve
+ *   oit_composite.frag – weighted-blended OIT composite
  *   audio_occlusion.comp – compute shader for per‑voice occlusion
  *   audio_reverb.comp   – compute shader for room statistics
  *   audio_portal.comp   – compute shader for per‑voice portal search
+ *
+ * Transparency: Weighted Blended Order-Independent Transparency
+ * (McGuire & Bavoil 2013). Transparent fragments render into an
+ * accumulation buffer and a revealage buffer in any order; a full-screen
+ * composite pass resolves them onto the opaque scene. No CPU sorting is
+ * performed.
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
@@ -239,6 +247,7 @@ typedef struct {
     render_method key;
     GLuint program;
     int   is_depth;
+    int   is_wboit;
     int   hit_logged;
     GLint u_view_proj;
     GLint u_light_dir;
@@ -312,6 +321,32 @@ static GLuint gl_depth_tex_low = 0;
 static const int gl_low_width = 64;
 static const int gl_low_height = 36;
 
+/* ---- Weighted Blended OIT (WBOIT) render targets and composite program ----
+ *
+ * The transparent pass renders into an off-screen FBO with two colour
+ * attachments and the shared depth buffer:
+ *
+ *   GL_COLOR_ATTACHMENT0 -> gl_oit_accum_tex  (GL_RGBA16F)
+ *     RGB: sum of (premultiplied colour * weight)
+ *     A:   sum of (alpha * weight)
+ *
+ *   GL_COLOR_ATTACHMENT1 -> gl_oit_reveal_tex (GL_R8)
+ *     product of (1 - alpha) over all fragments; 1 means "background fully
+ *     visible", 0 means "fully occluded".
+ *
+ *   GL_DEPTH_ATTACHMENT  -> gl_depth_tex (shared with the main FBO)
+ *
+ * A full-screen composite pass reads both textures and blends the resolved
+ * result over the opaque scene using standard alpha blending.
+ */
+static GLuint gl_oit_fbo         = 0;
+static GLuint gl_oit_accum_tex   = 0;
+static GLuint gl_oit_reveal_tex  = 0;
+static GLuint gl_oit_vao         = 0;
+static GLuint gl_oit_composite_program = 0;
+static GLint  oit_u_accum_tex    = -1;
+static GLint  oit_u_reveal_tex   = -1;
+
 /* ---- Batching state ---- */
 #define MAX_BATCHES         256      /* increased for many materials */
 #define MAX_TRANSPARENT_TRIS 8192
@@ -324,9 +359,9 @@ typedef struct {
     vec3 v0, v1, v2;
     vec3 n0, n1, n2;
     const struct material_definition *mat;
-    float depth;
-    float entity_depth;
-    int   id;
+    float depth;        /* unused by WBOIT; retained for interface stability */
+    float entity_depth; /* unused by WBOIT; retained for interface stability */
+    int   id;           /* unused by WBOIT; retained for interface stability */
     int   model_index;
 } transparent_tri_t;
 
@@ -589,7 +624,8 @@ static GLuint compile_shader_with_defines(GLenum type, const char* filename, con
 }
 
 /* ---- Generate defines for material variant (mode + effects) ---- */
-static void generate_defines(render_method key, int is_depth, char* out, size_t out_size) {
+static void generate_defines(render_method key, int is_depth, int is_wboit,
+                             char* out, size_t out_size) {
     char* p = out;
     size_t remaining = out_size;
     int n;
@@ -602,6 +638,11 @@ static void generate_defines(render_method key, int is_depth, char* out, size_t 
 
     if (is_depth) {
         n = snprintf(p, remaining, "#define DEPTH_ONLY 1\n");
+        p += n; remaining -= n;
+    }
+
+    if (is_wboit) {
+        n = snprintf(p, remaining, "#define WBOIT_PASS 1\n");
         p += n; remaining -= n;
     }
 
@@ -667,7 +708,9 @@ static void shader_cache_resize(int new_size) {
 }
 
 /* ---- Get shader variant ---- */
-static shader_variant_t* get_program_for_method(render_method key, int is_depth) {
+static shader_variant_t* get_program_for_method(render_method key,
+                                                int is_depth,
+                                                int is_wboit) {
     shader_variant_t *entry;
     GLuint vs, fs, prog;
     int index, link_status, blockIndex, modelBlock;
@@ -682,7 +725,12 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
         gl_shader_cache_count = 0;
     }
 
-    u32 cache_key = key | (is_depth ? (1u << 31) : 0);
+    /* bit 31: depth-only pass
+     * bit 30: WBOIT transparent pass
+     */
+    u32 cache_key = key
+                  | (is_depth ? (1u << 31) : 0)
+                  | (is_wboit ? (1u << 30) : 0);
 
     index = (unsigned)cache_key % gl_shader_cache_size;
     while (gl_shader_cache[index].program != 0) {
@@ -696,8 +744,9 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
         index = (index + 1) % gl_shader_cache_size;
     }
 
-    printf("[SHADER CACHE] Miss for key 0x%x - compiling new variant...\n", (unsigned)cache_key);
-    generate_defines(key, is_depth, defines, sizeof(defines));
+    printf("[SHADER CACHE] Miss for key 0x%x (depth=%d wboit=%d) - compiling new variant...\n",
+           (unsigned)cache_key, is_depth, is_wboit);
+    generate_defines(key, is_depth, is_wboit, defines, sizeof(defines));
 
     vs = compile_shader_with_defines(GL_VERTEX_SHADER, "material.vert", defines);
     fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material.frag", defines);
@@ -735,6 +784,7 @@ static shader_variant_t* get_program_for_method(render_method key, int is_depth)
     entry->key = (render_method)cache_key;
     entry->program = prog;
     entry->is_depth = is_depth;
+    entry->is_wboit = is_wboit;
     entry->hit_logged = 0;
     entry->u_view_proj = C89GL_glGetUniformLocation(prog, "uViewProj");
     entry->u_light_dir = C89GL_glGetUniformLocation(prog, "uLightDir");
@@ -1430,17 +1480,19 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MODEL_UBO_BINDING, gl_model_ubo);
 }
 
-/* ---- Transparent sort comparator ---- */
+/* ---- Transparent sort comparator ----
+ *
+ * WBOIT is order-independent, so the only reason to sort is to group
+ * consecutive triangles by material and reduce state changes during the
+ * transparent pass. The depth fields on transparent_tri_t are no longer
+ * read; they are retained for now to keep the diff small.
+ */
 static int transparent_compare(const void* a, const void* b) {
     const transparent_tri_t* ta = (const transparent_tri_t*)a;
     const transparent_tri_t* tb = (const transparent_tri_t*)b;
-    if (ta->entity_depth > tb->entity_depth) return -1;
-    if (ta->entity_depth < tb->entity_depth) return 1;
-    if (ta->depth > tb->depth) return -1;
-    if (ta->depth < tb->depth) return 1;
     if (ta->mat < tb->mat) return -1;
     if (ta->mat > tb->mat) return 1;
-    return (ta->id < tb->id) ? -1 : (ta->id > tb->id) ? 1 : 0;
+    return 0;
 }
 
 /* ---- Flush transparent batches (FIXED: pointer reassignment after realloc) ---- */
@@ -1798,6 +1850,96 @@ INLINE int render_init(i32 window_width, i32 window_height) {
         printf("Low‑res FBO incomplete! status=0x%x\n", fbo_status_low);
     }
 
+    /* ---- Create WBOIT FBO with two colour attachments and shared depth ----
+     *
+     * Note: gl_depth_tex is attached to both gl_fbo and gl_oit_fbo. That is
+     * legal — the same texture can back multiple FBOs as long as they are
+     * not bound simultaneously during rendering, which they never are here.
+     */
+    C89GL_glGenFramebuffers(1, &gl_oit_fbo);
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
+
+    C89GL_glGenTextures(1, &gl_oit_accum_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_accum_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
+                       gl_render_width, gl_render_height, 0,
+                       GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                 GL_TEXTURE_2D, gl_oit_accum_tex, 0);
+
+    C89GL_glGenTextures(1, &gl_oit_reveal_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_reveal_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
+                       gl_render_width, gl_render_height, 0,
+                       GL_RED, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+                                 GL_TEXTURE_2D, gl_oit_reveal_tex, 0);
+
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                 GL_TEXTURE_2D, gl_depth_tex, 0);
+
+    /* Both colour attachments must be actively drawn to. */
+    {
+        GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+        C89GL_glDrawBuffers(2, bufs);
+    }
+
+    {
+        GLenum s = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (s != GL_FRAMEBUFFER_COMPLETE)
+            printf("WBOIT FBO incomplete! status=0x%x\n", s);
+    }
+
+    /* Empty VAO for the full-screen composite triangle. The composite
+     * vertex shader generates geometry from gl_VertexID and reads no
+     * attributes, so no buffers need to be bound here. */
+    C89GL_glGenVertexArrays(1, &gl_oit_vao);
+
+    /* Compile the composite program from disk. */
+    {
+        GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER,
+                                                "oit_composite.vert",
+                                                "#version 430 core\n");
+        GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
+                                                "oit_composite.frag",
+                                                "#version 430 core\n");
+        if (vs && fs) {
+            gl_oit_composite_program = C89GL_glCreateProgram();
+            C89GL_glAttachShader(gl_oit_composite_program, vs);
+            C89GL_glAttachShader(gl_oit_composite_program, fs);
+            C89GL_glLinkProgram(gl_oit_composite_program);
+            GLint st;
+            C89GL_glGetProgramiv(gl_oit_composite_program, GL_LINK_STATUS, &st);
+            if (!st) {
+                char log[512];
+                C89GL_glGetProgramInfoLog(gl_oit_composite_program,
+                                          sizeof(log), NULL, log);
+                printf("OIT composite link error:\n%s\n", log);
+                C89GL_glDeleteProgram(gl_oit_composite_program);
+                gl_oit_composite_program = 0;
+            } else {
+                oit_u_accum_tex  = C89GL_glGetUniformLocation(
+                                       gl_oit_composite_program, "uAccumTexture");
+                oit_u_reveal_tex = C89GL_glGetUniformLocation(
+                                       gl_oit_composite_program, "uRevealTexture");
+            }
+            C89GL_glDeleteShader(vs);
+            C89GL_glDeleteShader(fs);
+        } else {
+            if (vs) C89GL_glDeleteShader(vs);
+            if (fs) C89GL_glDeleteShader(fs);
+            printf("ERROR: Failed to compile OIT composite shaders.\n");
+        }
+    }
+
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
 
     GLenum fbo_status = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
@@ -1836,6 +1978,14 @@ INLINE void render_shutdown(void) {
     if (gl_cluster_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_ssbo); gl_cluster_ssbo = 0; }
     if (gl_cluster_offset_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_offset_ssbo); gl_cluster_offset_ssbo = 0; }
     if (gl_cluster_program) { C89GL_glDeleteProgram(gl_cluster_program); gl_cluster_program = 0; }
+
+    /* WBOIT cleanup */
+    if (gl_oit_composite_program) { C89GL_glDeleteProgram(gl_oit_composite_program); gl_oit_composite_program = 0; }
+    if (gl_oit_vao)         { C89GL_glDeleteVertexArrays(1, &gl_oit_vao); gl_oit_vao = 0; }
+    if (gl_oit_reveal_tex)  { C89GL_glDeleteTextures(1, &gl_oit_reveal_tex); gl_oit_reveal_tex = 0; }
+    if (gl_oit_accum_tex)   { C89GL_glDeleteTextures(1, &gl_oit_accum_tex); gl_oit_accum_tex = 0; }
+    if (gl_oit_fbo)         { C89GL_glDeleteFramebuffers(1, &gl_oit_fbo); gl_oit_fbo = 0; }
+
     if (gl_vertex_pool) { free(gl_vertex_pool); gl_vertex_pool = NULL; }
     if (gl_index_pool) { free(gl_index_pool); gl_index_pool = NULL; }
     if (gl_shader_cache) {
@@ -1984,6 +2134,21 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
                        GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
+
+    /* Resize WBOIT accumulation targets to match. The depth texture is
+     * shared and already resized above. */
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_accum_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
+                       gl_render_width, gl_render_height, 0,
+                       GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_reveal_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
+                       gl_render_width, gl_render_height, 0,
+                       GL_RED, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                 GL_TEXTURE_2D, gl_depth_tex, 0);
+
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
     gl_num_tiles_x = (gl_render_width + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
     gl_num_tiles_y = (gl_render_height + CLUSTER_TILE_SIZE - 1) / CLUSTER_TILE_SIZE;
@@ -2006,10 +2171,10 @@ static int batch_compare_mode(const void* a, const void* b) {
     const batch_t* bb = (const batch_t*)b;
     if (ba->is_transparent != bb->is_transparent)
         return ba->is_transparent - bb->is_transparent;
-    if (ba->mode < bb->mode) return -1;
-    if (ba->mode > bb->mode) return 1;
+    if (ba->mat->render_method < bb->mat->render_method) return -1;
+    if (ba->mat->render_method > bb->mat->render_method) return  1;
     if (ba->mat < bb->mat) return -1;
-    if (ba->mat > bb->mat) return 1;
+    if (ba->mat > bb->mat) return  1;
     return 0;
 }
 
@@ -2057,7 +2222,7 @@ INLINE void render_finish(void) {
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 1);
+            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 1, 0);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -2093,7 +2258,7 @@ INLINE void render_finish(void) {
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 0);
+            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 0, 0);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -2106,15 +2271,43 @@ INLINE void render_finish(void) {
         }
         if (current_program) C89GL_glUseProgram(0);
 
-        /* ---- Transparent pass ---- */
+        /* ---- Transparent pass (WBOIT accumulation) -------------------------
+         *
+         * Renders all EFFECT_ALPHA batches into the two WBOIT colour
+         * targets. Depth testing uses the opaque depth buffer (shared via
+         * gl_depth_tex), so transparent fragments behind opaque geometry
+         * are correctly rejected. Depth writes are disabled because the
+         * transparent pass must not occlude itself.
+         *
+         * Blend state per attachment:
+         *   attachment 0 (accum):    additive            src=ONE, dst=ONE
+         *   attachment 1 (revealage): multiplicative     src=ZERO, dst=ONE_MINUS_SRC_ALPHA
+         *
+         * Requires GL 4.0+ for glBlendFunci.
+         */
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
+        C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
+
+        {
+            GLfloat clear_accum[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
+            GLfloat clear_reveal[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            C89GL_glClearBufferfv(GL_COLOR, 0, clear_accum);
+            C89GL_glClearBufferfv(GL_COLOR, 1, clear_reveal);
+        }
+
         C89GL_glEnable(GL_BLEND);
-        C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        C89GL_glBlendFunci(0, GL_ONE, GL_ONE);
+        C89GL_glBlendFunci(1, GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
+
         C89GL_glDepthMask(GL_FALSE);
+        C89GL_glDepthFunc(GL_LEQUAL);
+
         current_program = 0;
         for (i = 0; i < gl_batch_count; i++) {
             batch_t *b = &gl_batches[i];
             if (!b->is_transparent) continue;
-            shader_variant_t *variant = get_program_for_method((render_method)b->mat->render_method, 0);
+            shader_variant_t *variant = get_program_for_method(
+                (render_method)b->mat->render_method, 0, 1);
             if (!variant) continue;
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
@@ -2126,7 +2319,44 @@ INLINE void render_finish(void) {
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }
         if (current_program) C89GL_glUseProgram(0);
-        C89GL_glDisable(GL_BLEND);
+
+        /* Restore standard blend state for the composite pass. */
+        C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        /* ---- Composite WBOIT over the opaque scene -------------------------
+         *
+         * The composite shader resolves (accum, revealage) into a single
+         * (colour, 1 - revealage) pair. Rendering it to the main colour FBO
+         * with standard alpha blending mixes it with the opaque background
+         * in place.
+         */
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+        C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
+
+        C89GL_glDisable(GL_DEPTH_TEST);
+        C89GL_glDepthMask(GL_FALSE);
+
+        if (gl_oit_composite_program) {
+            C89GL_glUseProgram(gl_oit_composite_program);
+
+            C89GL_glActiveTexture(GL_TEXTURE0);
+            C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_accum_tex);
+            C89GL_glUniform1i(oit_u_accum_tex, 0);
+
+            C89GL_glActiveTexture(GL_TEXTURE1);
+            C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_reveal_tex);
+            C89GL_glUniform1i(oit_u_reveal_tex, 1);
+
+            C89GL_glActiveTexture(GL_TEXTURE0);
+
+            C89GL_glBindVertexArray(gl_oit_vao);
+            C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+            C89GL_glBindVertexArray(0);
+
+            C89GL_glUseProgram(0);
+        }
+
+        C89GL_glEnable(GL_DEPTH_TEST);
         C89GL_glDepthMask(GL_TRUE);
 
         C89GL_glBindVertexArray(0);

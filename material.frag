@@ -276,8 +276,6 @@ float D_GGX(float NdotH, float perceptualRoughness) {
     return alpha2 / (PI * denom * denom);
 }
 
-// GTR1 distribution. Retained for reference; no longer called since the
-// clearcoat lobe moved to GGX.
 float D_GTR1(float NdotH, float alpha) {
     if (alpha >= 1.0) return 1.0 / PI;
     float a2 = alpha * alpha;
@@ -580,9 +578,6 @@ vec3 transmission_ggx(vec3 N, vec3 V, vec3 L,
     float Dt = D_GGX(NdotHt, transRoughness);
     float vis = V_SmithGGXCorrelated(NdotL, NdotV, transRoughness);
 
-    // Fresnel at the shared half-vector. (1 - F) is the fraction of energy
-    // that is transmitted rather than reflected, so it enters the lobe as an
-    // energy-splitting factor.
     float VdotHt = max(dot(V, Ht), 0.0);
     vec3 F_trans = F_Schlick(F0, VdotHt);
     vec3 transmittance = vec3(1.0) - F_trans;
@@ -888,7 +883,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
     N_bumped = normalize(N_bumped);
 
-    // Only the specular chain receives the widened roughness.
     float diffuseRoughness = uMatSurfaceRoughness;
     float specularRoughness = clamp(
         specular_aa_roughness(N_bumped, uMatSurfaceRoughness),
@@ -1062,7 +1056,20 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 // =============================================================================
 // Entry point
 // =============================================================================
+#ifdef WBOIT_PASS
+// Weighted-blended OIT accumulation outputs. The accumulation target holds
+// the sum of premultiplied, weighted colours in RGB and the sum of weights
+// in A. The revealage target holds the product of (1 - alpha) over all
+// fragments, i.e. how much of the background light passes through.
+//
+// Attachment 0 is GL_RGBA16F (must be float to hold HDR colour and large
+// weights without clipping). Attachment 1 is GL_R8 (just the multiplicative
+// alpha chain, in [0,1]).
+layout(location = 0) out vec4  outAccumulation;
+layout(location = 1) out float outRevealage;
+#else
 out vec4 FragColor;
+#endif
 
 void main() {
     vec3 color;
@@ -1079,9 +1086,22 @@ void main() {
 #ifdef EFFECT_ALPHA
     alpha = uMatAlpha;
 #endif
+
+#ifdef WBOIT_PASS
+    // McGuire & Bavoil 2013 weighting function. The weight emphasises
+    // fragments that are both opaque and close to the camera, which is what
+    // makes the accumulation order-independent without a full sort.
+    float depth_z = gl_FragCoord.z;
+    float w = alpha * max(1e-2, min(1e4, 3e3 * pow(1.0 - depth_z, 3.0)));
+
+    outAccumulation = vec4(color * w, alpha * w);
+    outRevealage    = alpha;
+#else
+    // Standard LDR output with dithering to break up 8-bit banding.
     float dither = (hash_float(vec3(gl_FragCoord.xy, uTime)) - 0.5) / 255.0;
     color += dither;
     FragColor = vec4(color, alpha);
+#endif
 }
 
 #endif /* DEPTH_ONLY */
