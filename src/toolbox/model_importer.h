@@ -25,11 +25,12 @@ extern "C" {
  *   - Triangle mesh primitives only.
  *   - Each glTF mesh primitive becomes one model_primitive and one material
  *     slot. This is the unit Blender/glTF commonly uses for submeshes.
- *   - POSITION and NORMAL accessors must be FLOAT VEC3.
+ *   - POSITION, NORMAL, TANGENT, TEXCOORD_* (up to 8), COLOR_* (up to 4),
+ *     JOINTS_0/1 and WEIGHTS_0/1 accessors are imported.
  *   - Indices may be UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT – the
  *     final engine primitive uses u32 indices.
  *   - Animation, skins, textures, and glTF material properties are ignored.
- *   - Extra vertex attributes (UVs, tangents, colours, bone data) are zeroed.
+ *   - Extra vertex attributes not present are zeroed.
  */
 
 #define MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_BYTE  5121u
@@ -592,39 +593,18 @@ static model_importer_mat4 model_importer_mat4_from_trs(real tx, real ty, real t
                                                         real sx, real sy, real sz)
 {
     model_importer_mat4 result;
-    real xx;
-    real yy;
-    real zz;
-    real xy;
-    real xz;
-    real yz;
-    real wx;
-    real wy;
-    real wz;
-    real length;
+    real xx, yy, zz, xy, xz, yz, wx, wy, wz, length;
 
     length = (real)sqrt((double)(qx*qx + qy*qy + qz*qz + qw*qw));
     if (length > 0.000001f) {
-        qx /= length;
-        qy /= length;
-        qz /= length;
-        qw /= length;
+        qx /= length; qy /= length; qz /= length; qw /= length;
     } else {
-        qx = 0.0f;
-        qy = 0.0f;
-        qz = 0.0f;
-        qw = 1.0f;
+        qx = 0.0f; qy = 0.0f; qz = 0.0f; qw = 1.0f;
     }
 
-    xx = qx * qx;
-    yy = qy * qy;
-    zz = qz * qz;
-    xy = qx * qy;
-    xz = qx * qz;
-    yz = qy * qz;
-    wx = qw * qx;
-    wy = qw * qy;
-    wz = qw * qz;
+    xx = qx * qx; yy = qy * qy; zz = qz * qz;
+    xy = qx * qy; xz = qx * qz; yz = qy * qz;
+    wx = qw * qx; wy = qw * qy; wz = qw * qz;
 
     result = model_importer_mat4_identity();
 
@@ -649,13 +629,9 @@ static model_importer_mat4 model_importer_mat4_from_trs(real tx, real ty, real t
 static vec3 model_importer_transform_point(model_importer_mat4 transform, vec3 point)
 {
     vec3 result;
-    real x;
-    real y;
-    real z;
+    real x, y, z;
 
-    x = point.position.x;
-    y = point.position.y;
-    z = point.position.z;
+    x = point.position.x; y = point.position.y; z = point.position.z;
 
     result.position.x = transform.m[0] * x + transform.m[1] * y + transform.m[2]  * z + transform.m[3];
     result.position.y = transform.m[4] * x + transform.m[5] * y + transform.m[6]  * z + transform.m[7];
@@ -666,7 +642,6 @@ static vec3 model_importer_transform_point(model_importer_mat4 transform, vec3 p
 static vec3 model_importer_vec3_cross(vec3 a, vec3 b)
 {
     vec3 result;
-
     result.position.x = a.position.y * b.position.z - a.position.z * b.position.y;
     result.position.y = a.position.z * b.position.x - a.position.x * b.position.z;
     result.position.z = a.position.x * b.position.y - a.position.y * b.position.x;
@@ -676,7 +651,6 @@ static vec3 model_importer_vec3_cross(vec3 a, vec3 b)
 static vec3 model_importer_vec3_sub(vec3 a, vec3 b)
 {
     vec3 result;
-
     result.position.x = a.position.x - b.position.x;
     result.position.y = a.position.y - b.position.y;
     result.position.z = a.position.z - b.position.z;
@@ -686,7 +660,6 @@ static vec3 model_importer_vec3_sub(vec3 a, vec3 b)
 static vec3 model_importer_vec3_add(vec3 a, vec3 b)
 {
     vec3 result;
-
     result.position.x = a.position.x + b.position.x;
     result.position.y = a.position.y + b.position.y;
     result.position.z = a.position.z + b.position.z;
@@ -697,15 +670,12 @@ static vec3 model_importer_vec3_normalize_or_up(vec3 value)
 {
     real length;
 
-    length = (real)sqrt((double)(
-        value.position.x * value.position.x +
-        value.position.y * value.position.y +
-        value.position.z * value.position.z));
+    length = (real)sqrt((double)(value.position.x * value.position.x +
+                                 value.position.y * value.position.y +
+                                 value.position.z * value.position.z));
 
     if (length <= 0.000001f) {
-        value.position.x = 0.0f;
-        value.position.y = 1.0f;
-        value.position.z = 0.0f;
+        value.position.x = 0.0f; value.position.y = 1.0f; value.position.z = 0.0f;
         return value;
     }
 
@@ -717,31 +687,14 @@ static vec3 model_importer_vec3_normalize_or_up(vec3 value)
 
 static vec3 model_importer_transform_normal(model_importer_mat4 transform, vec3 normal)
 {
-    real a;
-    real b;
-    real c;
-    real d;
-    real e;
-    real f;
-    real g;
-    real h;
-    real i;
-    real det;
+    real a, b, c, d, e, f, g, h, i, det;
     vec3 result;
 
-    a = transform.m[0];
-    b = transform.m[1];
-    c = transform.m[2];
-    d = transform.m[4];
-    e = transform.m[5];
-    f = transform.m[6];
-    g = transform.m[8];
-    h = transform.m[9];
-    i = transform.m[10];
+    a = transform.m[0]; b = transform.m[1]; c = transform.m[2];
+    d = transform.m[4]; e = transform.m[5]; f = transform.m[6];
+    g = transform.m[8]; h = transform.m[9]; i = transform.m[10];
 
-    det = a * (e * i - f * h) -
-          b * (d * i - f * g) +
-          c * (d * h - e * g);
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
 
     if (real_abs(det) <= 0.000001f) {
         result.position.x = a * normal.position.x + b * normal.position.y + c * normal.position.z;
@@ -763,30 +716,27 @@ static vec3 model_importer_transform_normal(model_importer_mat4 transform, vec3 
     return model_importer_vec3_normalize_or_up(result);
 }
 
+/* --------------------------------------------------------------------------
+ * GLB chunk parsing
+ * -------------------------------------------------------------------------- */
+
 static int model_importer_parse_glb_chunks(const u8 *data, u32 size,
                                            model_importer_json_span *out_json,
                                            const u8 **out_bin,
                                            u32 *out_bin_size)
 {
-    u32 magic;
-    u32 version;
-    u32 declared_length;
-    u32 offset;
+    u32 magic, version, declared_length, offset;
     int found_json;
 
-    if (!data || size < 20)
-        return model_importer_set_error("GLB file is too small");
+    if (!data || size < 20) return model_importer_set_error("GLB file is too small");
 
     magic = model_importer_read_u32le(data);
     version = model_importer_read_u32le(data + 4);
     declared_length = model_importer_read_u32le(data + 8);
 
-    if (magic != 0x46546C67u)
-        return model_importer_set_error("file is not a GLB");
-    if (version != 2u)
-        return model_importer_set_error("only GLB version 2 is supported");
-    if (declared_length > size)
-        return model_importer_set_error("GLB declared length exceeds file length");
+    if (magic != 0x46546C67u) return model_importer_set_error("file is not a GLB");
+    if (version != 2u) return model_importer_set_error("only GLB version 2 is supported");
+    if (declared_length > size) return model_importer_set_error("GLB declared length exceeds file length");
 
     offset = 12u;
     found_json = 0;
@@ -794,8 +744,7 @@ static int model_importer_parse_glb_chunks(const u8 *data, u32 size,
     *out_bin_size = 0;
 
     while (offset + 8u <= declared_length) {
-        u32 chunk_length;
-        u32 chunk_type;
+        u32 chunk_length, chunk_type;
         const u8 *chunk_data;
 
         chunk_length = model_importer_read_u32le(data + offset);
@@ -819,10 +768,8 @@ static int model_importer_parse_glb_chunks(const u8 *data, u32 size,
         offset += chunk_length;
     }
 
-    if (!found_json)
-        return model_importer_set_error("GLB is missing a JSON chunk");
-    if (!*out_bin)
-        return model_importer_set_error("GLB is missing a BIN chunk");
+    if (!found_json) return model_importer_set_error("GLB is missing a JSON chunk");
+    if (!*out_bin) return model_importer_set_error("GLB is missing a BIN chunk");
 
     return 1;
 }
@@ -871,8 +818,7 @@ static int model_importer_parse_buffer_views(model_importer_context *ctx,
         return model_importer_set_error("out of memory for bufferViews");
 
     for (i = 0; i < ctx->buffer_view_count; ++i) {
-        model_importer_json_span object;
-        model_importer_json_span value;
+        model_importer_json_span object, value;
         model_importer_buffer_view *view;
 
         if (!model_importer_json_array_get(views_array, i, &object))
@@ -925,8 +871,7 @@ static int model_importer_parse_accessors(model_importer_context *ctx,
         return model_importer_set_error("out of memory for accessors");
 
     for (i = 0; i < ctx->accessor_count; ++i) {
-        model_importer_json_span object;
-        model_importer_json_span value;
+        model_importer_json_span object, value;
         model_importer_accessor *accessor;
         u32 components;
         i32 normalized;
@@ -983,18 +928,8 @@ static int model_importer_parse_node(model_importer_node *node,
                                      model_importer_json_span object)
 {
     model_importer_json_span value;
-    real tx;
-    real ty;
-    real tz;
-    real qx;
-    real qy;
-    real qz;
-    real qw;
-    real sx;
-    real sy;
-    real sz;
-    u32 count;
-    u32 i;
+    real tx, ty, tz, qx, qy, qz, qw, sx, sy, sz;
+    u32 count, i;
 
     node->mesh = -1;
     node->child_count = 0u;
@@ -1007,23 +942,15 @@ static int model_importer_parse_node(model_importer_node *node,
 
     if (model_importer_json_object_find(object, "matrix", &value)) {
         real gltf_matrix[16];
-
         for (i = 0; i < 16u; ++i) {
             if (!model_importer_json_array_real(value, i, &gltf_matrix[i]))
                 return model_importer_set_error("node.matrix must contain 16 numbers");
         }
         node->local_transform = model_importer_mat4_from_gltf_matrix(gltf_matrix);
     } else {
-        tx = 0.0f;
-        ty = 0.0f;
-        tz = 0.0f;
-        qx = 0.0f;
-        qy = 0.0f;
-        qz = 0.0f;
-        qw = 1.0f;
-        sx = 1.0f;
-        sy = 1.0f;
-        sz = 1.0f;
+        tx = ty = tz = 0.0f;
+        qx = qy = qz = 0.0f; qw = 1.0f;
+        sx = sy = sz = 1.0f;
 
         if (model_importer_json_object_find(object, "translation", &value)) {
             if (!model_importer_json_array_real(value, 0u, &tx) ||
@@ -1031,7 +958,6 @@ static int model_importer_parse_node(model_importer_node *node,
                 !model_importer_json_array_real(value, 2u, &tz))
                 return model_importer_set_error("node.translation must contain 3 numbers");
         }
-
         if (model_importer_json_object_find(object, "rotation", &value)) {
             if (!model_importer_json_array_real(value, 0u, &qx) ||
                 !model_importer_json_array_real(value, 1u, &qy) ||
@@ -1039,14 +965,12 @@ static int model_importer_parse_node(model_importer_node *node,
                 !model_importer_json_array_real(value, 3u, &qw))
                 return model_importer_set_error("node.rotation must contain 4 numbers");
         }
-
         if (model_importer_json_object_find(object, "scale", &value)) {
             if (!model_importer_json_array_real(value, 0u, &sx) ||
                 !model_importer_json_array_real(value, 1u, &sy) ||
                 !model_importer_json_array_real(value, 2u, &sz))
                 return model_importer_set_error("node.scale must contain 3 numbers");
         }
-
         node->local_transform = model_importer_mat4_from_trs(tx, ty, tz, qx, qy, qz, qw, sx, sy, sz);
     }
 
@@ -1073,7 +997,6 @@ static int model_importer_parse_node(model_importer_node *node,
 static void model_importer_free_nodes(model_importer_node *nodes, u32 node_count)
 {
     u32 i;
-
     if (!nodes) return;
     for (i = 0; i < node_count; ++i) {
         if (nodes[i].children) TAG_FREE(nodes[i].children);
@@ -1121,17 +1044,10 @@ static int model_importer_visit_node(model_importer_node *nodes,
 static int model_importer_parse_mesh_transforms(model_importer_context *ctx,
                                                 model_importer_json_span root)
 {
-    model_importer_json_span nodes_array;
-    model_importer_json_span scenes_array;
-    model_importer_json_span scene_object;
-    model_importer_json_span scene_nodes;
-    model_importer_json_span value;
+    model_importer_json_span nodes_array, scenes_array, scene_object, scene_nodes, value;
     model_importer_node *nodes;
     model_importer_mat4 identity;
-    u32 node_count;
-    u32 scene_count;
-    u32 root_count;
-    u32 i;
+    u32 node_count, scene_count, root_count, i;
     i32 scene_index;
     int visited_scene;
 
@@ -1153,12 +1069,10 @@ static int model_importer_parse_mesh_transforms(model_importer_context *ctx,
     if (node_count == 0u) return 1;
 
     nodes = (model_importer_node*)model_importer_calloc_count(node_count, sizeof(model_importer_node));
-    if (!nodes)
-        return model_importer_set_error("out of memory for nodes");
+    if (!nodes) return model_importer_set_error("out of memory for nodes");
 
     for (i = 0; i < node_count; ++i) {
         model_importer_json_span node_object;
-
         if (!model_importer_json_array_get(nodes_array, i, &node_object) ||
             !model_importer_parse_node(&nodes[i], node_object)) {
             model_importer_free_nodes(nodes, node_count);
@@ -1177,15 +1091,13 @@ static int model_importer_parse_mesh_transforms(model_importer_context *ctx,
     if (model_importer_json_object_find(root, "scenes", &scenes_array) &&
         model_importer_json_array_count(scenes_array, &scene_count) &&
         scene_count > 0u) {
-        if (scene_index < 0 || (u32)scene_index >= scene_count)
-            scene_index = 0;
+        if (scene_index < 0 || (u32)scene_index >= scene_count) scene_index = 0;
 
         if (model_importer_json_array_get(scenes_array, (u32)scene_index, &scene_object) &&
             model_importer_json_object_find(scene_object, "nodes", &scene_nodes) &&
             model_importer_json_array_count(scene_nodes, &root_count)) {
             for (i = 0; i < root_count; ++i) {
                 i32 root_node;
-
                 if (!model_importer_json_array_i32(scene_nodes, i, &root_node) ||
                     !model_importer_visit_node(nodes, node_count, root_node, identity,
                                                ctx->mesh_transforms, ctx->mesh_transform_set,
@@ -1224,14 +1136,10 @@ static int model_importer_parse_mesh_transforms(model_importer_context *ctx,
 
 static int model_importer_count_model_primitives(model_importer_context *ctx)
 {
-    u32 mesh_index;
-    u32 total;
-
-    total = 0u;
+    u32 mesh_index, total = 0u;
 
     for (mesh_index = 0; mesh_index < ctx->mesh_count; ++mesh_index) {
-        model_importer_json_span mesh;
-        model_importer_json_span primitives;
+        model_importer_json_span mesh, primitives;
         u32 primitive_count;
 
         if (!model_importer_json_array_get(ctx->meshes, mesh_index, &mesh))
@@ -1252,9 +1160,7 @@ static int model_importer_count_model_primitives(model_importer_context *ctx)
         total += primitive_count;
     }
 
-    if (total == 0u)
-        return model_importer_set_error("glTF has no mesh primitives");
-
+    if (total == 0u) return model_importer_set_error("glTF has no mesh primitives");
     if (total > model_material_block.max_element_count)
         return model_importer_set_error("GLB has more mesh primitives than model_material_block supports");
 
@@ -1265,12 +1171,10 @@ static int model_importer_count_model_primitives(model_importer_context *ctx)
 static void model_importer_context_free(model_importer_context *ctx)
 {
     if (!ctx) return;
-
     if (ctx->buffer_views) TAG_FREE(ctx->buffer_views);
     if (ctx->accessors) TAG_FREE(ctx->accessors);
     if (ctx->mesh_transforms) TAG_FREE(ctx->mesh_transforms);
     if (ctx->mesh_transform_set) TAG_FREE(ctx->mesh_transform_set);
-
     memset(ctx, 0, sizeof(*ctx));
 }
 
@@ -1292,8 +1196,7 @@ static int model_importer_context_init(model_importer_context *ctx,
     if (!model_importer_json_array_count(ctx->meshes, &ctx->mesh_count))
         return model_importer_set_error("meshes must be an array");
 
-    if (ctx->mesh_count == 0u)
-        return model_importer_set_error("glTF has no meshes");
+    if (ctx->mesh_count == 0u) return model_importer_set_error("glTF has no meshes");
 
     if (!model_importer_parse_mesh_transforms(ctx, root)) return 0;
     if (!model_importer_count_model_primitives(ctx)) return 0;
@@ -1309,12 +1212,7 @@ static int model_importer_accessor_element_ptr(model_importer_context *ctx,
     model_importer_accessor *accessor;
     model_importer_buffer_view *view;
     u32 component_size;
-    size_t stride;
-    size_t element_size;
-    size_t view_offset;
-    size_t view_length;
-    size_t accessor_offset;
-    size_t relative_offset;
+    size_t stride, element_size, view_offset, view_length, accessor_offset, relative_offset;
 
     if (!out_ptr) return 0;
     if (accessor_index < 0 || (u32)accessor_index >= ctx->accessor_count)
@@ -1327,8 +1225,7 @@ static int model_importer_accessor_element_ptr(model_importer_context *ctx,
         return model_importer_set_error("accessor has an invalid bufferView");
 
     view = &ctx->buffer_views[accessor->buffer_view];
-    if (view->buffer != 0u)
-        return model_importer_set_error("only GLB buffer 0 is supported");
+    if (view->buffer != 0u) return model_importer_set_error("only GLB buffer 0 is supported");
 
     component_size = model_importer_accessor_component_size(accessor->component_type);
     if (component_size == 0u)
@@ -1417,14 +1314,160 @@ static int model_importer_read_accessor_index(model_importer_context *ctx,
     }
 }
 
+/* --------------------------------------------------------------------------
+ * New helpers for reading extended vertex attributes
+ * -------------------------------------------------------------------------- */
+
+static int model_importer_read_accessor_vec2(model_importer_context *ctx,
+                                             i32 accessor_index,
+                                             u32 element_index,
+                                             vec2 *out_value)
+{
+    model_importer_accessor *accessor;
+    const u8 *ptr;
+
+    if (!out_value) return 0;
+    if (accessor_index < 0 || (u32)accessor_index >= ctx->accessor_count)
+        return model_importer_set_error("vec2 accessor index out of range");
+
+    accessor = &ctx->accessors[accessor_index];
+    if (accessor->component_type != MODEL_IMPORTER_GLTF_COMPONENT_FLOAT ||
+        accessor->component_count != 2u)
+        return model_importer_set_error("TEXCOORD accessor must be FLOAT VEC2");
+
+    if (!model_importer_accessor_element_ptr(ctx, accessor_index, element_index, &ptr))
+        return 0;
+
+    out_value->textcoord.s = model_importer_read_f32le(ptr);
+    out_value->textcoord.t = model_importer_read_f32le(ptr + 4);
+    return 1;
+}
+
+static int model_importer_read_accessor_vec4(model_importer_context *ctx,
+                                             i32 accessor_index,
+                                             u32 element_index,
+                                             vec4 *out_value)
+{
+    model_importer_accessor *accessor;
+    const u8 *ptr;
+
+    if (!out_value) return 0;
+    if (accessor_index < 0 || (u32)accessor_index >= ctx->accessor_count)
+        return model_importer_set_error("vec4 accessor index out of range");
+
+    accessor = &ctx->accessors[accessor_index];
+
+    /* TANGENT is always FLOAT VEC4. COLORS can be FLOAT VEC4 or UNSIGNED_BYTE normalized */
+    if (accessor->component_type == MODEL_IMPORTER_GLTF_COMPONENT_FLOAT &&
+        accessor->component_count == 4u) {
+        if (!model_importer_accessor_element_ptr(ctx, accessor_index, element_index, &ptr))
+            return 0;
+        out_value->rotation.i = model_importer_read_f32le(ptr);
+        out_value->rotation.j = model_importer_read_f32le(ptr + 4);
+        out_value->rotation.k = model_importer_read_f32le(ptr + 8);
+        out_value->rotation.w = model_importer_read_f32le(ptr + 12);
+        return 1;
+    }
+
+    if (accessor->component_type == MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_BYTE &&
+        accessor->component_count == 4u && accessor->normalized) {
+        if (!model_importer_accessor_element_ptr(ctx, accessor_index, element_index, &ptr))
+            return 0;
+        out_value->color.r = ptr[0] / 255.0f;
+        out_value->color.g = ptr[1] / 255.0f;
+        out_value->color.b = ptr[2] / 255.0f;
+        out_value->color.a = ptr[3] / 255.0f;
+        return 1;
+    }
+
+    return model_importer_set_error("unsupported accessor type for vec4 (must be FLOAT VEC4 or normalized UNSIGNED_BYTE VEC4)");
+}
+
+static int model_importer_read_accessor_joints(model_importer_context *ctx,
+                                               i32 accessor_index,
+                                               u32 element_index,
+                                               u16 out[4])
+{
+    model_importer_accessor *accessor;
+    const u8 *ptr;
+    u32 i;
+
+    if (!out) return 0;
+    if (accessor_index < 0 || (u32)accessor_index >= ctx->accessor_count)
+        return model_importer_set_error("joints accessor index out of range");
+
+    accessor = &ctx->accessors[accessor_index];
+    if (accessor->component_count != 4u)
+        return model_importer_set_error("JOINTS accessor must be VEC4");
+
+    if (accessor->component_type != MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_BYTE &&
+        accessor->component_type != MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_SHORT)
+        return model_importer_set_error("JOINTS accessor must be UNSIGNED_BYTE or UNSIGNED_SHORT");
+
+    if (!model_importer_accessor_element_ptr(ctx, accessor_index, element_index, &ptr))
+        return 0;
+
+    for (i = 0; i < 4; ++i) {
+        if (accessor->component_type == MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_BYTE)
+            out[i] = ptr[i];
+        else
+            out[i] = model_importer_read_u16le(ptr + i * 2);
+    }
+    return 1;
+}
+
+static int model_importer_read_accessor_weights(model_importer_context *ctx,
+                                                i32 accessor_index,
+                                                u32 element_index,
+                                                u8 out[4])
+{
+    model_importer_accessor *accessor;
+    const u8 *ptr;
+    u32 i;
+
+    if (!out) return 0;
+    if (accessor_index < 0 || (u32)accessor_index >= ctx->accessor_count)
+        return model_importer_set_error("weights accessor index out of range");
+
+    accessor = &ctx->accessors[accessor_index];
+    if (accessor->component_count != 4u)
+        return model_importer_set_error("WEIGHTS accessor must be VEC4");
+
+    if (!model_importer_accessor_element_ptr(ctx, accessor_index, element_index, &ptr))
+        return 0;
+
+    if (accessor->component_type == MODEL_IMPORTER_GLTF_COMPONENT_FLOAT) {
+        real f;
+        for (i = 0; i < 4; ++i) {
+            f = model_importer_read_f32le(ptr + i * 4);
+            if (f < 0.0f) f = 0.0f;
+            if (f > 1.0f) f = 1.0f;
+            out[i] = (u8)(f * 255.0f + 0.5f);
+        }
+        return 1;
+    }
+
+    if (accessor->component_type == MODEL_IMPORTER_GLTF_COMPONENT_UNSIGNED_BYTE &&
+        accessor->normalized) {
+        for (i = 0; i < 4; ++i)
+            out[i] = ptr[i];
+        return 1;
+    }
+
+    return model_importer_set_error("unsupported WEIGHTS type (must be FLOAT VEC4 or normalized UNSIGNED_BYTE VEC4)");
+}
+
+/* --------------------------------------------------------------------------
+ * Mesh primitive filling with all attributes
+ * -------------------------------------------------------------------------- */
+
 static int model_importer_parse_mesh_primitive(model_importer_json_span primitive,
                                                i32 *out_position_accessor,
                                                i32 *out_normal_accessor,
                                                i32 *out_index_accessor,
                                                i32 *out_mode)
 {
-    model_importer_json_span attributes;
-    model_importer_json_span value;
+    model_importer_json_span attributes, value;
 
     if (!out_position_accessor || !out_normal_accessor || !out_index_accessor || !out_mode)
         return model_importer_set_error("invalid primitive parse arguments");
@@ -1462,12 +1505,8 @@ static int model_importer_primitive_counts(model_importer_context *ctx,
                                            u32 *out_index_count,
                                            i32 *out_needs_normals)
 {
-    model_importer_accessor *position_accessor;
-    model_importer_accessor *index_accessor;
-    i32 position_index;
-    i32 normal_index;
-    i32 index_index;
-    i32 mode;
+    model_importer_accessor *position_accessor, *index_accessor;
+    i32 position_index, normal_index, index_index, mode;
     u32 index_count;
 
     if (!model_importer_parse_mesh_primitive(primitive, &position_index, &normal_index, &index_index, &mode))
@@ -1486,10 +1525,8 @@ static int model_importer_primitive_counts(model_importer_context *ctx,
 
     if (normal_index >= 0) {
         model_importer_accessor *normal_accessor;
-
         if ((u32)normal_index >= ctx->accessor_count)
             return model_importer_set_error("NORMAL accessor is out of range");
-
         normal_accessor = &ctx->accessors[normal_index];
         if (normal_accessor->component_type != MODEL_IMPORTER_GLTF_COMPONENT_FLOAT ||
             normal_accessor->component_count != 3u ||
@@ -1500,7 +1537,6 @@ static int model_importer_primitive_counts(model_importer_context *ctx,
     if (index_index >= 0) {
         if ((u32)index_index >= ctx->accessor_count)
             return model_importer_set_error("indices accessor is out of range");
-
         index_accessor = &ctx->accessors[index_index];
         index_count = index_accessor->count;
     } else {
@@ -1524,16 +1560,12 @@ static int model_importer_primitive_counts(model_importer_context *ctx,
 static void model_importer_bounds_include(real_bounding_box *bounds, vec3 point, i32 *has_bounds)
 {
     if (!*has_bounds) {
-        bounds->x.lower = point.position.x;
-        bounds->x.upper = point.position.x;
-        bounds->y.lower = point.position.y;
-        bounds->y.upper = point.position.y;
-        bounds->z.lower = point.position.z;
-        bounds->z.upper = point.position.z;
+        bounds->x.lower = bounds->x.upper = point.position.x;
+        bounds->y.lower = bounds->y.upper = point.position.y;
+        bounds->z.lower = bounds->z.upper = point.position.z;
         *has_bounds = 1;
         return;
     }
-
     if (point.position.x < bounds->x.lower) bounds->x.lower = point.position.x;
     if (point.position.x > bounds->x.upper) bounds->x.upper = point.position.x;
     if (point.position.y < bounds->y.lower) bounds->y.lower = point.position.y;
@@ -1542,7 +1574,6 @@ static void model_importer_bounds_include(real_bounding_box *bounds, vec3 point,
     if (point.position.z > bounds->z.upper) bounds->z.upper = point.position.z;
 }
 
-/* FIX: indices are now u32 */
 static void model_importer_compute_normals(model_vertex *vertices, u32 vertex_count,
                                            const u32 *indices, u32 index_count)
 {
@@ -1555,12 +1586,8 @@ static void model_importer_compute_normals(model_vertex *vertices, u32 vertex_co
     }
 
     for (i = 0; i + 2u < index_count; i += 3u) {
-        u32 i0 = indices[i + 0u];
-        u32 i1 = indices[i + 1u];
-        u32 i2 = indices[i + 2u];
-
-        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
-            continue;
+        u32 i0 = indices[i + 0u], i1 = indices[i + 1u], i2 = indices[i + 2u];
+        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count) continue;
 
         vec3 edge_a = model_importer_vec3_sub(vertices[i1].position, vertices[i0].position);
         vec3 edge_b = model_importer_vec3_sub(vertices[i2].position, vertices[i0].position);
@@ -1585,22 +1612,18 @@ static int model_importer_fill_mesh_primitive(model_importer_context *ctx,
                                               i32 *has_bounds)
 {
     model_vertex *vertices;
-    u32 *indices;   /* FIX: changed from u16* */
-    u32 vertex_count;
-    u32 index_count;
+    u32 *indices;
+    u32 vertex_count, index_count;
     i32 needs_normals;
     model_importer_mat4 transform;
-    i32 position_index;
-    i32 normal_index;
-    i32 index_index;
-    i32 mode;
+    i32 position_index, normal_index, index_index, mode;
     u32 i;
 
     if (!model_importer_primitive_counts(ctx, primitive, &vertex_count, &index_count, &needs_normals))
         return 0;
 
     vertices = (model_vertex*)model_importer_calloc_count(vertex_count, sizeof(model_vertex));
-    indices = (u32*)model_importer_calloc_count(index_count, sizeof(u32));   /* FIX: u32 allocation */
+    indices = (u32*)model_importer_calloc_count(index_count, sizeof(u32));
     if (!vertices || !indices) {
         if (vertices) TAG_FREE(vertices);
         if (indices) TAG_FREE(indices);
@@ -1620,38 +1643,177 @@ static int model_importer_fill_mesh_primitive(model_importer_context *ctx,
         return 0;
     (void)mode;
 
-    for (i = 0; i < vertex_count; ++i) {
-        vec3 position;
-        vec3 normal;
+    /* --- Parse additional attribute accessor indices --- */
+    model_importer_json_span attributes;
+    model_importer_json_span value;
+    i32 tangent_index = -1;
+    i32 texcoord_indices[8];
+    i32 color_indices[4];
+    i32 joints0_index = -1, joints1_index = -1;
+    i32 weights0_index = -1, weights1_index = -1;
+    char key[32];
 
+    for (i = 0; i < 8; ++i) texcoord_indices[i] = -1;
+    for (i = 0; i < 4; ++i) color_indices[i] = -1;
+
+    if (!model_importer_json_object_find(primitive, "attributes", &attributes))
+        return model_importer_set_error("attributes missing (should have been checked earlier)");
+
+    if (model_importer_json_object_find(attributes, "TANGENT", &value) &&
+        !model_importer_json_parse_i32(value, &tangent_index))
+        return model_importer_set_error("TANGENT must be an integer");
+
+    for (i = 0; i < 8; ++i) {
+        snprintf(key, sizeof(key), "TEXCOORD_%u", i);
+        if (model_importer_json_object_find(attributes, key, &value) &&
+            !model_importer_json_parse_i32(value, &texcoord_indices[i]))
+            return model_importer_set_error("TEXCOORD index must be an integer");
+    }
+
+    for (i = 0; i < 4; ++i) {
+        snprintf(key, sizeof(key), "COLOR_%u", i);
+        if (model_importer_json_object_find(attributes, key, &value) &&
+            !model_importer_json_parse_i32(value, &color_indices[i]))
+            return model_importer_set_error("COLOR index must be an integer");
+    }
+
+    if (model_importer_json_object_find(attributes, "JOINTS_0", &value) &&
+        !model_importer_json_parse_i32(value, &joints0_index))
+        return model_importer_set_error("JOINTS_0 must be an integer");
+    if (model_importer_json_object_find(attributes, "JOINTS_1", &value) &&
+        !model_importer_json_parse_i32(value, &joints1_index))
+        return model_importer_set_error("JOINTS_1 must be an integer");
+    if (model_importer_json_object_find(attributes, "WEIGHTS_0", &value) &&
+        !model_importer_json_parse_i32(value, &weights0_index))
+        return model_importer_set_error("WEIGHTS_0 must be an integer");
+    if (model_importer_json_object_find(attributes, "WEIGHTS_1", &value) &&
+        !model_importer_json_parse_i32(value, &weights1_index))
+        return model_importer_set_error("WEIGHTS_1 must be an integer");
+
+    /* Verify that all present attribute accessors have matching vertex count */
+    #define CHECK_ACCESSOR_COUNT(idx) \
+        if ((idx) >= 0) { \
+            if ((u32)(idx) >= ctx->accessor_count) \
+                return model_importer_set_error("accessor index out of range"); \
+            if (ctx->accessors[(idx)].count != vertex_count) \
+                return model_importer_set_error("attribute accessor count does not match vertex count"); \
+        }
+
+    CHECK_ACCESSOR_COUNT(tangent_index);
+    for (i = 0; i < 8; ++i) CHECK_ACCESSOR_COUNT(texcoord_indices[i]);
+    for (i = 0; i < 4; ++i) CHECK_ACCESSOR_COUNT(color_indices[i]);
+    CHECK_ACCESSOR_COUNT(joints0_index);
+    CHECK_ACCESSOR_COUNT(joints1_index);
+    CHECK_ACCESSOR_COUNT(weights0_index);
+    CHECK_ACCESSOR_COUNT(weights1_index);
+
+    /* We also need to check that JOINT_1 and WEIGHT_1 are either both present or both absent */
+    if ((joints1_index >= 0) != (weights1_index >= 0))
+        return model_importer_set_error("JOINTS_1 and WEIGHTS_1 must be both present or both absent");
+
+    /* --- Read per-vertex data --- */
+    for (i = 0; i < vertex_count; ++i) {
+        vec3 position, normal;
+
+        /* Position */
         if (!model_importer_read_accessor_vec3(ctx, position_index, i, &position))
             return 0;
-
         position = model_importer_transform_point(transform, position);
         vertices[i].position = position;
         model_importer_bounds_include(bounds, position, has_bounds);
 
+        /* Normal */
         if (normal_index >= 0) {
             if (!model_importer_read_accessor_vec3(ctx, normal_index, i, &normal))
                 return 0;
             vertices[i].normal = model_importer_transform_normal(transform, normal);
         }
+
+        /* Tangent */
+        if (tangent_index >= 0) {
+            vec4 tangent;
+            if (!model_importer_read_accessor_vec4(ctx, tangent_index, i, &tangent))
+                return 0;
+            /* Transform tangent? Usually tangent is a direction, but glTF tangents are in local space.
+             * We can transform it like a normal (using the same matrix) but we need to handle w separately. */
+            vec3 tang_vec = { tangent.rotation.i, tangent.rotation.j, tangent.rotation.k };
+            tang_vec = model_importer_transform_normal(transform, tang_vec);
+            vertices[i].tangent.rotation.i = tang_vec.rotation.i;
+            vertices[i].tangent.rotation.j = tang_vec.rotation.j;
+            vertices[i].tangent.rotation.k = tang_vec.rotation.k;
+            vertices[i].tangent.rotation.w = tangent.rotation.w; /* handedness stays as is */
+        }
+
+        /* UVs */
+        for (u32 uv = 0; uv < 8; ++uv) {
+            if (texcoord_indices[uv] >= 0) {
+                vec2 uv_val;
+                if (!model_importer_read_accessor_vec2(ctx, texcoord_indices[uv], i, &uv_val))
+                    return 0;
+                switch (uv) {
+                    case 0: vertices[i].uv0 = uv_val; break;
+                    case 1: vertices[i].uv1 = uv_val; break;
+                    case 2: vertices[i].uv2 = uv_val; break;
+                    case 3: vertices[i].uv3 = uv_val; break;
+                    case 4: vertices[i].uv4 = uv_val; break;
+                    case 5: vertices[i].uv5 = uv_val; break;
+                    case 6: vertices[i].uv6 = uv_val; break;
+                    case 7: vertices[i].uv7 = uv_val; break;
+                }
+            }
+        }
+
+        /* Colors */
+        for (u32 col = 0; col < 4; ++col) {
+            if (color_indices[col] >= 0) {
+                vec4 col_val;
+                if (!model_importer_read_accessor_vec4(ctx, color_indices[col], i, &col_val))
+                    return 0;
+                switch (col) {
+                    case 0: vertices[i].color0 = col_val; break;
+                    case 1: vertices[i].color1 = col_val; break;
+                    case 2: vertices[i].color2 = col_val; break;
+                    case 3: vertices[i].color3 = col_val; break;
+                }
+            }
+        }
+
+        /* Bone influences: JOINT_0 + WEIGHT_0 (first 4) */
+        if (joints0_index >= 0 && weights0_index >= 0) {
+            u16 j[4]; u8 w[4];
+            if (!model_importer_read_accessor_joints(ctx, joints0_index, i, j) ||
+                !model_importer_read_accessor_weights(ctx, weights0_index, i, w))
+                return 0;
+            vertices[i].bone_index0 = j[0]; vertices[i].bone_weight0 = w[0];
+            vertices[i].bone_index1 = j[1]; vertices[i].bone_weight1 = w[1];
+            vertices[i].bone_index2 = j[2]; vertices[i].bone_weight2 = w[2];
+            vertices[i].bone_index3 = j[3]; vertices[i].bone_weight3 = w[3];
+        }
+
+        /* JOINT_1 + WEIGHT_1 (next 4) */
+        if (joints1_index >= 0 && weights1_index >= 0) {
+            u16 j[4]; u8 w[4];
+            if (!model_importer_read_accessor_joints(ctx, joints1_index, i, j) ||
+                !model_importer_read_accessor_weights(ctx, weights1_index, i, w))
+                return 0;
+            vertices[i].bone_index4 = j[0]; vertices[i].bone_weight4 = w[0];
+            vertices[i].bone_index5 = j[1]; vertices[i].bone_weight5 = w[1];
+            vertices[i].bone_index6 = j[2]; vertices[i].bone_weight6 = w[2];
+            vertices[i].bone_index7 = j[3]; vertices[i].bone_weight7 = w[3];
+        }
     }
 
+    /* Indices */
     for (i = 0; i < index_count; ++i) {
         u32 local_index;
-
         if (index_index >= 0) {
             if (!model_importer_read_accessor_index(ctx, index_index, i, &local_index))
                 return 0;
         } else {
             local_index = i;
         }
-
         if (local_index >= vertex_count)
             return model_importer_set_error("mesh index references a missing vertex");
-
-        /* FIX: no > 0xFFFFu check – we store u32 directly */
         indices[i] = local_index;
     }
 
@@ -1668,23 +1830,17 @@ static void model_importer_free_model(model_definition *model)
     if (!model) return;
 
     if (model->primitives.address) {
-        model_primitive *primitives;
-
-        primitives = (model_primitive*)model->primitives.address;
+        model_primitive *primitives = (model_primitive*)model->primitives.address;
         for (i = 0; i < model->primitives.count; ++i) {
             if (primitives[i].vertices.address) TAG_FREE(primitives[i].vertices.address);
             if (primitives[i].indices.address) TAG_FREE(primitives[i].indices.address);
-            /* morph_targets block may be allocated; if we ever allocate it, free it */
             if (primitives[i].morph_targets.address) TAG_FREE(primitives[i].morph_targets.address);
         }
         TAG_FREE(model->primitives.address);
     }
 
-    if (model->materials.address)
-        TAG_FREE(model->materials.address);
-
-    if (model->skeleton.address)
-        TAG_FREE(model->skeleton.address);
+    if (model->materials.address) TAG_FREE(model->materials.address);
+    if (model->skeleton.address) TAG_FREE(model->skeleton.address);
 
     memset(model, 0, sizeof(*model));
 }
@@ -1705,8 +1861,7 @@ static int model_importer_import_glb_with_material(const char *path,
     u32 i;
     i32 has_bounds;
 
-    if (!out_model)
-        return model_importer_set_error("output model pointer is null");
+    if (!out_model) return model_importer_set_error("output model pointer is null");
 
     model_importer_error[0] = '\0';
     file_data = NULL;
@@ -1742,8 +1897,6 @@ static int model_importer_import_glb_with_material(const char *path,
     model.primitives.address = primitives;
     model.materials.count = ctx.model_primitive_count;
     model.materials.address = materials;
-
-    /* skeleton block is empty; we leave it zeroed */
     model.skeleton.count = 0;
     model.skeleton.address = NULL;
 
@@ -1754,15 +1907,10 @@ static int model_importer_import_glb_with_material(const char *path,
     has_bounds = 0;
 
     {
-        u32 model_primitive_index;
-
-        model_primitive_index = 0u;
-
+        u32 model_primitive_index = 0u;
         for (i = 0; i < ctx.mesh_count; ++i) {
-            model_importer_json_span mesh;
-            model_importer_json_span mesh_primitives;
-            u32 mesh_primitive_count;
-            u32 mesh_primitive_index;
+            model_importer_json_span mesh, mesh_primitives;
+            u32 mesh_primitive_count, mesh_primitive_index;
 
             if (!model_importer_json_array_get(ctx.meshes, i, &mesh) ||
                 !model_importer_json_object_find(mesh, "primitives", &mesh_primitives) ||
@@ -1773,11 +1921,8 @@ static int model_importer_import_glb_with_material(const char *path,
                 return model_importer_set_error("mesh.primitives must be an array");
             }
 
-            for (mesh_primitive_index = 0u;
-                 mesh_primitive_index < mesh_primitive_count;
-                 ++mesh_primitive_index) {
+            for (mesh_primitive_index = 0u; mesh_primitive_index < mesh_primitive_count; ++mesh_primitive_index) {
                 model_importer_json_span mesh_primitive;
-
                 if (!model_importer_json_array_get(mesh_primitives, mesh_primitive_index, &mesh_primitive) ||
                     !model_importer_fill_mesh_primitive(&ctx, i, model_primitive_index, mesh_primitive,
                                                        &primitives[model_primitive_index],
@@ -1787,19 +1932,15 @@ static int model_importer_import_glb_with_material(const char *path,
                     TAG_FREE(file_data);
                     return 0;
                 }
-
                 ++model_primitive_index;
             }
         }
     }
 
     if (!has_bounds) {
-        model.bounding_box.x.lower = 0.0f;
-        model.bounding_box.x.upper = 0.0f;
-        model.bounding_box.y.lower = 0.0f;
-        model.bounding_box.y.upper = 0.0f;
-        model.bounding_box.z.lower = 0.0f;
-        model.bounding_box.z.upper = 0.0f;
+        model.bounding_box.x.lower = model.bounding_box.x.upper = 0.0f;
+        model.bounding_box.y.lower = model.bounding_box.y.upper = 0.0f;
+        model.bounding_box.z.lower = model.bounding_box.z.upper = 0.0f;
     }
 
     *out_model = model;
@@ -1823,8 +1964,7 @@ static i32 model_importer_import_model_with_material(const char *path,
     i32 existing_handle;
     i32 handle;
 
-    if (!path)
-        return -1;
+    if (!path) return -1;
 
     model_importer_error[0] = '\0';
 
@@ -1845,7 +1985,6 @@ static i32 model_importer_import_model_with_material(const char *path,
             model_importer_set_error("an existing non-model tag uses this path");
             return -1;
         }
-
         tag_sys.instances[existing_handle].ref_count++;
         return existing_handle;
     }

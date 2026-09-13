@@ -24,16 +24,13 @@ extern "C" {
 typedef struct model_vertex {
     vec3 position;
     vec3 normal;
-    vec4 tangent;          /* w = ±1 (handedness) */
+    vec4 tangent;
 
-    /* UV sets: TEXCOORD_0 .. TEXCOORD_7 */
     vec2 uv0;  vec2 uv1;  vec2 uv2;  vec2 uv3;
     vec2 uv4;  vec2 uv5;  vec2 uv6;  vec2 uv7;
 
-    /* Color sets: COLOR_0 .. COLOR_3 */
     vec4 color0;  vec4 color1;  vec4 color2;  vec4 color3;
 
-    /* Bone influences – each influence is a pair (index, weight) */
     u16  bone_index0;  u8  bone_weight0;
     u16  bone_index1;  u8  bone_weight1;
     u16  bone_index2;  u8  bone_weight2;
