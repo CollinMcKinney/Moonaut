@@ -196,11 +196,6 @@ function import_model(filename) end
 ---@return number
 function build_cbsp(handle) end
 
-MODE_WIREFRAME = 0
-MODE_FLAT = 1
-MODE_GOURAUD = 2
-MODE_PHONG = 3
-
 TAG_material = 0  -- actual values not important for LSP
 TAG_model = 0
 TAG_entity = 0

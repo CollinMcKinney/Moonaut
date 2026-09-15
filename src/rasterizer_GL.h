@@ -223,26 +223,26 @@ typedef struct {
     float uMatEmissiveColor[3];     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency; float uMatEmissivePulsePhase;
     float uMatTransmissionStrength; float _pad1;
-    float uMatSpecularTint[3];      float uMatSurfaceRoughness;
+    float uMatSpecularTint[3];      float uMatSpecularRoughness;
     float uMatRimColor[3];          float uMatRimExponent;
     float uMatMetallic;
-    float uMatIor;
+    float uMatIOR;
     float uMatSubsurfaceStrength;
-    float uMatFresnelExponent;
+    float uMatClearcoatIOR;
     float uMatGoochCool[3];         float _pad2;
     float uMatGoochWarm[3];         float uMatAmbientLightFactor;
-    float uMatOrenNayarSigma;       float uMatMinnaertK;
+    float uMatDiffuseRoughness;     float uMatTransmissionRoughness;
     float uMatSaturation;           float uMatIridescenceStrength;
-    float uMatBackGlowColor[3];     float uMatBumpAmplitude;
-    float uMatBumpFrequency;        float uMatBumpSpeed;
-    float uMatRoughness;            float uMatFringeIntensity;
+    float uMatBackGlowColor[3];     float uMatBumpWaveAmplitude;
+    float uMatBumpWaveFrequency;    float uMatBumpWaveSpeed;
+    float uMatBumpNoise;            float uMatFringeIntensity;
     int   uMatCelBands;             float uMatGlitchIntensity;
     int   uMatPosterizeLevels;      float _pad3;
     float uMatStrobeColor[3];       float uMatStrobeFrequency;
     float uMatStrobePhase;          float _pad4[3];
     float uClearcoatColor[3];       float uClearcoatRoughness;
     float uClearcoatStrength;       float _pad5[3];
-    float uSheenColor[3];           float uSheenExponent;
+    float uSheenColor[3];           float uSheenRoughness;
     float uSheenStrength;
     float uMatAnisotropic;
     float uMatTransmissionTint[3];  float _pad6;
@@ -267,7 +267,6 @@ typedef struct {
     GLint u_fog_color;
     GLint u_fog_start;
     GLint u_fog_end;
-    GLint u_gouraud_blend;
     GLint u_depth_tex;
     GLint u_screen_size;
     GLint u_num_lights;
@@ -381,7 +380,6 @@ typedef struct {
     size_t index_offset;
     int    vertex_count;
     int    index_count;
-    int    mode;
     int    is_transparent;
 } batch_t;
 
@@ -665,47 +663,28 @@ static void generate_defines(render_method key, int is_depth, int is_wboit,
         p += n; remaining -= n;
     }
 
-    u32 mode = (u32)key & 0x7;
-    switch (mode) {
-        case MODE_WIREFRAME: n = snprintf(p, remaining, "#define MODE_WIREFRAME\n"); break;
-        case MODE_FLAT:      n = snprintf(p, remaining, "#define MODE_FLAT\n"); break;
-        case MODE_GOURAUD:   n = snprintf(p, remaining, "#define MODE_GOURAUD\n"); break;
-        case MODE_QUADRATIC: n = snprintf(p, remaining, "#define MODE_QUADRATIC\n"); break;
-        case MODE_CUBIC:     n = snprintf(p, remaining, "#define MODE_CUBIC\n"); break;
-        case MODE_PHONG:     n = snprintf(p, remaining, "#define MODE_PHONG\n"); break;
-        default:             n = snprintf(p, remaining, "#define MODE_PHONG\n"); break;
-    }
-    p += n; remaining -= n;
-
-    u32 effects = (u32)key & ~0x7;
-    if (effects & EFFECT_BUMP)            { n = snprintf(p, remaining, "#define EFFECT_BUMP\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_DIFFUSE_WRAP)    { n = snprintf(p, remaining, "#define EFFECT_DIFFUSE_WRAP\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_CEL_SHADING)     { n = snprintf(p, remaining, "#define EFFECT_CEL_SHADING\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_MINNAERT)        { n = snprintf(p, remaining, "#define EFFECT_MINNAERT\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_OREN_NAYAR)      { n = snprintf(p, remaining, "#define EFFECT_OREN_NAYAR\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_AMBIENT_LIGHT)   { n = snprintf(p, remaining, "#define EFFECT_AMBIENT_LIGHT\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_GOOCH)           { n = snprintf(p, remaining, "#define EFFECT_GOOCH\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_BACK_GLOW)       { n = snprintf(p, remaining, "#define EFFECT_BACK_GLOW\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_RIM)             { n = snprintf(p, remaining, "#define EFFECT_RIM\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_FRESNEL)         { n = snprintf(p, remaining, "#define EFFECT_FRESNEL\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_EMISSIVE)        { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_EMISSIVE_PULSE)  { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE_PULSE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_STROBE)          { n = snprintf(p, remaining, "#define EFFECT_STROBE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_SPECULAR)        { n = snprintf(p, remaining, "#define EFFECT_SPECULAR\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_SPECULAR_THRESH) { n = snprintf(p, remaining, "#define EFFECT_SPECULAR_THRESH\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_SATURATION)      { n = snprintf(p, remaining, "#define EFFECT_SATURATION\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_IRIDESCENCE)     { n = snprintf(p, remaining, "#define EFFECT_IRIDESCENCE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_GLITCH)          { n = snprintf(p, remaining, "#define EFFECT_GLITCH\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_ROUGHNESS)       { n = snprintf(p, remaining, "#define EFFECT_ROUGHNESS\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_FRINGE)          { n = snprintf(p, remaining, "#define EFFECT_FRINGE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_ANISOTROPIC)     { n = snprintf(p, remaining, "#define EFFECT_ANISOTROPIC\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_SUBSURFACE)      { n = snprintf(p, remaining, "#define EFFECT_SUBSURFACE\n"); p += n; remaining -= n; }
-    if (effects & EFFECT_TRANSMISSION)    { n = snprintf(p, remaining, "#define EFFECT_TRANSMISSION\n"); p += n; remaining -= n; }
+    if (key & EFFECT_BUMP_WAVE)       { n = snprintf(p, remaining, "#define EFFECT_BUMP_WAVE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_DIFFUSE_WRAP)    { n = snprintf(p, remaining, "#define EFFECT_DIFFUSE_WRAP\n"); p += n; remaining -= n; }
+    if (key & EFFECT_CEL_SHADING)     { n = snprintf(p, remaining, "#define EFFECT_CEL_SHADING\n"); p += n; remaining -= n; }
+    if (key & EFFECT_GOOCH)           { n = snprintf(p, remaining, "#define EFFECT_GOOCH\n"); p += n; remaining -= n; }
+    if (key & EFFECT_BACK_GLOW)       { n = snprintf(p, remaining, "#define EFFECT_BACK_GLOW\n"); p += n; remaining -= n; }
+    if (key & EFFECT_RIM)             { n = snprintf(p, remaining, "#define EFFECT_RIM\n"); p += n; remaining -= n; }
+    if (key & EFFECT_EMISSIVE)        { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_EMISSIVE_PULSE)  { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE_PULSE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_STROBE)          { n = snprintf(p, remaining, "#define EFFECT_STROBE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_SATURATION)      { n = snprintf(p, remaining, "#define EFFECT_SATURATION\n"); p += n; remaining -= n; }
+    if (key & EFFECT_IRIDESCENCE)     { n = snprintf(p, remaining, "#define EFFECT_IRIDESCENCE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_GLITCH)          { n = snprintf(p, remaining, "#define EFFECT_GLITCH\n"); p += n; remaining -= n; }
+    if (key & EFFECT_BUMP_NOISE)      { n = snprintf(p, remaining, "#define EFFECT_BUMP_NOISE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_FRINGE)          { n = snprintf(p, remaining, "#define EFFECT_FRINGE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
+    if (key & EFFECT_ALPHA)           { n = snprintf(p, remaining, "#define EFFECT_ALPHA\n"); p += n; remaining -= n; }
+    if (key & EFFECT_CLEARCOAT)       { n = snprintf(p, remaining, "#define EFFECT_CLEARCOAT\n"); p += n; remaining -= n; }
+    if (key & EFFECT_SHEEN)           { n = snprintf(p, remaining, "#define EFFECT_SHEEN\n"); p += n; remaining -= n; }
+    if (key & EFFECT_ANISOTROPIC)     { n = snprintf(p, remaining, "#define EFFECT_ANISOTROPIC\n"); p += n; remaining -= n; }
+    if (key & EFFECT_SUBSURFACE)      { n = snprintf(p, remaining, "#define EFFECT_SUBSURFACE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_TRANSMISSION)    { n = snprintf(p, remaining, "#define EFFECT_TRANSMISSION\n"); p += n; remaining -= n; }
 }
 
 static void shader_cache_resize(int new_size) {
@@ -814,7 +793,6 @@ static shader_variant_t* get_program_for_method(render_method key,
     entry->u_fog_color = C89GL_glGetUniformLocation(prog, "uFogColor");
     entry->u_fog_start = C89GL_glGetUniformLocation(prog, "uFogStart");
     entry->u_fog_end = C89GL_glGetUniformLocation(prog, "uFogEnd");
-    entry->u_gouraud_blend = C89GL_glGetUniformLocation(prog, "uGouraudBlend");
     entry->u_depth_tex = C89GL_glGetUniformLocation(prog, "uDepthTex");
     entry->u_screen_size = C89GL_glGetUniformLocation(prog, "uScreenSize");
     entry->u_num_lights = C89GL_glGetUniformLocation(prog, "uNumLights");
@@ -860,15 +838,15 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatSpecularTint[0] = mat->specular_tint.position.x;
     ubo.uMatSpecularTint[1] = mat->specular_tint.position.y;
     ubo.uMatSpecularTint[2] = mat->specular_tint.position.z;
-    ubo.uMatSurfaceRoughness = mat->surface_roughness;
+    ubo.uMatSpecularRoughness = mat->specular_roughness;
     ubo.uMatRimColor[0] = mat->rim_color.position.x;
     ubo.uMatRimColor[1] = mat->rim_color.position.y;
     ubo.uMatRimColor[2] = mat->rim_color.position.z;
     ubo.uMatRimExponent = mat->rim_exponent;
     ubo.uMatMetallic = mat->metallic;
-    ubo.uMatIor      = mat->ior;
+    ubo.uMatIOR      = mat->ior;
     ubo.uMatSubsurfaceStrength = mat->subsurface_strength;
-    ubo.uMatFresnelExponent = mat->fresnel_exponent;
+    ubo.uMatClearcoatIOR = mat->clearcoat_ior;
     ubo.uMatGoochCool[0] = mat->gooch_cool.position.x;
     ubo.uMatGoochCool[1] = mat->gooch_cool.position.y;
     ubo.uMatGoochCool[2] = mat->gooch_cool.position.z;
@@ -876,17 +854,17 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatGoochWarm[1] = mat->gooch_warm.position.y;
     ubo.uMatGoochWarm[2] = mat->gooch_warm.position.z;
     ubo.uMatAmbientLightFactor = mat->ambient_light_factor;
-    ubo.uMatOrenNayarSigma     = mat->oren_nayar_sigma;
-    ubo.uMatMinnaertK          = mat->minnaert_k;
+    ubo.uMatDiffuseRoughness     = mat->diffuse_roughness;
+    ubo.uMatTransmissionRoughness = mat->transmission_roughness;
     ubo.uMatSaturation         = mat->saturation;
     ubo.uMatIridescenceStrength = mat->iridescence_strength;
     ubo.uMatBackGlowColor[0] = mat->back_glow_color.position.x;
     ubo.uMatBackGlowColor[1] = mat->back_glow_color.position.y;
     ubo.uMatBackGlowColor[2] = mat->back_glow_color.position.z;
-    ubo.uMatBumpAmplitude = mat->bump_amplitude;
-    ubo.uMatBumpFrequency = mat->bump_frequency;
-    ubo.uMatBumpSpeed     = mat->bump_speed;
-    ubo.uMatRoughness     = mat->roughness;
+    ubo.uMatBumpWaveAmplitude = mat->bump_wave_amplitude;
+    ubo.uMatBumpWaveFrequency = mat->bump_wave_frequency;
+    ubo.uMatBumpWaveSpeed     = mat->bump_wave_speed;
+    ubo.uMatBumpNoise     = mat->bump_noise;
     ubo.uMatFringeIntensity = mat->fringe_intensity;
     ubo.uMatCelBands      = mat->cel_bands;
     ubo.uMatGlitchIntensity = mat->glitch_intensity;
@@ -904,7 +882,7 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uSheenColor[0] = mat->sheen_color.position.x;
     ubo.uSheenColor[1] = mat->sheen_color.position.y;
     ubo.uSheenColor[2] = mat->sheen_color.position.z;
-    ubo.uSheenExponent = mat->sheen_exponent;
+    ubo.uSheenRoughness = mat->sheen_roughness;
     ubo.uSheenStrength = mat->sheen_strength;
 
     ubo.uMatAnisotropic = mat->anisotropic;
@@ -914,7 +892,6 @@ static void update_material_ubo(const material_definition *mat) {
 
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(material_ubo_t), &ubo);
-    C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 /* ---- Update model UBO ---- */
@@ -1471,8 +1448,6 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
         C89GL_glUniform1f(variant->u_fog_start, gl_fog_start);
     if (variant->u_fog_end != -1)
         C89GL_glUniform1f(variant->u_fog_end, gl_fog_end);
-    if (variant->u_gouraud_blend != -1)
-        C89GL_glUniform1f(variant->u_gouraud_blend, 0.0f);
 
     if (!is_depth_pass) {
         if (variant->u_depth_tex != -1) {
@@ -1528,7 +1503,6 @@ static void flush_transparent_batches(void) {
         if (gl_batch_count < MAX_BATCHES) {
             batch_t *b = &gl_batches[gl_batch_count++];
             b->mat = mat;
-            b->mode = (mat->render_method & 0x7);
             b->vertex_offset = gl_pool_used_floats / VERTEX_STRIDE_FLOATS;
             b->index_offset = gl_index_pool_used;
             b->vertex_count = 0;
@@ -1606,11 +1580,6 @@ static void draw_triangle_indexed(
     if (triangle_outside_frustum(world_v0, world_v1, world_v2)) return;
 
     vec3 localFaceNormal = {0,0,0}, localCentroid = {0,0,0};
-    u32 mode = mat->render_method & 0x7;
-    if (mode == MODE_FLAT || mode == MODE_WIREFRAME) {
-        localFaceNormal = vec3_normalize(vec3_cross(vec3_sub(local_v1, local_v0), vec3_sub(local_v2, local_v0)));
-        localCentroid = vec3_div_scalar(vec3_add(vec3_add(local_v0, local_v1), local_v2), 3.0f);
-    }
 
     if (mat->render_method & EFFECT_ALPHA) {
         if (gl_transparent_count >= MAX_TRANSPARENT_TRIS) {
@@ -1634,7 +1603,7 @@ static void draw_triangle_indexed(
     int batch_idx = -1;
     int i;
     for (i = 0; i < gl_batch_count; i++) {
-        if (gl_batches[i].mat == mat && gl_batches[i].mode == mode) {
+        if (gl_batches[i].mat == mat) {
             batch_idx = i;
             break;
         }
@@ -1646,7 +1615,6 @@ static void draw_triangle_indexed(
         }
         batch_idx = gl_batch_count++;
         gl_batches[batch_idx].mat = mat;
-        gl_batches[batch_idx].mode = mode;
         gl_batches[batch_idx].vertex_offset = gl_pool_used_floats / VERTEX_STRIDE_FLOATS;
         gl_batches[batch_idx].index_offset = gl_index_pool_used;
         gl_batches[batch_idx].vertex_count = 0;
@@ -2214,8 +2182,10 @@ static void render_particle_system_draw_wboit(void);
 INLINE void render_finish(void) {
     int i;
     GLuint current_program = 0;
+    int    current_cull    = 1;
 
     flush_transparent_batches();
+    qsort(gl_batches, gl_batch_count, sizeof(batch_t), batch_compare_mode);
 
     /* ---- Dispatch audio compute at the very beginning (uses last frame's low‑res depth) ---- */
     dispatch_audio_compute();
@@ -2270,9 +2240,8 @@ INLINE void render_finish(void) {
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
                 current_program = variant->program;
+                set_uniforms_for_variant(variant, 1);
             }
-            update_material_ubo(b->mat);
-            set_uniforms_for_variant(variant, 1);
             C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }
@@ -2299,9 +2268,9 @@ INLINE void render_finish(void) {
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
                 current_program = variant->program;
+                set_uniforms_for_variant(variant, 0);
             }
             update_material_ubo(b->mat);
-            set_uniforms_for_variant(variant, 0);
             C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }
@@ -2353,9 +2322,15 @@ INLINE void render_finish(void) {
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
                 current_program = variant->program;
+                set_uniforms_for_variant(variant, 0);
             }
             update_material_ubo(b->mat);
-            set_uniforms_for_variant(variant, 0);
+             int want_cull = b->mat->double_sided ? 0 : 1;
+             if (current_cull != want_cull) {
+                 if (want_cull) C89GL_glEnable(GL_CULL_FACE);
+                 else           C89GL_glDisable(GL_CULL_FACE);
+                 current_cull = want_cull;
+             }
             C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }
@@ -2449,9 +2424,14 @@ INLINE void render_finish(void) {
             if (current_program != variant->program) {
                 C89GL_glUseProgram(variant->program);
                 current_program = variant->program;
+                set_uniforms_for_variant(variant, 1);
             }
-            update_material_ubo(b->mat);
-            set_uniforms_for_variant(variant, 1);
+            int want_cull = b->mat->double_sided ? 0 : 1;
+            if (current_cull != want_cull) {
+                if (want_cull) C89GL_glEnable(GL_CULL_FACE);
+                else           C89GL_glDisable(GL_CULL_FACE);
+                current_cull = want_cull;
+            }
             C89GL_glDrawElements(GL_TRIANGLES, b->index_count, GL_UNSIGNED_INT,
                                  (void*)(b->index_offset * sizeof(GLuint)));
         }

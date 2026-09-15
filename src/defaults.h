@@ -123,10 +123,6 @@ static void tag_register_default_all(void){
     tag_register_default("default_particle_emitter", TAG_particle_emitter, &DEFAULT_PARTICLE_EMITTER);
 
     /* Default material definitions. */
-    tag_register_default("default_material_wireframe",  TAG_material, &DEFAULT_MATERIAL_WIREFRAME);
-    tag_register_default("default_material_flat",       TAG_material, &DEFAULT_MATERIAL_FLAT);
-    tag_register_default("default_material_gouraud",    TAG_material, &DEFAULT_MATERIAL_GOURAUD);
-    tag_register_default("default_material_phong",      TAG_material, &DEFAULT_MATERIAL_PHONG);
     tag_register_default("default_material_water",      TAG_material, &DEFAULT_MATERIAL_WATER);
     tag_register_default("default_material_grass",      TAG_material, &DEFAULT_MATERIAL_GRASS);
     tag_register_default("default_material_cloth",      TAG_material, &DEFAULT_MATERIAL_CLOTH);

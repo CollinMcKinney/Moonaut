@@ -24,7 +24,8 @@ void main() {
     // particles and transparent material batches produce comparable
     // weights in the accumulation buffer.
     float depth_z = gl_FragCoord.z;
-    float w = alpha * max(1e-2, min(1e4, 3e3 * pow(1.0 - depth_z, 3.0)));
+    float t = 1.0 - depth_z;
+    float w = alpha * clamp(3e3 * t * t * t, 1e-2, 1e4);
 
     outAccumulation = vec4(vColor.rgb * w, alpha * w);
     outRevealage    = alpha;
