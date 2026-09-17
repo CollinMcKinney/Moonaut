@@ -8,8 +8,9 @@ uniform mat4 uViewProj;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
 
-out vec4 vColor;
-out vec2 vCorner;
+out vec4  vColor;
+out vec2  vCorner;
+out float vEyeDepth;
 
 void main() {
     vec2 corner[6] = vec2[6](
@@ -27,4 +28,10 @@ void main() {
     vec4 worldPos = vec4(aCenter + offset, 1.0);
     gl_Position = uViewProj * worldPos;
     vColor = aColor;
+
+    // Linear eye-space depth for the WBOIT weight function. gl_Position.w
+    // equals -view_z for a standard perspective projection and is linear in
+    // view space, so perspective-correct interpolation is exact at every
+    // fragment regardless of triangle size.
+    vEyeDepth = gl_Position.w;
 }

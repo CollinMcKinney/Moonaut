@@ -66,7 +66,7 @@ typedef float GLfloat;
 typedef float GLclampf;
 #endif
 #ifndef GLsync
-typedef void* GLsync;   /* NEW: sync object handle */
+typedef void* GLsync;
 #endif
 #ifndef GLbitfield
 typedef unsigned int GLbitfield;
@@ -104,8 +104,8 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_STATIC_DRAW                              0x88E4
 #define GL_DYNAMIC_DRAW                             0x88E8
 #define GL_STREAM_DRAW                              0x88E0
-#define GL_STREAM_READ                              0x88E1   /* NEW */
-#define GL_STREAM_COPY                              0x88E2   /* NEW */
+#define GL_STREAM_READ                              0x88E1
+#define GL_STREAM_COPY                              0x88E2
 #define GL_READ_ONLY                                0x88B8
 #define GL_WRITE_ONLY                               0x88B9
 #define GL_READ_WRITE                               0x88BA
@@ -147,6 +147,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_RGB                                      0x1907
 #define GL_RED                                      0x1903
 #define GL_R8                                       0x8229
+#define GL_R32F                                     0x822E
 #define GL_RGBA16F                                  0x881A
 #define GL_HALF_FLOAT                               0x140B
 #define GL_TEXTURE0                                 0x84C0
@@ -185,8 +186,6 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_DEPTH_BUFFER_BIT                         0x00000100
 #define GL_COLOR                                    0x1800
 #define GL_STENCIL_BUFFER_BIT                       0x00000400
-#define GL_VIEWPORT                                 0x0BA2
-#define GL_SCISSOR_BOX                              0x0C10
 #define GL_BLEND                                    0x0BE2
 #define GL_DEPTH_TEST                               0x0B71
 #define GL_STENCIL_TEST                             0x0B90
@@ -217,7 +216,6 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_RENDERER                                 0x1F01
 #define GL_VERSION                                  0x1F02
 
-#define GL_FRAMEBUFFER_BINDING           0x8CA6
 #define GL_READ_FRAMEBUFFER              0x8CA8
 #define GL_DRAW_FRAMEBUFFER              0x8CA9
 #define GL_RGBA8                         0x8058
@@ -233,11 +231,31 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_UNIFORM_BLOCK_BINDING          0x8A3F
 #define GL_INVALID_INDEX                  0xFFFFFFFFu
 
+/* ---- State query pnames (for glGetIntegerv) ---- */
+#define GL_ACTIVE_TEXTURE                 0x84E0
+#define GL_CURRENT_PROGRAM                0x8B8D
+#define GL_VERTEX_ARRAY_BINDING           0x85B5
+#define GL_ARRAY_BUFFER_BINDING           0x8894
+#define GL_ELEMENT_ARRAY_BUFFER_BINDING   0x8895
+#define GL_FRAMEBUFFER_BINDING            0x8CA6
+#define GL_READ_FRAMEBUFFER_BINDING       0x8CAA
+#define GL_DRAW_FRAMEBUFFER_BINDING       0x8CA7
+#define GL_BLEND_SRC_RGB                  0x80C9
+#define GL_BLEND_DST_RGB                  0x80C8
+#define GL_BLEND_SRC_ALPHA                0x80CB
+#define GL_BLEND_DST_ALPHA                0x80CA
+#define GL_BLEND_SRC                      0x0BE1
+#define GL_BLEND_DST                      0x0BE0
+#define GL_DEPTH_FUNC                     0x0B74
+#define GL_DEPTH_WRITEMASK                0x0B72
+#define GL_CULL_FACE_MODE                 0x0B45
+#define GL_FRONT_FACE                     0x0B46
+#define GL_VIEWPORT                       0x0BA2
+#define GL_SCISSOR_BOX                    0x0C10
+
 /* ---- Compute / SSBO (OpenGL 4.3) ---- */
 #define GL_COMPUTE_SHADER                 0x91B9
 #define GL_SHADER_STORAGE_BUFFER          0x90D2
-#define GL_SHADER_STORAGE_BARRIER_BIT     0x00002000
-#define GL_BUFFER_UPDATE_BARRIER_BIT      0x00000200   /* NEW */
 #define GL_MAP_READ_BIT                   0x0001
 #define GL_MAP_WRITE_BIT                  0x0002
 #define GL_MAP_INVALIDATE_RANGE_BIT       0x0004
@@ -245,7 +263,25 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_MAP_FLUSH_EXPLICIT_BIT         0x0010
 #define GL_MAP_UNSYNCHRONIZED_BIT         0x0020
 
-/* ---- Sync object enums (NEW) ---- */
+/* glMemoryBarrier barrier bits (OpenGL 4.2+, subset relevant to this engine) */
+#define GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT        0x00000001
+#define GL_ELEMENT_ARRAY_BARRIER_BIT              0x00000002
+#define GL_UNIFORM_BARRIER_BIT                    0x00000004
+#define GL_TEXTURE_FETCH_BARRIER_BIT              0x00000008
+#define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT        0x00000020
+#define GL_COMMAND_BARRIER_BIT                    0x00000040
+#define GL_PIXEL_BUFFER_BARRIER_BIT               0x00000080
+#define GL_TEXTURE_UPDATE_BARRIER_BIT             0x00000100
+#define GL_BUFFER_UPDATE_BARRIER_BIT              0x00000200
+#define GL_FRAMEBUFFER_BARRIER_BIT                0x00000400
+#define GL_TRANSFORM_FEEDBACK_BARRIER_BIT         0x00000800
+#define GL_ATOMIC_COUNTER_BARRIER_BIT             0x00001000
+#define GL_SHADER_STORAGE_BARRIER_BIT             0x00002000
+#define GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT       0x00004000
+#define GL_QUERY_BUFFER_BARRIER_BIT               0x00008000
+#define GL_ALL_BARRIER_BITS                       0xFFFFFFFFu
+
+/* ---- Sync object enums ---- */
 #define GL_SYNC_FLUSH_COMMANDS_BIT        0x00000001
 #define GL_ALREADY_SIGNALED               0x911A
 #define GL_CONDITION_SATISFIED            0x911C
@@ -335,7 +371,7 @@ typedef void* (C89GL_APIENTRY *C89GL_PFN_glMapBuffer)(unsigned int target, unsig
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUnmapBuffer)(unsigned int target);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetBufferParameteriv)(unsigned int target, unsigned int pname, int* params);
 
-/* 3.0 MapBufferRange (NEW) */
+/* 3.0 MapBufferRange */
 typedef void* (C89GL_APIENTRY *C89GL_PFN_glMapBufferRange)(unsigned int target, GLintptr offset, GLsizeiptr length, GLbitfield access);
 
 /* 2.0 Shaders & Uniforms */
@@ -437,6 +473,7 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glTexParameteri)(unsigned int target, un
 typedef void (C89GL_APIENTRY *C89GL_PFN_glTexParameterf)(unsigned int target, unsigned int pname, float param);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glTexImage2D)(unsigned int target, int level, int internalformat, int width, int height, int border, unsigned int format, unsigned int type, const void* pixels);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glTexSubImage2D)(unsigned int target, int level, int xoffset, int yoffset, int width, int height, unsigned int format, unsigned int type, const void* pixels);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glCopyTexSubImage2D)(unsigned int target, int level, int xoffset, int yoffset, int x, int y, int width, int height);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGenerateMipmap)(unsigned int target);
 
 /* 1.5 / 3.3 Queries */
@@ -521,7 +558,7 @@ extern C89GL_PFN_glMapBuffer C89GL_glMapBuffer;
 extern C89GL_PFN_glUnmapBuffer C89GL_glUnmapBuffer;
 extern C89GL_PFN_glGetBufferParameteriv C89GL_glGetBufferParameteriv;
 
-/* 3.0 MapBufferRange (NEW) */
+/* 3.0 MapBufferRange */
 extern C89GL_PFN_glMapBufferRange C89GL_glMapBufferRange;
 
 /* 2.0 */
@@ -617,6 +654,7 @@ extern C89GL_PFN_glTexParameteri C89GL_glTexParameteri;
 extern C89GL_PFN_glTexParameterf C89GL_glTexParameterf;
 extern C89GL_PFN_glTexImage2D C89GL_glTexImage2D;
 extern C89GL_PFN_glTexSubImage2D C89GL_glTexSubImage2D;
+extern C89GL_PFN_glCopyTexSubImage2D C89GL_glCopyTexSubImage2D;
 extern C89GL_PFN_glGenerateMipmap C89GL_glGenerateMipmap;
 extern C89GL_PFN_glGenQueries C89GL_glGenQueries;
 extern C89GL_PFN_glDeleteQueries C89GL_glDeleteQueries;
@@ -772,7 +810,7 @@ C89GL_PFN_glMapBuffer C89GL_glMapBuffer = NULL;
 C89GL_PFN_glUnmapBuffer C89GL_glUnmapBuffer = NULL;
 C89GL_PFN_glGetBufferParameteriv C89GL_glGetBufferParameteriv = NULL;
 
-/* 3.0 MapBufferRange (NEW) */
+/* 3.0 MapBufferRange */
 C89GL_PFN_glMapBufferRange C89GL_glMapBufferRange = NULL;
 
 /* 2.0 */
@@ -868,6 +906,7 @@ C89GL_PFN_glTexParameteri C89GL_glTexParameteri = NULL;
 C89GL_PFN_glTexParameterf C89GL_glTexParameterf = NULL;
 C89GL_PFN_glTexImage2D C89GL_glTexImage2D = NULL;
 C89GL_PFN_glTexSubImage2D C89GL_glTexSubImage2D = NULL;
+C89GL_PFN_glCopyTexSubImage2D C89GL_glCopyTexSubImage2D = NULL;
 C89GL_PFN_glGenerateMipmap C89GL_glGenerateMipmap = NULL;
 C89GL_PFN_glGenQueries C89GL_glGenQueries = NULL;
 C89GL_PFN_glDeleteQueries C89GL_glDeleteQueries = NULL;
@@ -939,7 +978,7 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glUnmapBuffer, "glUnmapBuffer");
     C89GL_LOAD_FUNC(C89GL_glGetBufferParameteriv, "glGetBufferParameteriv");
 
-    /* 3.0 MapBufferRange (NEW) */
+    /* 3.0 MapBufferRange */
     C89GL_LOAD_FUNC(C89GL_glMapBufferRange, "glMapBufferRange");
 
     /* 2.0 */
@@ -1035,6 +1074,7 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glTexParameterf, "glTexParameterf");
     C89GL_LOAD_FUNC(C89GL_glTexImage2D, "glTexImage2D");
     C89GL_LOAD_FUNC(C89GL_glTexSubImage2D, "glTexSubImage2D");
+    C89GL_LOAD_FUNC(C89GL_glCopyTexSubImage2D, "glCopyTexSubImage2D");
     C89GL_LOAD_FUNC(C89GL_glGenerateMipmap, "glGenerateMipmap");
     C89GL_LOAD_FUNC(C89GL_glGenQueries, "glGenQueries");
     C89GL_LOAD_FUNC(C89GL_glDeleteQueries, "glDeleteQueries");

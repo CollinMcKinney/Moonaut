@@ -68,6 +68,7 @@ out vec3 vWorldPos;
 out vec3 vNormal;
 out vec3 vLocalPos;
 out vec3 vVertexColor;
+out float vEyeDepth;
 flat out vec3 vFlatColor;
 flat out vec3 vWorldCentroid;
 flat out vec3 vLocalCentroid;
@@ -103,6 +104,13 @@ void main() {
     vWorldCentroid   = (model * vec4(vLocalCentroid, 1.0)).xyz;
 
     gl_Position = uViewProj * worldPos;
+
+    // Clip-space w = -view_z for a standard perspective projection, and
+    // view_z is linear in view space, so perspective-correct interpolation
+    // of this varying yields the exact linear eye depth at every fragment.
+    // Used by the WBOIT weight function in the fragment shader.
+    vEyeDepth = gl_Position.w;
+
     vVertexColor = vec3(0.0);
     vFlatColor = vec3(0.0);
 }

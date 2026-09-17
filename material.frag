@@ -6,11 +6,15 @@
 //
 // Program flow:
 //
-//   1. Perturb the normal (wave and/or noise bump).
-//   2. Compute specular-AA-filtered roughness, F0, F_avg, and coat F0.
+//   1. If ALPHA_PASS_BEHIND is defined, discard fragments that are not
+//      strictly behind the frontmost transmissive surface. The front pass
+//      has no such block — depth testing against the combined opaque +
+//      transmissive depth buffer does the culling there.
+//   2. Perturb the normal (wave and/or noise bump).
+//   3. Compute specular-AA-filtered roughness, F0, F_avg, and coat F0.
 //      Apply OpenPBR coat roughening to the base specular roughness.
 //      Specular AA uses half-vector slope-space NDF filtering.
-//   3. Loop over the lights in the fragment's cluster.
+//   4. Loop over the lights in the fragment's cluster.
 //        For each light:
 //          a. Evaluate diffuse (EON or VMF, selected by EFFECT_VMF_DIFFUSE),
 //             specular, transmission, clearcoat, sheen, back glow, and rim.
@@ -18,11 +22,26 @@
 //             Clearcoat uses OpenPBR darkening; sheen uses Kulla-Conty
 //             multiscatter compensation with an analytic Charlie albedo fit.
 //          c. Accumulate.
-//   4. Add ambient diffuse and specular with energy conservation.
+//   5. Add ambient diffuse and specular with energy conservation.
 //      Specular uses corrected Turquin compensation (F0, not F_avg).
-//   5. Add emissive, strobe, tint, fog.
-//   6. Tone map (Halo 3 style luminance-only filmic curve, hue-preserving).
-//   7. Apply LDR post effects.
+//   6. If EFFECT_TRANSMISSION is defined, sample the pre-transmissive colour
+//      buffer along the refracted ray, apply the material's transmission
+//      tint, and blend by Fresnel. This gives the glass/water/ice/etc.
+//      surface its refracted background.
+//   7. Apply VBAO to the ambient diffuse and ambient specular terms only.
+//      Direct lighting is NOT multiplied by AO — AO is a visibility
+//      approximation for the ambient term, not a shadow. Darkening direct
+//      light by AO turns matte materials with zero specular tint pure black.
+//   8. Add emissive, strobe, tint, fog.
+//   9. Tone map (Halo 3 style luminance-only filmic curve, hue-preserving).
+//  10. Apply LDR post effects.
+//
+// Output paths:
+//   - Opaque and transmissive variants write a single FragColor plus the
+//     view-space geometric normal for VBAO (target 1).
+//   - Alpha variants compile with WBOIT_PASS and emit to a pair of
+//     (accumulation, revealage) targets instead. The C side resolves them
+//     with a full-screen composite between the two alpha passes.
 //
 // Subsurface scattering uses a Burley-inspired local diffusion
 // approximation (exponential sum) instead of the previous wrap-light
@@ -60,12 +79,48 @@ in vec3 vLocalPos;
 in vec3 vTangent;
 in vec3 vBitangent;
 
+// Linear eye-space depth, positive in front of the camera. Equals -view_z,
+// interpolated exactly by the rasterizer from gl_Position.w. Used only by
+// the WBOIT weight function.
+in float vEyeDepth;
+
 uniform vec3  uAmbientCol;
 uniform vec3  uCamEye;
 uniform float uTime;
 uniform vec3  uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
+uniform vec2  uScreenSize;
+
+// View matrix. Used to transform the geometric world-space normal into
+// view space for the VBAO normal buffer output.
+uniform mat4  uView;
+
+// --- Refraction inputs -------------------------------------------------------
+// uRefractionSrc          : copy of the opaque + behind-alpha colour buffer,
+//                           made just before the transmissive colour pass.
+// uTransmissiveDepthTex   : frontmost transmissive gl_FragCoord.z, or 1.0
+//                           where no transmissive surface is present.
+// uAOTex                  : VBAO output, single channel, sampled on the
+//                           ambient terms of the non-WBOIT variants.
+// uAlphaPass              : 0 for ALPHA_PASS_BEHIND, 1 for ALPHA_PASS_FRONT.
+//                           Informational; the compile-time defines select
+//                           the behaviour. Kept for future runtime branches.
+// uRefractionScale        : scalar applied to R.xy before the UV offset.
+//
+// These samplers are declared with layout(binding = N), so they have no
+// addressable uniform location. The C side binds them to their fixed units
+// (2, 3, 4) unconditionally in set_uniforms_for_variant.
+layout(binding = 2) uniform sampler2D uRefractionSrc;
+
+#ifdef ALPHA_PASS_BEHIND
+layout(binding = 3) uniform sampler2D uTransmissiveDepthTex;
+#endif
+
+layout(binding = 4) uniform sampler2D uAOTex;
+
+uniform float     uRefractionScale;
+uniform int       uAlphaPass;
 
 // -----------------------------------------------------------------------------
 // MaterialUniforms
@@ -264,24 +319,16 @@ vec3 perturb_normal(vec3 N, vec3 worldPos, vec3 localPos) {
 // =============================================================================
 // Specular anti-aliasing — half-vector slope-space NDF filtering
 // =============================================================================
-// Filters the NDF in the slope domain by estimating the pixel footprint of
-// the half-vector projected into the surface tangent plane. This is more
-// accurate than normal-variance filtering for glossy surfaces at grazing
-// angles. Based on Tokuyoshi & Kaplanyan 2019 (projected-space filtering)
-// and the Square Enix shading AA technique.
 float specular_aa_roughness_halfvec(vec3 N, vec3 V, vec3 L,
                                     float perceptualRoughness) {
-    // Guard against degenerate half-vectors.
     vec3 Hraw = L + V;
     if (dot(Hraw, Hraw) < 1e-8) return perceptualRoughness;
     vec3 H = normalize(Hraw);
 
-    // Build an orthonormal tangent basis around N.
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T = normalize(cross(up, N));
     vec3 B = cross(N, T);
 
-    // Project the half-vector derivatives into slope space.
     float NdotH = max(dot(N, H), 1e-4);
     vec3 dHdx = dFdx(H);
     vec3 dHdy = dFdy(H);
@@ -289,7 +336,6 @@ float specular_aa_roughness_halfvec(vec3 N, vec3 V, vec3 L,
     float dHdx_slope = dot(dHdx, T) / NdotH;
     float dHdy_slope = dot(dHdy, B) / NdotH;
 
-    // Slope-space variance (0.25 factor as in the original technique).
     float slopeVariance = 0.25 * (dHdx_slope * dHdx_slope
                                  + dHdy_slope * dHdy_slope);
     slopeVariance = min(slopeVariance, 0.18);
@@ -303,7 +349,7 @@ float specular_aa_roughness_halfvec(vec3 N, vec3 V, vec3 L,
 }
 
 // Legacy normal-variance filter, retained as a fallback for call sites that
-// don't have L available (e.g. ambient). Not used on the direct path.
+// don't have L available (e.g. ambient).
 float specular_aa_roughness(vec3 N, float perceptualRoughness) {
     vec3 dndx = dFdx(N);
     vec3 dndy = dFdy(N);
@@ -468,13 +514,9 @@ float E_ss_GGX(float NdotV, float perceptualRoughness) {
     return AB.x + AB.y;
 }
 
-// Corrected Turquin multiscatter compensation. The three.js project fixed
-// this in PR #33983: the previous implementation used F_avg where the paper
-// (Eq. 16) specifies F0. The correct form scales the single-scattering lobe
-// by 1 + F0 * (1/E_ss - 1). White-furnace results: at roughness 1.0, NoV 0.5,
-// the old form gave 0.72 against an ideal of 1.0; the corrected form gives
-// 0.94. This is a genuine energy-conservation fix, not just an aesthetic
-// change.
+// Corrected Turquin multiscatter compensation. Uses F0, not F_avg, per
+// three.js PR #33983. At roughness 1.0, NoV 0.5, white-furnace goes from
+// 0.72 (old form) to 0.94 (corrected form).
 vec3 specular_multiscatter_comp(vec3 fss, vec3 F0,
                                 float roughness, float NdotV) {
     float E_ss = E_ss_GGX(NdotV, roughness);
@@ -730,25 +772,10 @@ vec3 vMFdiffuseBRDF(float ui, float uo, float phi, float r, vec3 c) {
 // =============================================================================
 // Subsurface scattering — Burley-inspired local diffusion
 // =============================================================================
-// Replaces the previous wrap-light heuristic with a local approximation of
-// Burley's normalized diffusion profile. The full profile requires a
-// screen-space blur, but the local form captures the two-exponential
-// falloff characteristic of the diffusion kernel and modulates the wrap
-// term by the approximate path length through the volume. Based on
-// Burley 2015 (Pixar) and the NVIDIA RTXCR SSS guide (2025).
 float subsurface_burley(float NdotL_raw, float NdotV, float strength) {
-    // Diffusion distance derived from the artist-facing strength parameter.
     float d = 1.0 / max(strength, 1e-3);
-
-    // Approximate path length through the volume. NdotV is used as a proxy
-    // for how obliquely the surface is viewed.
     float r = 1.0 / max(NdotV, 0.1);
-
-    // Two-exponential diffusion kernel (Burley's normalized diffusion
-    // reduces to this form in the local limit).
     float R = (exp(-r / d) + exp(-r / (3.0 * d))) / (8.0 * PI * d);
-
-    // Wrap the light term and scale by the diffusion response.
     float wrap = (NdotL_raw + 0.5) / 1.5;
     return clamp(R * pow(saturate(wrap), 2.0), 0.0, 1.0);
 }
@@ -806,10 +833,6 @@ float compute_coat_darkening(vec3 coatF0, vec3 baseColor,
 // =============================================================================
 // Sheen energy compensation — Kulla-Conty with analytic Charlie albedo
 // =============================================================================
-// Analytic fit of the Charlie sheen BRDF's directional albedo. This is the
-// curve-fit from three.js's IBLSheenBRDF, which approximates the integrated
-// Charlie lobe from Estevez & Kulla 2017. The fit is a rational function of
-// NdotV and sheen roughness.
 float sheen_directional_albedo(float NdotV, float sheenRoughness) {
     float r2 = sheenRoughness * sheenRoughness;
 
@@ -828,19 +851,12 @@ float sheen_directional_albedo(float NdotV, float sheenRoughness) {
     return saturate(DG / PI);
 }
 
-// Kulla-Conty multiscatter compensation term for the sheen layer.
-// f_ms(l,v) = (1-E(l))(1-E(v)) F_avg^2 E_avg
-//           / (pi (1-E_avg) (1 - F_avg (1 - E_avg)))
-// where E is the directional albedo of the sheen lobe and F_avg is the
-// average Fresnel of the sheen color.
 float sheen_multiscatter_comp(float NdotL, float NdotV, float sheenRoughness,
                               vec3 sheenColorTint) {
     float E_o = sheen_directional_albedo(NdotV, sheenRoughness);
     float E_i = sheen_directional_albedo(NdotL, sheenRoughness);
     float E_avg = 0.5 * (E_o + E_i);
 
-    // F_avg for the sheen layer: the sheen color's luma is the effective
-    // reflectance. Clamp to keep the denominator positive.
     vec3 F_avg = clamp(sheenColorTint, 0.0, 0.99);
 
     float num = (1.0 - E_o) * (1.0 - E_i)
@@ -1204,13 +1220,10 @@ void apply_layer_attenuation(inout vec3 diffuseContrib,
 #ifdef EFFECT_TRANSMISSION
     float transScale = 1.0 - clamp(uMatTransmissionStrength, 0.0, 1.0);
     diffuseContrib *= transScale;
-    specContrib    *= transScale;
+    //specContrib    *= transScale;
 #endif
 
 #ifdef EFFECT_SHEEN
-    // Kulla-Conty sheen compensation. Replaces the previous flat
-    // pow(1-NdotV,3) heuristic with a directional-albedo-driven energy
-    // budget.
     float sheenComp = sheen_multiscatter_comp(NdotL, NdotV,
                                               uSheenRoughness, uSheenColor);
     float sheenOpacity = saturate(sheenComp
@@ -1457,15 +1470,33 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
                                totalSheen, totalRim, totalBackGlow,
                                avgDir, avgWeight);
 
+    // -------------------------------------------------------------------------
+    // Split the diffuse contribution into an ambient part and a direct part.
+    //
+    // VBAO is a *visibility approximation for the ambient term* — it is not a
+    // shadow and must not attenuate direct lighting. Multiplying direct light
+    // by AO turns any material with zero specular tint (dirt, brick, chalk, …)
+    // pure black, because AO ≈ 0 in occluded regions leaves nothing behind.
+    //
+    // So we compute:
+    //   ambientDiffuse  : uAmbientCol * albedo * ambientLightFactor * (1 - F_avg)
+    //   ambientSpec     : uAmbientCol * F_avg * specOcc * ambientLightFactor
+    //   directDiffuse   : totalDiffuse (unaffected by AO)
+    // and apply AO only to the two ambient terms.
+    // -------------------------------------------------------------------------
     vec3 diffuseColor = uMatColor * (1.0 - metallic);
-    vec3 baseColor = uAmbientCol * diffuseColor * uMatAmbientLightFactor
-                   * (1.0 - F_avg) + totalDiffuse;
 
-    float ao = clamp(uMatAmbientLightFactor, 0.0, 1.0);
-    float specOcc = specular_occlusion(NdotV, ao, specularRoughness);
+    vec3 ambientDiffuse = uAmbientCol * diffuseColor * uMatAmbientLightFactor
+                        * (1.0 - F_avg);
+    vec3 directDiffuse  = totalDiffuse;
+
+    float mat_ao = clamp(uMatAmbientLightFactor, 0.0, 1.0);
+    float specOcc = specular_occlusion(NdotV, mat_ao, specularRoughness);
     vec3 ambientSpec = uAmbientCol * F_avg * specOcc * uMatAmbientLightFactor;
 
 #ifdef EFFECT_GOOCH
+    // GOOCH tints both ambient and direct diffuse by the average incoming
+    // light direction, before AO is applied to the ambient terms.
     if (avgWeight > 0.001) {
         vec3 dir = avgDir / avgWeight;
         float len = length(dir);
@@ -1474,13 +1505,47 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
             float ndotl_avg = max(dot(N, dir), 0.0);
             float t_gooch = (ndotl_avg + 1.0) * 0.5;
             vec3 goochFactor = mix(uMatGoochCool, uMatGoochWarm, t_gooch);
-            baseColor *= goochFactor;
+            ambientDiffuse *= goochFactor;
+            directDiffuse  *= goochFactor;
         }
     }
 #endif
 
-    vec3 color = baseColor + ambientSpec;
+    // -------------------------------------------------------------------------
+    // VBAO — attenuate only the ambient terms. Transparent (WBOIT) variants
+    // do not receive AO; they are drawn after the AO dispatch and would need
+    // a second lookup to be occluded by opaque geometry behind them.
+    // -------------------------------------------------------------------------
+#ifndef WBOIT_PASS
+    float vbao_ao = texture(uAOTex, gl_FragCoord.xy / uScreenSize).r;
+    ambientDiffuse *= vbao_ao;
+    ambientSpec    *= vbao_ao;
+#endif
+
+    vec3 color = ambientDiffuse + ambientSpec + directDiffuse;
     color += totalSpec + totalClearcoat + totalSheen + totalRim + totalBackGlow;
+
+    // -------------------------------------------------------------------------
+    // Screen-space refraction.
+    // -------------------------------------------------------------------------
+#ifdef EFFECT_TRANSMISSION
+    {
+        vec3 R = refract(-V, N, 1.0 / max(uMatIOR, 1.001));
+        if (uRefractionScale > 0.0 && dot(R, R) > 0.0) {
+            vec2 uv  = gl_FragCoord.xy / uScreenSize;
+            vec2 duv = R.xy * uRefractionScale * (1.0 - NdotV);
+            vec3 bg  = texture(uRefractionSrc, uv + duv).rgb;
+
+            vec3 transmitted = bg * uMatTransmissionTint;
+            vec3 F = F_Schlick(F0, NdotV);
+            float Favg = dot(F, LUMA_REC709);
+            float strength = clamp(uMatTransmissionStrength, 0.0, 1.0);
+
+            float transFraction = strength * (1.0 - Favg);
+            color = mix(color, transmitted, transFraction);
+        }
+    }
+#endif
 
 #ifdef EFFECT_EMISSIVE
     vec3 emissive = uMatEmissiveColor;
@@ -1519,31 +1584,98 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 }
 
 // =============================================================================
+// WBOIT weight
+// =============================================================================
+//
+// McGuire & Bavoil 2013, "Weighted Blended Order-Independent Transparency".
+// The weight biases nearer fragments more heavily so that when many
+// transparent layers overlap, closer ones dominate the resolved colour.
+//
+// Input is linear eye-space depth — the distance along the camera's view
+// axis, positive in front. This is NOT gl_FragCoord.z (hyperbolic, saturates
+// toward 1 past a few units) and NOT Euclidean distance from the camera
+// (nonlinear in view space, so interpolation is approximate on large
+// triangles). The vertex shader emits gl_Position.w as a varying; because
+// clip-space w equals -view_z for a standard perspective projection and is
+// linear in view space, perspective-correct interpolation recovers the
+// exact eye depth at every fragment.
+//
+// The 200.0 tuning constant is the eye distance beyond which layers start
+// contributing meaningfully less. Tune it to roughly the scale at which
+// your transparent geometry stops being visually important; for a scene
+// spanning 100–500 world units, 200 is a reasonable default.
+float wboit_weight(float eye_depth, float alpha) {
+    float z = eye_depth;
+    float w = 10.0 / (1e-5 + pow(z / 200.0, 4.0) + pow(z / 200.0, 2.0));
+    return alpha * clamp(w, 1e-2, 3e3);
+}
+
+// =============================================================================
 // Entry point
 // =============================================================================
 #ifdef WBOIT_PASS
-layout(location = 0) out vec4  outAccumulation;
-layout(location = 1) out float outRevealage;
+layout(location = 0) out vec4 outAccumulation;
+layout(location = 1) out vec4 outRevealage;
 #else
 out vec4 FragColor;
+layout(location = 1) out vec4 outNormal;
 #endif
 
 void main() {
+    // -------------------------------------------------------------------------
+    // ALPHA_PASS_BEHIND culls fragments that are not strictly behind the
+    // frontmost transmissive surface. Fragments in front of it, or with no
+    // transmissive surface behind them, are drawn in ALPHA_PASS_FRONT
+    // instead. The test is a straight depth comparison against
+    // uTransmissiveDepthTex, which was filled by the transmissive depth pass.
+    // -------------------------------------------------------------------------
+#ifdef ALPHA_PASS_BEHIND
+    float transmissive_z = texelFetch(uTransmissiveDepthTex,
+                                      ivec2(gl_FragCoord.xy), 0).r;
+    if (transmissive_z >= 1.0) discard;            // no transmissive here
+    if (gl_FragCoord.z < transmissive_z) discard;  // in front of it
+#endif
+
+    // -------------------------------------------------------------------------
+    // ALPHA_PASS_FRONT draws alpha geometry in front of a transmissive
+    // surface and alpha geometry with no transmissive surface behind it.
+    // Depth testing against the combined opaque + transmissive depth buffer
+    // culls fragments that ALPHA_PASS_BEHIND already drew. No branch is
+    // needed here because the pass identity is carried by the depth state
+    // set in the C code, not by the shader.
+    // -------------------------------------------------------------------------
+#ifdef ALPHA_PASS_FRONT
+#endif
+
     vec3 color = shade_surface(vNormal, vWorldPos, vLocalPos);
 
     float alpha = 1.0;
 #ifdef EFFECT_ALPHA
-    alpha = uMatAlpha;
+    alpha = clamp(uMatAlpha, 0.0, 1.0);
 #endif
 
 #ifdef WBOIT_PASS
-    float depth_z = gl_FragCoord.z;
-    float t = 1.0 - depth_z;
-    float w = alpha * clamp(3e3 * t * t * t, 1e-2, 1e4);
+    // McGuire & Bavoil 2013 weighted-blended OIT. Weighting is on linear
+    // eye-space depth, not gl_FragCoord.z — see wboit_weight() above.
+    //
+    //   accum.rgb += color * w
+    //   accum.a   += w
+    //   revealage *= (1 - alpha)      (handled by fixed-function blend)
+    float w = wboit_weight(vEyeDepth, alpha);
 
     outAccumulation = vec4(color * w, w);
-    outRevealage    = alpha;
+    outRevealage    = vec4(alpha);
 #else
+    // Opaque / transmissive variants write a single colour plus the view-
+    // space geometric normal for VBAO. The normal must be the un-perturbed
+    // surface normal, consistent with the depth buffer; perturbing it here
+    // would break the AO consistency at every bump-mapped pixel.
+    vec3 N_geom = normalize(vNormal);
+    if (!gl_FrontFacing) N_geom = -N_geom;
+    vec3 viewNormal = normalize((uView * vec4(N_geom, 0.0)).xyz);
+    outNormal = vec4(viewNormal * 0.5 + 0.5, 1.0);
+
+    // Dither to break up 8-bit banding on smooth gradients.
     float dither = (hash_float(vec3(gl_FragCoord.xy, uTime)) - 0.5) / 255.0;
     color += dither;
     FragColor = vec4(color, alpha);
