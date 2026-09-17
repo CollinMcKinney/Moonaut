@@ -205,9 +205,9 @@ TAG_GROUP_END(material, sizeof(struct material_definition))
  * 1. WATER
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WATER = {
-    .render_method          = EFFECT_ALPHA | EFFECT_BUMP_WAVE| EFFECT_DIFFUSE_WRAP |
-                              EFFECT_BACK_GLOW | EFFECT_FRINGE | EFFECT_TRANSMISSION,
-    .color                  = {0.1, 0.5, 0.7},
+    .render_method          = EFFECT_BUMP_WAVE| EFFECT_DIFFUSE_WRAP |
+                              EFFECT_BACK_GLOW | EFFECT_FRINGE | EFFECT_TRANSMISSION | EFFECT_FOG,
+    .color                  = {0.05, 0.30, 0.55},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.35f,
     .saturation             = 1.0f,
@@ -226,7 +226,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
-    .transmission_strength  = 0.8f,
+    .transmission_strength  = 0.85f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
     .specular_roughness     = 0.02f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
@@ -252,7 +252,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.9f, 0.95f, 1.0f}
+    .transmission_tint      = {0.10, 0.40, 0.80}
 };
 
 /* ------------------------------------------------------------------------
@@ -474,10 +474,10 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .render_method          = EFFECT_ALPHA | EFFECT_BUMP_WAVE| EFFECT_IRIDESCENCE | 
-                              EFFECT_FRINGE | EFFECT_TRANSMISSION,
+                              EFFECT_FRINGE,
     .color                  = {0.85f, 0.95f, 1.0f},
     .ambient_light_factor   = 1.0f,
-    .alpha                  = 0.2f,
+    .alpha                  = 1.0f,
     .saturation             = 1.0f,
     .tint                   = {1.0f, 1.0f, 1.0f},
     .cel_bands              = 0,
@@ -490,7 +490,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
     .gooch_warm             = {0.0f, 0.0f, 0.0f},
     .back_glow_color        = {0.05f, 0.10f, 0.20f},
-    .rim_color              = {0.30f, 0.50f, 0.80f},
+    .rim_color              = {0.35, 0.55, 0.70},
     .rim_exponent           = 3.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
@@ -633,10 +633,10 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
  * 9. ICE
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_ICE = {
-    .render_method          = EFFECT_ALPHA | EFFECT_BUMP_WAVE| EFFECT_BACK_GLOW | EFFECT_RIM |
+    .render_method          = EFFECT_BUMP_WAVE| EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SUBSURFACE |
                               EFFECT_TRANSMISSION | EFFECT_FOG,
-    .color                  = {0.8, 0.9, 1.0},
+    .color                  = {0.75, 0.88, 1.00},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.5f,
     .saturation             = 1.0f,
@@ -644,7 +644,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .cel_bands              = 0,
     .diffuse_wrap           = 0,
     .diffuse_roughness      = 0.00f,
-    .transmission_roughness = 0.080f,
+    .transmission_roughness = 0.1f,
     .bump_wave_amplitude    = 0.08f,
     .bump_wave_frequency    = 128.0f,
     .bump_wave_speed        = 0.0f,
@@ -655,9 +655,9 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .rim_exponent           = 4.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
-    .transmission_strength  = 0.7f,
+    .transmission_strength  = 0.75f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
-    .specular_roughness     = 0.04f,
+    .specular_roughness     = 0.06f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
     .emissive_pulse_phase   = 0.0f,
@@ -682,7 +682,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.8, 0.9, 1.0}
+    .transmission_tint      = {0.60, 0.82, 1.00}
 };
 
 /* ------------------------------------------------------------------------
@@ -849,10 +849,10 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
  * 13. HOLOGRAM
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
-    .render_method          = EFFECT_ALPHA | EFFECT_BACK_GLOW | EFFECT_RIM |
+    .render_method          = EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE |
                               EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE |
-                              EFFECT_ANISOTROPIC,
+                              EFFECT_ANISOTROPIC | EFFECT_ALPHA,
     .color                  = {0.20f, 0.60f, 0.80f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.55f,
@@ -904,10 +904,10 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
  * 14. IRIDESCENT
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
-    .render_method          = EFFECT_ALPHA | EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM |
+    .render_method          = EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE |
                               EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SATURATION |
-                              EFFECT_ANISOTROPIC,
+                              EFFECT_ANISOTROPIC | EFFECT_ALPHA,
     .color                  = {1.0f, 1.0f, 1.0f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.9f,
@@ -1405,7 +1405,7 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
-    .transmission_strength  = 0.2f,
+    .transmission_strength  = 0.25f,
     .specular_tint          = {0.9,0.9,0.9},
     .specular_roughness      = 0.10f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
@@ -1423,8 +1423,8 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .double_sided           = false,
     .bump_noise             = 0.05f,
     .metallic               = 0.0f,
-    .ior                    = 1.6f,
-    .subsurface_strength    = 0.8f,
+    .ior                    = 1.5f,
+    .subsurface_strength    = 0.9f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_roughness    = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -1432,14 +1432,14 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.9f, 0.9f, 0.85f}
+    .transmission_tint      = {0.88, 0.86, 0.82}
 };
 
 /* ------------------------------------------------------------------------
  * 24. WAX
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WAX = {
-    .render_method          = EFFECT_ALPHA | EFFECT_BUMP_WAVE| EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
+    .render_method          = EFFECT_BUMP_WAVE| EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
     .color                  = {0.9, 0.8, 0.6},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 0.87f,
@@ -1459,7 +1459,7 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
-    .transmission_strength  = 0.5f,
+    .transmission_strength  = 0.35f,
     .specular_tint          = {0.8,0.7,0.5},
     .specular_roughness      = 0.20f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
@@ -1477,8 +1477,8 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .double_sided           = true,
     .bump_noise             = 0.08f,
     .metallic               = 0.0f,
-    .ior                    = 1.5f,
-    .subsurface_strength    = 1.2f,
+    .ior                    = 1.45f,
+    .subsurface_strength    = 1.5f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_roughness    = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -1486,14 +1486,14 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {1.0f, 0.8f, 0.5f}
+    .transmission_tint      = {1.00, 0.82, 0.55}
 };
 
 /* ------------------------------------------------------------------------
  * 25. PEARL
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PEARL = {
-    .render_method          = EFFECT_IRIDESCENCE | EFFECT_SATURATION | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION,
+    .render_method          = EFFECT_IRIDESCENCE | EFFECT_SATURATION | EFFECT_SUBSURFACE,
     .color                  = {0.95f, 0.90f, 0.85f},
     .ambient_light_factor   = 0.90f,
     .alpha                  = 1.0f,
@@ -1532,7 +1532,7 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .bump_noise             = 0.08f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
-    .subsurface_strength    = 0.5f,
+    .subsurface_strength    = 0.8f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_roughness    = 0.0f,
     .clearcoat_strength     = 0.0f,
@@ -1703,7 +1703,7 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
  * 29. FROST
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_FROST = {
-    .render_method          = EFFECT_ALPHA | EFFECT_BUMP_WAVE|EFFECT_BUMP_NOISE |
+    .render_method          = EFFECT_BUMP_WAVE|EFFECT_BUMP_NOISE |
                               EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
     .color                  = {0.85,0.9,1.0},
     .ambient_light_factor   = 1.0f,
@@ -1713,7 +1713,7 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .cel_bands              = 0,
     .diffuse_wrap           = 0,
     .diffuse_roughness      = 0.00f,
-    .transmission_roughness = 0.60f,
+    .transmission_roughness = 0.65f,
     .bump_wave_amplitude    = 0.02f,
     .bump_wave_frequency    = 64.0f,
     .bump_wave_speed        = 0.0f,
@@ -1724,9 +1724,9 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
-    .transmission_strength  = 0.3f,
+    .transmission_strength  = 0.45f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
-    .specular_roughness     = 0.60f,
+    .specular_roughness     = 0.55f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
     .emissive_pulse_phase   = 0.0f,
@@ -1751,14 +1751,14 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.9,0.95,1.0}
+    .transmission_tint      = {0.88, 0.93, 1.00}
 };
 
 /* ------------------------------------------------------------------------
  * 30. RUST
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUST = {
-    .render_method          =  EFFECT_BUMP_WAVE| EFFECT_BUMP_NOISE | EFFECT_BACK_GLOW | EFFECT_FOG,
+    .render_method          = EFFECT_BUMP_WAVE| EFFECT_BUMP_NOISE | EFFECT_BACK_GLOW | EFFECT_FOG,
     .color                  = {0.60f, 0.20f, 0.05f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
@@ -1915,9 +1915,9 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .render_method          = EFFECT_IRIDESCENCE | EFFECT_SUBSURFACE |
-                              EFFECT_TRANSMISSION | EFFECT_ALPHA | EFFECT_BUMP_WAVE|
+                              EFFECT_TRANSMISSION |  EFFECT_BUMP_WAVE|
                               EFFECT_FOG,
-    .color                  = {0.1, 0.8, 0.5},
+    .color                  = {0.08, 0.65, 0.35},
     .ambient_light_factor   = 0.80f,
     .alpha                  = 0.95f,
     .saturation             = 1.5f,
@@ -1936,7 +1936,7 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .rim_exponent           = 0.0f,
     .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
-    .transmission_strength  = 0.3f,
+    .transmission_strength  = 0.55f,
     .specular_tint          = {0.8,1.0,0.85},
     .specular_roughness      = 0.02f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
@@ -1963,17 +1963,17 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.6f, 1.0f, 0.6f}
+    .transmission_tint      = {0.15, 0.85, 0.40}
 };
 
 /* ------------------------------------------------------------------------
  * 34. OIL SLICK
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
-    .render_method          = EFFECT_IRIDESCENCE | EFFECT_SATURATION | EFFECT_TRANSMISSION,
+    .render_method          = EFFECT_IRIDESCENCE | EFFECT_SATURATION | EFFECT_ALPHA,
     .color                  = {0.1, 0.1, 0.15},
     .ambient_light_factor   = 0.80f,
-    .alpha                  = 1.0f,
+    .alpha                  = 0.80f,
     .saturation             = 2.0f,
     .tint                   = {1.0f, 1.0f, 1.0f},
     .cel_bands              = 0,
