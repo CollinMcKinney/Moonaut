@@ -77,69 +77,54 @@ TAG_BITFIELD32_END(render_method)
  * Material definition
  * ========================================================================= */
 typedef struct material_definition {
-    u32          render_method;
-
-    vec3         color;
-    real         ambient_light_factor;
-    real         alpha;
-    real         saturation;
-    vec3         tint;
-
-    i32          cel_bands;
-    i32          diffuse_wrap;
-    real         diffuse_roughness;       /* Oren–Nayar sigma for EON diffuse  */
-    real         transmission_roughness;  /* GGX perceptual roughness for BTDF */
-
-    real         bump_wave_amplitude;
-    real         bump_wave_frequency;
-    real         bump_wave_speed;
-
-    vec3         gooch_cool;
-    vec3         gooch_warm;
-    vec3         back_glow_color;
-
-    vec3         rim_color;
-    real         rim_exponent;
-    vec3         fresnel_color;     /* UNUSED */
-    real         clearcoat_ior;
-
-    real         transmission_strength;
-    vec3         specular_tint;
-    real         specular_roughness;      /* GGX perceptual roughness          */
-
-    vec3         emissive_color;
-    real         emissive_pulse_frequency;
-    real         emissive_pulse_phase;
-    real         emissive_pulse_amplitude;
-    vec3         strobe_color;
-    real         strobe_frequency;
-    real         strobe_phase;
-
-    bool         skip_fog;
-
-    real         iridescence_strength;
-    real         glitch_intensity;
-    real         fringe_intensity;
-    i32          posterize_levels;
-    bool         double_sided;
-    real         bump_noise;              
-
-    /* ---- PBR fields ---- */
-    real         metallic;              /* 0.0 = dielectric, 1.0 = metal */
-    real         ior;                   /* index of refraction (>0) */
-    real         subsurface_strength;   /* 0 = none, 1 = strong, 2 = max */
-
-    vec3         clearcoat_color;
-    real         clearcoat_roughness;
-    real         clearcoat_strength;
-    vec3         sheen_color;
-    real         sheen_roughness;         /* Charlie sheen alpha, 0.1 … 0.7   */
-    real         sheen_strength;
-
-    /* ---- Anisotropy ---- */
-    real         anisotropic;           /* 0.0 = isotropic, 1.0 = full anisotropy */
-    vec3         transmission_tint;     /* colour of transmitted light (e.g., (1,1,1) for glass) */
-
+    u32  render_method;
+    vec3 color;
+    real ambient_light_factor;
+    real alpha;
+    real saturation;
+    vec3 tint;
+    i32  cel_bands;
+    i32  diffuse_wrap;
+    real diffuse_roughness;
+    real transmission_roughness;
+    real bump_wave_amplitude;
+    real bump_wave_frequency;
+    real bump_wave_speed;
+    vec3 gooch_cool;
+    vec3 gooch_warm;
+    vec3 back_glow_color;
+    vec3 rim_color;
+    real rim_exponent;
+    real clearcoat_ior;
+    real transmission_strength;
+    vec3 specular_tint;
+    real specular_roughness;
+    vec3 emissive_color;
+    real emissive_pulse_frequency;
+    real emissive_pulse_phase;
+    real emissive_pulse_amplitude;
+    vec3 strobe_color;
+    real strobe_frequency;
+    real strobe_phase;
+    bool skip_fog;
+    real iridescence_strength;
+    real glitch_intensity;
+    real fringe_intensity;
+    i32  posterize_levels;
+    bool double_sided;
+    real bump_noise;              
+    real metallic;              /* 0.0 = dielectric, 1.0 = metal */
+    real ior;                   /* index of refraction (>0) */
+    real subsurface_strength;   /* 0 = none, 1 = strong, 2 = max */
+    vec3 clearcoat_color;
+    real clearcoat_roughness;
+    real clearcoat_strength;
+    vec3 sheen_color;
+    real sheen_roughness;         /* Charlie sheen alpha, 0.1 … 0.7   */
+    real sheen_strength;
+    real anisotropic;           /* 0.0 = isotropic, 1.0 = full anisotropy */
+    vec3 transmission_tint;     /* colour of transmitted light (e.g., (1,1,1) for glass) */
+    vec3 f82_tint;
 } material_definition;
 
 /* =========================================================================
@@ -164,8 +149,7 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_VEC3("back_glow_color"),
     FIELD_VEC3("rim_color"),
     FIELD_REAL("rim_exponent"),
-    FIELD_VEC3("fresnel_color"),   /* dummy, kept for compatibility */
-    FIELD_REAL("fresnel_exponent"),
+    FIELD_REAL("clearcoat_ior"),
     FIELD_REAL("transmission_strength"),
     FIELD_VEC3("specular_tint"),
     FIELD_REAL("specular_roughness"),
@@ -194,6 +178,7 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_REAL("sheen_strength"),
     FIELD_REAL("anisotropic"),
     FIELD_VEC3("transmission_tint"),
+    FIELD_VEC3("f82_tint"),
     FIELD_TERMINATOR
 TAG_GROUP_END(material, sizeof(struct material_definition))
 
@@ -224,7 +209,6 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .back_glow_color        = {0.0f, 0.10f, 0.15f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.85f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
@@ -252,7 +236,8 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.10, 0.40, 0.80}
+    .transmission_tint      = {0.10, 0.40, 0.80},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -279,7 +264,6 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .back_glow_color        = {0.1f, 0.3f, 0.05f},
     .rim_color              = {0.15f, 0.35f, 0.08f},
     .rim_exponent           = 2.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.4, 0.6, 0.2},
@@ -307,7 +291,9 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .sheen_color            = {0.5, 0.8, 0.2},
     .sheen_roughness        = 0.45f,
     .sheen_strength         = 0.30f,
-    .anisotropic            = -0.1f
+    .anisotropic            = -0.1f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -333,7 +319,6 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.10f, 0.10f, 0.10f},
@@ -361,7 +346,9 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .sheen_color            = {1.0, 0.9, 0.9},
     .sheen_roughness        = 0.35f,
     .sheen_strength         = 1.3f,
-    .anisotropic            = -0.3f
+    .anisotropic            = -0.3f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -387,7 +374,6 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.15f, 0.08f, 0.03f},
     .rim_exponent           = 2.5f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.6, 0.4, 0.25},
@@ -414,16 +400,18 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.5f
+    .anisotropic            = -0.5f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
  * 5. METAL
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_METAL = {
-    .render_method          = EFFECT_RIM | EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.9, 0.9, 0.9},
-    .ambient_light_factor   = 0.5f,
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.90f, 0.90f, 0.92f},
+    .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.2f,
     .tint                   = {1.0f, 1.0f, 1.0f},
@@ -439,11 +427,10 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {1.0f, 1.0f, 1.0f},
     .rim_exponent           = 3.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
-    .specular_tint          = {0.80f, 0.80f, 0.85f},
-    .specular_roughness     = 0.05f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.15f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
     .emissive_pulse_phase   = 0.0f,
@@ -466,7 +453,9 @@ const struct material_definition DEFAULT_MATERIAL_METAL = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.8f
+    .anisotropic            = -0.8f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {0.93f, 0.96f, 1.00f}
 };
 
 /* ------------------------------------------------------------------------
@@ -492,7 +481,6 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .back_glow_color        = {0.05f, 0.10f, 0.20f},
     .rim_color              = {0.35, 0.55, 0.70},
     .rim_exponent           = 3.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.8f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
@@ -520,7 +508,8 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.9,0.95,1.0}
+    .transmission_tint      = {0.9,0.95,1.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -546,7 +535,6 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .back_glow_color        = {0.2, 0.1, 0.1},
     .rim_color              = {0.5, 0.3, 0.2},
     .rim_exponent           = 2.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.5, 0.35, 0.3},
@@ -574,7 +562,9 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .sheen_color            = {1.0, 0.8, 0.7},
     .sheen_roughness        = 0.55f,
     .sheen_strength         = 0.5f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -599,7 +589,6 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.08f, 0.08f, 0.08f},
     .rim_exponent           = 3.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.1,0.1,0.1},
@@ -626,7 +615,9 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -653,7 +644,6 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .back_glow_color        = {0.10f, 0.25f, 0.40f},
     .rim_color              = {0.70f, 0.85f, 1.0f},
     .rim_exponent           = 4.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.75f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
@@ -682,7 +672,8 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.60, 0.82, 1.00}
+    .transmission_tint      = {0.60, 0.82, 1.00},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -708,7 +699,6 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.12f, 0.11f, 0.09f},
     .rim_exponent           = 2.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.30f, 0.30f, 0.30f},
@@ -735,7 +725,9 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -763,7 +755,6 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .back_glow_color        = {0.8, 0.4, 0.0},
     .rim_color              = {0.80f, 0.15f, 0.0f},
     .rim_exponent           = 1.5f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -790,7 +781,9 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -815,7 +808,6 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 8.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {1.0f, 1.0f, 0.8f},
@@ -842,7 +834,9 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -870,7 +864,6 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .back_glow_color        = {0.15f, 0.45f, 0.65f},
     .rim_color              = {0.5,0.9,1.0},
     .rim_exponent           = 64.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.60f, 0.85f, 1.0f},
@@ -897,7 +890,9 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.5f
+    .anisotropic            = -0.5f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -925,7 +920,6 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .back_glow_color        = {0.80f, 0.60f, 1.0f},
     .rim_color              = {1.0, 0.5, 0.0},
     .rim_exponent           = 2.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {1.0f, 1.0f, 0.8f},
@@ -952,7 +946,9 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.5f
+    .anisotropic            = -0.5f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -978,7 +974,6 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.20f, 0.35f, 0.45f},
     .rim_exponent           = 3.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.8,0.9,1.0},
@@ -1005,7 +1000,9 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1030,7 +1027,6 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1057,7 +1053,9 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1084,7 +1082,6 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .back_glow_color        = {0.08f, 0.04f, 0.02f},
     .rim_color              = {0.36f, 0.18f, 0.11f},
     .rim_exponent           = 1.5f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.2,0.1,0.05},
@@ -1111,37 +1108,37 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .sheen_color            = {0.8, 0.6, 0.4},
     .sheen_roughness        = 0.45f,
     .sheen_strength         = 0.3f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
  * 18. GOLD
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
-    .render_method          = EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM |
-                              EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.80f, 0.60f, 0.20f},
-    .ambient_light_factor   = 0.50f,
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.929, 0.788, 0.374},
+    .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.5f,
-    .tint                   = {1.5f, 1.2f, 0.8f},
+    .tint                   = {1.0f, 1.0f, 1.0f},
     .cel_bands              = 0,
     .diffuse_wrap           = 0,
-    .diffuse_roughness      = 0.00f,
+    .diffuse_roughness      = 0.0f,
     .transmission_roughness = 0.0f,
-    .bump_wave_amplitude    = 0.05f,
-    .bump_wave_frequency    = 512.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 0.0f,
     .bump_wave_speed        = 0.0f,
-    .gooch_cool             = {0.40f, 0.30f, 0.10f},
-    .gooch_warm             = {1.00f, 0.80f, 0.30f},
-    .back_glow_color        = {0.50f, 0.40f, 0.10f},
-    .rim_color              = {1.00f, 0.70f, 0.20f},
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 3.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
-    .specular_tint          = {1.0, 0.8, 0.3},
-    .specular_roughness     = 0.03f,
+    .specular_tint          = {1.0, 1.0, 1.0},
+    .specular_roughness     = 0.10f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
     .emissive_pulse_phase   = 0.0f,
@@ -1164,7 +1161,9 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.7f
+    .anisotropic            = -0.7f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.026f, 1.143f, 1.502f}
 };
 
 /* ------------------------------------------------------------------------
@@ -1191,7 +1190,6 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .back_glow_color        = {0.20f, 0.20f, 0.40f},
     .rim_color              = {0.90f, 0.90f, 1.00f},
     .rim_exponent           = 2.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.90f, 0.90f, 0.90f},
@@ -1219,7 +1217,9 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .sheen_color            = {1.0f, 1.0f, 1.0f},
     .sheen_roughness        = 0.55f,
     .sheen_strength         = 1.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1244,7 +1244,6 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.20f, 0.18f, 0.12f},
     .rim_exponent           = 1.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1271,7 +1270,9 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1299,7 +1300,6 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
     .back_glow_color        = {0.00f, 1.00f, 1.00f},
     .rim_color              = {0.0,1.0,1.0},
     .rim_exponent           = 16.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1326,7 +1326,9 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.5f
+    .anisotropic            = -0.5f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1351,7 +1353,6 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .back_glow_color        = {0.3, 0.05, 0.08},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1378,7 +1379,9 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .sheen_color            = {1.0, 0.5, 0.6},
     .sheen_roughness        = 0.25f,
     .sheen_strength         = 2.5f,
-    .anisotropic            = -0.5f
+    .anisotropic            = -0.5f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1403,7 +1406,6 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.25f,
     .specular_tint          = {0.9,0.9,0.9},
@@ -1432,7 +1434,8 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.88, 0.86, 0.82}
+    .transmission_tint      = {0.88, 0.86, 0.82},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1457,7 +1460,6 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.35f,
     .specular_tint          = {0.8,0.7,0.5},
@@ -1486,7 +1488,8 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {1.00, 0.82, 0.55}
+    .transmission_tint      = {1.00, 0.82, 0.55},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1511,7 +1514,6 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.1f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
@@ -1540,7 +1542,8 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.9f, 0.9f, 1.0f}
+    .transmission_tint      = {0.9f, 0.9f, 1.0f},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1565,7 +1568,6 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
@@ -1593,6 +1595,8 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1617,7 +1621,6 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1644,7 +1647,9 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1669,7 +1674,6 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
@@ -1696,7 +1700,9 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1722,7 +1728,6 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.45f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1751,7 +1756,8 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.88, 0.93, 1.00}
+    .transmission_tint      = {0.88, 0.93, 1.00},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1776,7 +1782,6 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
     .back_glow_color        = {0.1,0.02,0.0},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.0f, 0.0f, 0.0f},
@@ -1803,7 +1808,9 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = 0.0f
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1828,7 +1835,6 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {0.75,0.75,0.75},
@@ -1855,16 +1861,18 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.9f
+    .anisotropic            = -0.9f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
  * 32. CHROME
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHROME = {
-    .render_method          = EFFECT_RIM | EFFECT_ANISOTROPIC,
-    .color                  = {1.0f, 1.0f, 1.0f},
-    .ambient_light_factor   = 0.30f,
+    .render_method          = EFFECT_ANISOTROPIC,
+    .color                  = {0.654, 0.685, 0.701},
+    .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
     .tint                   = {1.0f, 1.0f, 1.0f},
@@ -1878,13 +1886,12 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
     .gooch_warm             = {0.0f, 0.0f, 0.0f},
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
-    .rim_color              = {0.8f, 0.8f, 0.8f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 6.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.0f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
-    .specular_roughness     = 0.01f,
+    .specular_roughness     = 0.03f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
     .emissive_pulse_phase   = 0.0f,
@@ -1898,7 +1905,7 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .fringe_intensity       = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
-    .bump_noise             = 0.02f,
+    .bump_noise             = 0.0f,
     .metallic               = 1.0f,
     .ior                    = 0.0f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
@@ -1907,7 +1914,9 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
-    .anisotropic            = -0.3f
+    .anisotropic            = -0.3f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {0.845, 0.876, 0.951}
 };
 
 /* ------------------------------------------------------------------------
@@ -1934,7 +1943,6 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.55f,
     .specular_tint          = {0.8,1.0,0.85},
@@ -1963,7 +1971,8 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {0.15, 0.85, 0.40}
+    .transmission_tint      = {0.15, 0.85, 0.40},
+    .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
@@ -1988,7 +1997,6 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 0.0f,
-    .fresnel_color          = {0.0f, 0.0f, 0.0f},
     .clearcoat_ior          = 1.6f,
     .transmission_strength  = 0.2f,
     .specular_tint          = {0.5,0.5,0.6},
@@ -2016,7 +2024,548 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .sheen_roughness        = 0.0f,
     .sheen_strength         = 0.0f,
     .anisotropic            = 0.0f,
-    .transmission_tint      = {1.0f, 1.0f, 1.0f}
+    .transmission_tint      = {1.0f, 1.0f, 1.0f},
+    .f82_tint               = {1.0, 1.0, 1.0}
+};
+
+/* ------------------------------------------------------------------------
+ * 35. SILVER (Ag)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_SILVER = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.991, 0.985, 0.974},   /* F0 (linear)      */
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.05f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.02f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {0.999f, 1.003f, 1.012f}
+};
+
+/* ------------------------------------------------------------------------
+ * 36. ALUMINUM (Al)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_ALUMINUM = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.916, 0.923, 0.924},   /* F0 (linear)      */
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.10f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.05f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {0.953, 0.976, 1.000}
+};
+
+/* ------------------------------------------------------------------------
+ * 37. COPPER (Cu)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_COPPER = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.932, 0.623, 0.522},   /* F0 (linear)      */
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.08f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.03f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {1.019, 1.187, 1.272}
+};
+
+/* ------------------------------------------------------------------------
+ * 38. NICKEL (Ni)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_NICKEL = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.697, 0.641, 0.563},   /* F0 (linear)      */
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.15f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.05f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {0.973, 1.021, 1.138}
+};
+
+/* ------------------------------------------------------------------------
+ * 39. PLATINUM (Pt)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_PLATINUM = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.765, 0.72, 0.676},   /* F0 (linear)      */
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.08f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.03f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {0.908, 0.959, 1.017}
+};
+
+/* ------------------------------------------------------------------------
+ * 40. IRON (Fe)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_IRON = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.53, 0.513, 0.494},
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.25f,   /* wrought / forged iron finish */
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.15f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {1.023f, 1.039f, 1.101f}
+};
+
+/* ------------------------------------------------------------------------
+ * 41. TITANIUM (Ti)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_TITANIUM = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.441, 0.4, 0.361},
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.15f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.05f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {1.236, 1.337, 1.441}
+};
+
+/* ------------------------------------------------------------------------
+ * 42. TUNGSTEN (W)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_TUNGSTEN = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.537, 0.536, 0.519},
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.10f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.03f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {0.925, 0.938, 0.963}
+};
+
+/* ------------------------------------------------------------------------
+ * 43. BRASS (Cu-Zn 70/30 alloy)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_BRASS = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.857f, 0.728f, 0.502f},
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.15f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.05f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {0.991f, 1.175f, 1.431f}
+};
+
+/* ------------------------------------------------------------------------
+ * 44. BRONZE (Cu-Sn alloy)
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_BRONZE = {
+    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
+    .color                  = {0.714f, 0.428f, 0.181f},
+    .ambient_light_factor   = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 0,
+    .diffuse_roughness      = 0.00f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 512.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 3.0f,
+    .clearcoat_ior          = 1.6f,
+    .transmission_strength  = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.20f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .iridescence_strength   = 0.0f,
+    .glitch_intensity       = 0.0f,
+    .fringe_intensity       = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.08f,
+    .metallic               = 1.0f,
+    .ior                    = 0.0f,
+    .subsurface_strength    = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat_strength     = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen_strength         = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0f, 0.0f, 0.0f},
+    .f82_tint               = {1.12f, 1.37f, 1.64f}
 };
 
 #ifdef __cplusplus

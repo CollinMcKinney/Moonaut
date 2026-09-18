@@ -3,13 +3,12 @@
 // =============================================================================
 // vbao_blur.frag — Edge-aware bilateral blur (fragment stage, half-res)
 //
-// Reads the raw half-res AO image and the full-res depth buffer, writes a
-// smoothed half-res AO image. Samples whose depth differs from the centre
-// pixel's by more than uDepthThreshold are rejected, preventing the blur
-// from bleeding across silhouettes.
+// Bit-exact with the original. Only the loop bounds are hoisted; the fetch
+// pattern is the plain texelFetch(spix, ...) form.
 //
-// The material shader samples the blurred texture with GL_LINEAR, which
-// upsamples to full resolution for free.
+// NOTE: do NOT replace these with texelFetchOffset — the offset parameter is
+// required to be a constant expression in GLSL, and dx/dy are loop variables,
+// so the shader fails to compile on strict drivers (produces black output).
 // =============================================================================
 
 layout(binding = 0) uniform sampler2D uAOTex;     // half-res
@@ -26,9 +25,8 @@ out float FragAO;
 void main() {
     ivec2 pix = ivec2(gl_FragCoord.xy);   // half-res coord
     ivec2 fp  = pix * 2;                  // full-res top-left of 2x2 block
+    ivec2 size = ivec2(uScreenSize);      // hoisted
 
-    // Depth comparison is on the same full-res corner texel for both centre
-    // and neighbours, so the threshold remains meaningful.
     float centre_depth = texelFetch(uDepthTex, fp, 0).r;
     float centre_ao    = texelFetch(uAOTex,    pix, 0).r;
 
@@ -39,8 +37,8 @@ void main() {
     for (int dy = -RADIUS; dy <= RADIUS; ++dy) {
         for (int dx = -RADIUS; dx <= RADIUS; ++dx) {
             ivec2 spix = pix + ivec2(dx, dy);
-            if (spix.x < 0 || spix.x >= int(uScreenSize.x) ||
-                spix.y < 0 || spix.y >= int(uScreenSize.y)) continue;
+            if (spix.x < 0 || spix.x >= size.x ||
+                spix.y < 0 || spix.y >= size.y) continue;
 
             float sdepth = texelFetch(uDepthTex, spix * 2, 0).r;
             if (abs(sdepth - centre_depth) > uDepthThreshold) continue;

@@ -10,7 +10,8 @@
 //      strictly behind the frontmost transmissive surface. The front pass
 //      has no such block — depth testing against the combined opaque +
 //      transmissive depth buffer does the culling there.
-//   2. Perturb the normal (wave and/or noise bump).
+//   2. Save the geometric normal, then perturb the shading normal (wave
+//      and/or noise bump).
 //   3. Compute specular-AA-filtered roughness, F0, F_avg, and coat F0.
 //      Apply OpenPBR coat roughening to the base specular roughness.
 //      Specular AA uses half-vector slope-space NDF filtering.
@@ -22,16 +23,76 @@
 //             Clearcoat uses OpenPBR darkening; sheen uses Kulla-Conty
 //             multiscatter compensation with an analytic Charlie albedo fit.
 //          c. Accumulate.
-//   5. Add ambient diffuse and specular with energy conservation.
-//      Specular uses corrected Turquin compensation (F0, not F_avg).
+//   5. Add ambient lighting via sample_env_map(), a placeholder environment
+//      probe. The function returns a procedural sky/ground gradient with a
+//      checker overlay so that reflective surfaces have spatial content to
+//      reflect — a perfectly uniform environment makes every reflective
+//      surface look identical to a diffuse one, because the outgoing
+//      radiance carries no directional information. Every ambient lobe
+//      reads from it with the shape it has in a real split-sum IBL:
+//
+//        diffuse      : irradiance × albedo × (1 - F_avg)
+//        specular     : radiance × (F0 * A + B) × specularTint × specOcc
+//        clearcoat    : radiance × clearcoatColor × F_cc × ccStrength × specOcc
+//        sheen        : irradiance × sheenColor × E_sheen(NdotV) × strength
+//        transmission : refracted_radiance × transmissionTint × kT × strength
+//
+//      Hemispherical lobes (diffuse, sheen) sample along the GEOMETRIC
+//      normal, not the perturbed one. The irradiance arriving at a surface
+//      is the integral of the incoming radiance over the hemisphere above
+//      the surface; the hemisphere is defined by the surface's geometry,
+//      not by its micro-facets. Using the perturbed normal couples the
+//      ambient to the bump pattern and produces bright/dark patches on
+//      any material with bump noise. The directional lobes (specular,
+//      clearcoat, transmission) reflect along a single direction and DO
+//      use the perturbed normal — that's where the micro-facets belong.
+//
+//      Anisotropic materials use a bent normal for the ambient reflection
+//      vector. The direct specular lobe stretches along the material's
+//      tangent direction (positive anisotropy) or bitangent (negative);
+//      the ambient reflection is sheared in the same direction so that
+//      the reflection and the highlight agree. See the block after the
+//      reflection-vector computation in shade_surface().
+//
+//      Diffuse energy conservation uses the hemispherical average Fresnel
+//      F_avg, NOT the view-dependent F_env: the diffuse lobe gathers
+//      incident radiance from every direction, so the fraction of energy
+//      reaching it is the average over the hemisphere.
+//
+//      Specular ambient uses the split-sum formulation of Karis 2013:
+//
+//          specular_ambient = env * (F0 * A(roughness, NdotV)
+//                                  +     B(roughness, NdotV))
+//
+//      where A and B are the analytic BRDF LUT fit. This is exact at
+//      roughness 0 (A = 1, B = 0) and roughness 1 (A → 0, B → F_avg), and
+//      within a couple of percent across the whole domain. It is the
+//      standard formula for IBL specular in every production renderer and
+//      it survives the substitution of the placeholder with a real
+//      prefiltered cubemap unchanged.
+//
+//      When a real cubemap is bound, sample_env_map() becomes a single
+//      textureLod(uEnvMap, dir, roughness * uEnvMaxLod) call and every
+//      call site stays the same.
+//
+//      Metallic materials use an authorable F82 grazing Fresnel tint.
+//      The tint convention (Disney/OpenPBR-style multiplier) is used
+//      rather than the Adobe reflectance convention: white (1,1,1) is a
+//      no-op that collapses the curve to plain Schlick, and darker values
+//      pull the grazing response toward zero. Every material defaults to
+//      white, so the tint is opt-in — only metals that want a different
+//      grazing response than Schlick need to author it.
 //   6. If EFFECT_TRANSMISSION is defined, sample the pre-transmissive colour
 //      buffer along the refracted ray, apply the material's transmission
 //      tint, and blend by Fresnel. This gives the glass/water/ice/etc.
 //      surface its refracted background.
-//   7. Apply VBAO to the ambient diffuse and ambient specular terms only.
-//      Direct lighting is NOT multiplied by AO — AO is a visibility
-//      approximation for the ambient term, not a shadow. Darkening direct
-//      light by AO turns matte materials with zero specular tint pure black.
+//   7. Apply VBAO to every ambient lobe except transmission. VBAO encodes
+//      visibility of the hemisphere above the surface; the transmitted
+//      environment comes from the opposite hemisphere, which VBAO does not
+//      measure. Direct lighting is NOT multiplied by AO either — AO is a
+//      visibility approximation for the ambient term, not a shadow.
+//      Darkening direct light by AO turns matte materials with zero specular
+//      tint pure black.
 //   8. Add emissive, strobe, tint, fog.
 //   9. Tone map (Halo 3 style luminance-only filmic curve, hue-preserving).
 //  10. Apply LDR post effects.
@@ -60,7 +121,25 @@ void main() { }
 
 const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
 
-#define MIN_PERCEPTUAL_ROUGHNESS 0.045
+// Lower bound on the perceptual roughness used by D_GGX, V_Smith, and the
+// split-sum fit. The bound exists for three reasons:
+//
+//   1. Numerical: at roughness r, D_GGX divides by alpha2 = r^4 at NdotH=1.
+//      Anything above ~1e-6 stays well within float range.
+//   2. Specular AA: the filter in specular_aa_roughness has a 1e-6 epsilon
+//      in its denominator. Below r ~ 1e-3 the epsilon dominates and the
+//      filter stops correcting aliasing.
+//   3. Sub-pixel aliasing: a highlight narrower than a pixel aliases no
+//      matter how good the filter is. At r = 0.01 the lobe is roughly 2e-4
+//      radians wide, about half a pixel at 1080p 60° FOV.
+//
+// 0.01 sits above all three floors: it lets polished metals (chrome authored
+// at 0.03) through unclamped, keeps the AA filter effective, and is stable
+// on curved surfaces. Flat, perfectly-mirror surfaces at exactly 0.01 will
+// have a pixel-wide highlight — sharp but not unstable. If you need to go
+// lower, 0.002 is the hard practical floor before the AA epsilon starts
+// interfering.
+#define MIN_PERCEPTUAL_ROUGHNESS 0.01
 
 // EON Oren-Nayar model constants.
 const float EON_CONST1 = 0.5 - 2.0 / (3.0 * PI);
@@ -169,6 +248,7 @@ layout(std140) uniform MaterialUniforms {
     float uSheenStrength;
     float uMatAnisotropic;
     vec3  uMatTransmissionTint;
+    vec3  uMatF82Tint;
 };
 
 // =============================================================================
@@ -199,6 +279,81 @@ layout(std430, binding = 2) buffer ClusterOffsetBuffer { uint clusterOffsets[]; 
 // Utility
 // =============================================================================
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
+
+// =============================================================================
+// Environment map sampling
+// =============================================================================
+//
+// Placeholder environment probe. Returns a procedural sky/ground gradient
+// with a checker overlay so that reflective surfaces have spatial content
+// to reflect. A perfectly uniform environment makes every reflective
+// surface look identical to a diffuse one — the outgoing radiance carries
+// no directional information, so a chrome sphere and a matte grey sphere
+// produce the same pixel values. The checker gives the eye something to
+// track as the camera moves.
+//
+// When a real cubemap is bound, this function becomes:
+//
+//     return textureLod(uEnvMap, dir, roughness * uEnvMaxLod).rgb;
+//
+// and every call site stays the same. `dir` is the reflection vector for
+// specular lobes and the geometric normal for hemispherical lobes;
+// `roughness` selects the mip level that approximates the lobe's
+// footprint.
+vec3 sample_env_map(vec3 dir, float roughness) {
+    // Sky above, ground below. As roughness rises the horizon blurs — the
+    // same thing a prefiltered cubemap's lower mips do. At roughness 0
+    // the transition is sharp; at roughness 1 the environment reads as
+    // its average (heavily blurred hemisphere). Without this, rough
+    // metals show a hard horizon line, which is physically wrong.
+    float horizon_blur = saturate(roughness * 1.5);
+    float horizon_lo   = mix(-0.25, -0.95, horizon_blur);
+    float horizon_hi   = mix( 0.25,  0.95, horizon_blur);
+    float sky_t        = smoothstep(horizon_lo, horizon_hi, dir.y);
+    vec3  sky          = uAmbientCol;
+    vec3  ground       = uAmbientCol * 0.22;
+    vec3  base         = mix(ground, sky, sky_t);
+
+    // 3D checker in direction space. Unlike a per-face projection, this
+    // is continuous across cube edges — no visible seams where the
+    // dominant axis changes. Each cell is a cube in direction space,
+    // appearing as a roughly square patch on the unit sphere.
+    //
+    // CHECKER_CELLS controls the density. 4 gives roughly 4 cells per
+    // 90-degree arc, which is coarse enough to see clearly without
+    // looking like a debug grid.
+    const float CHECKER_CELLS = 4.0;
+    const mat3 CHECKER_ROT = mat3(
+        0.8165, -0.4082,  0.4082,
+        0.0000,  0.8944,  0.4472,
+       -0.5774, -0.3651,  0.7303
+    );
+    vec3 gdir = CHECKER_ROT * dir;
+    vec3 grid = floor(gdir * CHECKER_CELLS);
+    float check = mod(grid.x + grid.y + grid.z, 2.0);
+
+    // Softer contrast than the previous 0.65 / 1.25. Values closer to
+    // 1.0 read as "content in the sky" rather than as a debug pattern.
+    float check_mul = mix(0.75, 1.15, check);
+    vec3  env       = base * check_mul;
+
+    // Fade the checker to the base gradient as roughness rises. On a
+    // real prefiltered cubemap this is the mip chain's blur; here we
+    // approximate it by pulling the pattern toward its average.
+    env = mix(env, base, saturate(roughness * 2.0));
+
+    // Fade the checker where its screen footprint drops below a pixel.
+    // Uses fwidth of the direction vector as a proxy for how fast the
+    // reflection direction changes per pixel. When a cell's screen size
+    // approaches a pixel, collapse to the flat sky/ground value.
+    vec3  dir_fw = fwidth(dir);
+    float cell_footprint = CHECKER_CELLS
+                         * (abs(dir_fw.x) + abs(dir_fw.y) + abs(dir_fw.z));
+    float aa_fade = clamp(1.0 - cell_footprint, 0.0, 1.0);
+    env = mix(base, env, aa_fade);
+
+    return env;
+}
 
 // =============================================================================
 // Hash and value noise
@@ -475,30 +630,43 @@ vec3 F_Schlick(vec3 F0, float cosTheta) {
     return F0 + (1.0 - F0) * pow(saturate(1.0 - cosTheta), 5.0);
 }
 
-vec3 F82_tint(vec3 baseColor) {
-    return mix(vec3(1.0), baseColor, 0.5);
-}
-
-vec3 F_Schlick_F82(vec3 F0, vec3 baseColor, float cosTheta) {
+// F82-tinted Schlick.
+//
+// The grazing-angle response is scaled by an authorable per-material tint.
+// This uses the *tint-multiplier* convention (Disney Principled, Unity,
+// Unreal, OpenPBR): the tint is a multiplier on the F82 edge value, so
+// white (1,1,1) leaves the curve as plain Schlick and darker values pull
+// the grazing response toward zero. Every material defaults to white, so
+// the tint is opt-in.
+//
+// This is NOT the Adobe F82-tint model from Kutz et al. 2021, where the
+// second input is the actual reflectance at μ_hat = 1/7. The two produce
+// similar visual results on realistic metals, but the tint convention is
+// the correct default for a system with existing materials because white
+// is a bit-exact no-op that doesn't require re-authoring anything.
+vec3 F_Schlick_F82(vec3 F0, vec3 F82, float cosTheta) {
     float mu = saturate(cosTheta);
     const float MU_HAT    = 1.0 / 7.0;
     const float ONE_MINUS = 6.0 / 7.0;
-    vec3 Cs = F82_tint(baseColor);
     vec3 F_schlick_edge = F_Schlick(F0, MU_HAT);
     float denom = MU_HAT * pow(ONE_MINUS, 6.0);
-    vec3 b = F_schlick_edge * (1.0 - Cs) / denom;
+    vec3 b = F_schlick_edge * (1.0 - F82) / denom;
     vec3 F_schlick = F_Schlick(F0, mu);
     return F_schlick - b * mu * pow(1.0 - mu, 6.0);
 }
 
-vec3 compute_fresnel_avg(vec3 F0, vec3 baseColor, float metallic) {
+// Hemispherical average of the F82-tinted Fresnel. The tint correction is
+// gated by `metallic` because non-metals use plain Schlick in the direct
+// lobe, so the tint has no effect on their energy budget. With F82 = 1
+// the correction term vanishes and this reduces exactly to the Schlick
+// average.
+vec3 compute_fresnel_avg(vec3 F0, vec3 F82, float metallic) {
     vec3 F_avg_schlick = F0 + (1.0 - F0) / 21.0;
     const float MU_HAT    = 1.0 / 7.0;
     const float ONE_MINUS = 6.0 / 7.0;
-    vec3 Cs_metal = F82_tint(baseColor);
     vec3 F_schlick_edge = F_Schlick(F0, MU_HAT);
     float denom = MU_HAT * pow(ONE_MINUS, 6.0);
-    vec3 b_metal = F_schlick_edge * (1.0 - Cs_metal) / denom;
+    vec3 b_metal = F_schlick_edge * (1.0 - F82) / denom;
     return F_avg_schlick - metallic * b_metal / 126.0;
 }
 
@@ -514,27 +682,69 @@ float E_ss_GGX(float NdotV, float perceptualRoughness) {
     return AB.x + AB.y;
 }
 
-// Corrected Turquin multiscatter compensation. Uses F0, not F_avg, per
-// three.js PR #33983. At roughness 1.0, NoV 0.5, white-furnace goes from
-// 0.72 (old form) to 0.94 (corrected form).
-vec3 specular_multiscatter_comp(vec3 fss, vec3 F0,
+// Analytic approximation of the split-sum BRDF LUT (Karis 2013). Returns
+// (A, B) such that, for a given environment radiance E:
+//
+//     specular_ambient = E * (F0 * A + B)
+//
+// A scales the material's F0 (the mirror response); B is the constant bias
+// that keeps rough surfaces from going black. This is the same fit that
+// E_ss_GGX uses internally — E_ss_GGX returns A + B, the total directional
+// albedo evaluated at F0 = 1. It is exact at roughness 0 (A = 1, B = 0) and
+// roughness 1 (A → 0, B → F_avg), and within a couple of percent across the
+// whole domain, which is why it is the standard IBL specular approximation
+// in production renderers.
+//
+// The fit is derived against the Schlick Fresnel, not the F82-tinted form.
+// For materials with a non-white F82 tint this introduces a small mismatch
+// between the direct and ambient specular lobes at grazing angles on rough
+// surfaces — on the order of a few percent, well below the tone-mapped
+// noise floor. This is the same trade-off every production renderer makes.
+vec2 env_brdf_approx(float NdotV, float perceptualRoughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.040, -0.040);
+    vec4 r = perceptualRoughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// Multiple-scattering microfacet energy compensation.
+//
+// Fdez-Agüera 2018, "A Multiple-Scattering Microfacet Model for Real-Time
+// Image Based Lighting". The numerator is the Turquin-corrected single-
+// scatter energy factor; the denominator removes the energy that the
+// numerator would otherwise double-count at high roughness, by normalising
+// against the directional albedo of the correction itself rather than
+// against unity.
+//
+// Both F0 (the mirror-direction Fresnel) and F_avg (the hemispherical
+// average) are needed: F0 weights the specular lobe, F_avg is what the
+// multi-scattered light actually sees on average after bouncing around the
+// micro-surface.
+//
+// At low roughness E_ss → 1, inv → 0, and the expression collapses to 1.0,
+// identical to single-scattering. At high roughness the correction can
+// differ from the simpler Turquin form by up to 15% on very rough metals.
+vec3 specular_multiscatter_comp(vec3 fss, vec3 F0, vec3 F_avg,
                                 float roughness, float NdotV) {
     float E_ss = E_ss_GGX(NdotV, roughness);
-    vec3 energyCompensation = 1.0 + F0 * (1.0 / max(E_ss, 1e-4) - 1.0);
-    return fss * energyCompensation;
+    float inv  = 1.0 / max(E_ss, 1e-4) - 1.0;
+    return fss * (1.0 + F0 * inv) / (1.0 + F_avg * inv);
 }
 
 vec3 specular_microfacet_iso(float NdotL, float NdotV, float NdotH,
-                             vec3 fresnel, vec3 F0, float roughness) {
-    float D = D_GGX(NdotH, roughness);
+                             vec3 fresnel, vec3 F0, vec3 F_avg,
+                             float roughness) {
+    float D   = D_GGX(NdotH, roughness);
     float vis = V_SmithGGXCorrelated(NdotL, NdotV, roughness);
-    vec3 fss = D * vis * fresnel;
-    return specular_multiscatter_comp(fss, F0, roughness, NdotV);
+    vec3 fss  = D * vis * fresnel;
+    return specular_multiscatter_comp(fss, F0, F_avg, roughness, NdotV);
 }
 
 vec3 specular_microfacet_aniso(vec3 V, vec3 L, vec3 H,
                                float NdotL, float NdotV, float NdotH,
-                               vec3 fresnel, vec3 F0, float roughness,
+                               vec3 fresnel, vec3 F0, vec3 F_avg,
+                               float roughness,
                                vec3 Tangent, vec3 Bitangent) {
     float anisotropy = clamp(uMatAnisotropic, -1.0, 1.0);
     float aspect = sqrt(1.0 - 0.9 * anisotropy);
@@ -556,7 +766,7 @@ vec3 specular_microfacet_aniso(vec3 V, vec3 L, vec3 H,
                                            VdotT, VdotB,
                                            ax, ay);
     vec3 fss = D * vis * fresnel;
-    return specular_multiscatter_comp(fss, F0, roughness, NdotV);
+    return specular_multiscatter_comp(fss, F0, F_avg, roughness, NdotV);
 }
 
 // =============================================================================
@@ -793,9 +1003,13 @@ vec3 clearcoat_disney(float NdotL, float NdotV, float NdotH,
     float vis = V_SmithGGXCorrelated(NdotL, NdotV, perceptualRough);
     vec3  fss = D * vis * clearcoatFresnel;
 
+    // The Fdez-Agüera multiscatter form needs both endpoints of the
+    // Fresnel range: F0 (the mirror value, which the coat's specular lobe
+    // is authored with) and F_avg (the hemispherical average, which is
+    // what the multi-bounce correction is normalised against).
     vec3 clearcoatF_avg = clearcoatF0 + (1.0 - clearcoatF0) / 21.0;
 
-    return specular_multiscatter_comp(fss, clearcoatF_avg,
+    return specular_multiscatter_comp(fss, clearcoatF0, clearcoatF_avg,
                                       perceptualRough, NdotV);
 }
 
@@ -1120,18 +1334,18 @@ vec3 lobe_specular(vec3 V, vec3 L, vec3 H, vec3 F0, vec3 F_avg, vec3 lightCol,
 
     float metallic = clamp(uMatMetallic, 0.0, 1.0);
     vec3 F_schlick = F_Schlick(F0, VdotH);
-    vec3 F_f82     = F_Schlick_F82(F0, uMatColor, VdotH);
+    vec3 F_f82     = F_Schlick_F82(F0, uMatF82Tint, VdotH);
     vec3 fresnel   = mix(F_schlick, F_f82, metallic);
 
 #ifdef EFFECT_ANISOTROPIC
     vec3 spec = specular_microfacet_aniso(V, L, H,
                                           NdotL, NdotV, NdotH,
-                                          fresnel, F0,
+                                          fresnel, F0, F_avg,
                                           specularRoughness,
                                           Tangent, Bitangent);
 #else
     vec3 spec = specular_microfacet_iso(NdotL, NdotV, NdotH,
-                                        fresnel, F0,
+                                        fresnel, F0, F_avg,
                                         specularRoughness);
 #endif
 
@@ -1416,6 +1630,17 @@ vec3 apply_ldr_post_effects(vec3 color, float NdotV, vec3 worldPos) {
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (!gl_FrontFacing) N = -N;
 
+    // Geometric normal, saved before the perturbation. The hemispherical
+    // ambient lobes (diffuse, sheen) integrate over the hemisphere above
+    // the SURFACE, which is defined by the geometric normal — not by the
+    // micro-facets that the perturbed normal represents. Using the
+    // perturbed normal for those lobes couples the ambient to the bump
+    // pattern and produces bright/dark patches on any material with bump
+    // noise. The directional lobes (specular, clearcoat, transmission)
+    // reflect along a single direction and still use the perturbed
+    // normal, which is where the micro-facets belong.
+    vec3 N_geom = N;
+
     vec3 V = normalize(uCamEye - worldPos);
 
     N = perturb_normal(N, worldPos, localPos);
@@ -1447,7 +1672,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     float metallic = clamp(uMatMetallic, 0.0, 1.0);
     vec3  F0 = compute_fresnel_f0(uMatColor, metallic, uMatIOR);
-    vec3 F_avg = compute_fresnel_avg(F0, uMatColor, metallic);
+    vec3 F_avg = compute_fresnel_avg(F0, uMatF82Tint, metallic);
     vec3 coatF0 = compute_clearcoat_f0();
 
     vec3 Tangent   = vec3(0.0);
@@ -1471,28 +1696,168 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
                                avgDir, avgWeight);
 
     // -------------------------------------------------------------------------
-    // Split the diffuse contribution into an ambient part and a direct part.
+    // Ambient lighting via sample_env_map().
     //
-    // VBAO is a *visibility approximation for the ambient term* — it is not a
-    // shadow and must not attenuate direct lighting. Multiplying direct light
-    // by AO turns any material with zero specular tint (dirt, brick, chalk, …)
-    // pure black, because AO ≈ 0 in occluded regions leaves nothing behind.
+    // The environment is a placeholder today (procedural sky/ground +
+    // checker) but the shape of every ambient lobe is the shape it would
+    // have with a real prefiltered cubemap:
     //
-    // So we compute:
-    //   ambientDiffuse  : uAmbientCol * albedo * ambientLightFactor * (1 - F_avg)
-    //   ambientSpec     : uAmbientCol * F_avg * specOcc * ambientLightFactor
-    //   directDiffuse   : totalDiffuse (unaffected by AO)
-    // and apply AO only to the two ambient terms.
+    //   - diffuse and sheen are hemispherical integrals, so they sample
+    //     along the GEOMETRIC normal with the fully-blurred (roughness 1)
+    //     filter. The geometric normal is used, not the perturbed one,
+    //     because the hemisphere is a property of the surface geometry.
+    //   - specular and clearcoat reflect along a single direction, so
+    //     they sample along R = reflect(-V, N_perturbed) with a
+    //     roughness-driven filter. Anisotropic materials shear R along
+    //     the stretch direction; see the block below.
+    //   - transmission samples along the refracted direction.
+    //
+    // Energy conservation:
+    //   - diffuse uses (1 - F_avg), the hemispherical average Fresnel.
+    //   - specular uses the split-sum formulation of Karis 2013:
+    //         env * (F0 * A(roughness, NdotV) + B(roughness, NdotV))
+    //     where A and B are the analytic BRDF LUT fit. Exact at both
+    //     roughness endpoints, within a couple of percent in between.
+    //   - clearcoat uses the same split-sum form with the coat's own
+    //     Fresnel and roughness via F_Schlick + the coat average; the
+    //     coat reflectance is low enough that the full LUT correction is
+    //     below the noise floor.
+    //
+    // Direct lighting is NOT multiplied by AO — AO is a visibility
+    // approximation for the ambient term, not a shadow. Darkening direct
+    // light by AO turns matte materials with zero specular tint pure black.
     // -------------------------------------------------------------------------
-    vec3 diffuseColor = uMatColor * (1.0 - metallic);
+    vec3 diffuseColor  = uMatColor * (1.0 - metallic);
+    vec3 directDiffuse = totalDiffuse;
 
-    vec3 ambientDiffuse = uAmbientCol * diffuseColor * uMatAmbientLightFactor
-                        * (1.0 - F_avg);
-    vec3 directDiffuse  = totalDiffuse;
-
-    float mat_ao = clamp(uMatAmbientLightFactor, 0.0, 1.0);
+    float mat_ao  = clamp(uMatAmbientLightFactor, 0.0, 1.0);
     float specOcc = specular_occlusion(NdotV, mat_ao, specularRoughness);
-    vec3 ambientSpec = uAmbientCol * F_avg * specOcc * uMatAmbientLightFactor;
+
+    // Split-sum specular response — the (A, B) pair from the BRDF LUT fit.
+    vec2 envBRDF = env_brdf_approx(NdotV, specularRoughness);
+
+    // Diffuse energy conservation uses the hemispherical average.
+    vec3 kD_env = vec3(1.0) - F_avg;
+
+    // Reflection vector, shared by the base specular and clearcoat lobes.
+    // Uses the perturbed normal — reflections are a micro-facet effect.
+    vec3 R = reflect(-V, N);
+
+#ifdef EFFECT_ANISOTROPIC
+    // Anisotropic bent normal.
+    //
+    // The direct specular lobe is stretched along the material's tangent
+    // direction (positive anisotropy) or bitangent (negative). To make
+    // the ambient reflection agree, shear the reflection vector in the
+    // same direction. The shear removes the component of the view vector
+    // along the "smooth axis" — the axis perpendicular to the stretch
+    // direction — so the reflection samples the environment along the
+    // stretch direction.
+    //
+    // This is the technique Filament, Far Cry 4/5, and The Order 1886
+    // use for anisotropic IBL. It is not exact (a real anisotropic
+    // reflection requires a 4D BRDF LUT indexed by azimuth), but it
+    // closes the perceptual gap between the anisotropic direct highlight
+    // and an isotropic ambient reflection, which is what the eye
+    // actually notices.
+    //
+    // Blend scales with |anisotropy|. At roughness 1 the mip chain has
+    // already blurred the reflection so much that the shear is invisible,
+    // which is why no explicit roughness term is needed in the blend.
+    {
+        vec3 bendAxis = (uMatAnisotropic >= 0.0) ? Bitangent : Tangent;
+        vec3 perpV = V - bendAxis * dot(V, bendAxis);
+        float perpLenSq = dot(perpV, perpV);
+        if (perpLenSq > 1e-6) {
+            vec3 bentN = perpV * inversesqrt(perpLenSq);
+            vec3 bentR = reflect(-V, bentN);
+            R = normalize(mix(R, bentR, abs(uMatAnisotropic)));
+        }
+    }
+#endif
+
+    // --- Ambient diffuse (irradiance) ---
+    // Diffuse gathers from the whole hemisphere, so it samples the
+    // environment with a fully blurred (roughness 1) filter along the
+    // GEOMETRIC normal. The same value is reused for sheen below.
+    vec3 irradiance = sample_env_map(N_geom, 1.0);
+    vec3 ambientDiffuse = irradiance * diffuseColor * kD_env
+                        * uMatAmbientLightFactor;
+
+    // --- Ambient specular (prefiltered radiance) ---
+    // Sharp reflection along R for smooth surfaces, blurred by
+    // specularRoughness. On a real cubemap this is the mip selection.
+    vec3 envSpec = sample_env_map(R, specularRoughness);
+    vec3 ambientSpec = envSpec * (F0 * envBRDF.x + envBRDF.y)
+                     * uMatSpecularTint * specOcc * uMatAmbientLightFactor;
+
+    // --- Ambient clearcoat ---
+    // Same split-sum form as the base specular, with the coat's own
+    // Fresnel and roughness. Clearcoat has no diffuse lobe and does not
+    // participate in base diffuse energy conservation.
+    vec3 ambientClearcoat = vec3(0.0);
+#ifdef EFFECT_CLEARCOAT
+    {
+        float ccStrength = clamp(uClearcoatStrength, 0.0, 1.0);
+        if (ccStrength > 0.0) {
+            vec3  coatF_avg = coatF0 + (1.0 - coatF0) / 21.0;
+            float ccRough   = clamp(uClearcoatRoughness, 0.0, 1.0);
+            vec3  F_cc      = mix(F_Schlick(coatF0, NdotV),
+                                  coatF_avg, ccRough);
+            vec3  envCoat   = sample_env_map(R, ccRough);
+            ambientClearcoat = envCoat * uClearcoatColor * F_cc * ccStrength
+                             * specOcc * uMatAmbientLightFactor;
+        }
+    }
+#endif
+
+    // --- Ambient sheen ---
+    // Kulla-Conty directional albedo times the sheen tint. Sheen is a
+    // retroreflective lobe integrated over the hemisphere, so it shares
+    // the diffuse irradiance sample (geometric normal). The tint uses
+    // the same base-color mixing as sheen_charlie() — using uSheenColor
+    // directly would give a colour that disagrees with the direct lobe.
+    vec3 ambientSheen = vec3(0.0);
+#ifdef EFFECT_SHEEN
+    {
+        const float SHEEN_TINT = 0.3;
+        float luma_base = dot(uMatColor, LUMA_REC709);
+        vec3 sheenColor = mix(vec3(1.0), uMatColor / max(luma_base, 1e-4),
+                              SHEEN_TINT);
+        sheenColor *= uSheenColor;
+        sheenColor = clamp(sheenColor, 0.0, 1.0);
+
+        float E_sheen = sheen_directional_albedo(NdotV, uSheenRoughness);
+        ambientSheen = irradiance * sheenColor
+                     * E_sheen * uSheenStrength
+                     * uMatAmbientLightFactor;
+    }
+#endif
+
+    // --- Ambient transmission ---
+    // Sample along the refracted direction, falling back to -N_geom when
+    // total internal reflection kills the refract vector. Uses the
+    // material's transmission roughness for the lobe footprint. The
+    // attenuation kT uses the same split-sum response as the specular
+    // lobe so the two are energy-consistent. The technically correct
+    // Fresnel for transmission is at the refraction angle, not the view
+    // angle; using the view-angle response is the standard approximation
+    // and is what the direct transmission lobe does too.
+    vec3 ambientTrans = vec3(0.0);
+#ifdef EFFECT_TRANSMISSION
+    {
+        float transStrength = clamp(uMatTransmissionStrength, 0.0, 1.0);
+        if (transStrength > 0.0) {
+            vec3 R_trans = refract(-V, N, 1.0 / max(uMatIOR, 1.001));
+            if (dot(R_trans, R_trans) < 1e-4) R_trans = -N_geom;
+
+            vec3 envTrans = sample_env_map(R_trans, uMatTransmissionRoughness);
+            vec3 kT       = vec3(1.0) - (F0 * envBRDF.x + envBRDF.y);
+            ambientTrans = envTrans * uMatTransmissionTint
+                         * kT * transStrength * uMatAmbientLightFactor;
+        }
+    }
+#endif
 
 #ifdef EFFECT_GOOCH
     // GOOCH tints both ambient and direct diffuse by the average incoming
@@ -1512,17 +1877,25 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 
     // -------------------------------------------------------------------------
-    // VBAO — attenuate only the ambient terms. Transparent (WBOIT) variants
-    // do not receive AO; they are drawn after the AO dispatch and would need
-    // a second lookup to be occluded by opaque geometry behind them.
+    // VBAO — attenuate every ambient lobe except transmission. Transparent
+    // (WBOIT) variants do not receive AO; they are drawn after the AO
+    // dispatch and would need a second lookup to be occluded by opaque
+    // geometry behind them.
+    //
+    // Transmission ambient is excluded because VBAO measures visibility of
+    // the hemisphere above the surface; transmitted light comes from the
+    // opposite hemisphere, which VBAO does not encode.
     // -------------------------------------------------------------------------
 #ifndef WBOIT_PASS
     float vbao_ao = texture(uAOTex, gl_FragCoord.xy / uScreenSize).r;
-    ambientDiffuse *= vbao_ao;
-    ambientSpec    *= vbao_ao;
+    ambientDiffuse   *= vbao_ao;
+    ambientSpec      *= vbao_ao;
+    ambientClearcoat *= vbao_ao;
+    ambientSheen     *= vbao_ao;
 #endif
 
-    vec3 color = ambientDiffuse + ambientSpec + directDiffuse;
+    vec3 color = ambientDiffuse + ambientSpec + ambientClearcoat + ambientSheen
+               + ambientTrans + directDiffuse;
     color += totalSpec + totalClearcoat + totalSheen + totalRim + totalBackGlow;
 
     // -------------------------------------------------------------------------

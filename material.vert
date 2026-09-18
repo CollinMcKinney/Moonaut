@@ -58,6 +58,7 @@ layout(std140) uniform MaterialUniforms {
     float uSheenStrength;
     float uMatAnisotropic;
     vec3  uMatTransmissionTint;
+    vec3  uMatF82Tint;
 };
 
 layout(std140, row_major) uniform ModelMatrices {

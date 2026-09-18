@@ -157,6 +157,16 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_chrome",     TAG_material, &DEFAULT_MATERIAL_CHROME);
     tag_register_default("default_material_emerald",    TAG_material, &DEFAULT_MATERIAL_EMERALD);
     tag_register_default("default_material_oilslick",   TAG_material, &DEFAULT_MATERIAL_OILSLICK);
+    tag_register_default("default_material_silver",     TAG_material, &DEFAULT_MATERIAL_SILVER);
+    tag_register_default("default_material_aluminum",   TAG_material, &DEFAULT_MATERIAL_ALUMINUM);
+    tag_register_default("default_material_copper",     TAG_material, &DEFAULT_MATERIAL_COPPER);
+    tag_register_default("default_material_nickel",     TAG_material, &DEFAULT_MATERIAL_NICKEL);
+    tag_register_default("default_material_platinum",   TAG_material, &DEFAULT_MATERIAL_PLATINUM);
+    tag_register_default("default_material_iron",       TAG_material, &DEFAULT_MATERIAL_IRON);
+    tag_register_default("default_material_titanium",   TAG_material, &DEFAULT_MATERIAL_TITANIUM);
+    tag_register_default("default_material_tungsten",   TAG_material, &DEFAULT_MATERIAL_TUNGSTEN);
+    tag_register_default("default_material_brass",      TAG_material, &DEFAULT_MATERIAL_BRASS);
+    tag_register_default("default_material_bronze",     TAG_material, &DEFAULT_MATERIAL_BRONZE);
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);

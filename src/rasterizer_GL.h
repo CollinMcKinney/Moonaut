@@ -44,6 +44,17 @@
  * and the slice directions are a compile-time table rotated by a single
  * per-pixel hash angle.
  *
+ * VBAO UBO upload is gated on a dirty flag: the matrices it carries only
+ * change when render_set_camera or render_set_render_resolution is called,
+ * so the per-frame cost on an idle camera is zero. The two VBAO UBOs live
+ * on binding indices 2 and 3 respectively so they never collide with the
+ * material/model UBOs on 0 and 1, and the per-dispatch glBindBufferBase
+ * calls are gone.
+ *
+ * The full-screen triangle vertex shader (oit_composite.vert) is compiled
+ * once at startup and attached to all three programs that use it (WBOIT
+ * composite, VBAO, VBAO blur), instead of being recompiled three times.
+ *
  * Transparency pipeline (thirteen passes):
  *   1.  Opaque depth pre-pass         -> gl_depth_tex
  *   2.  Cluster build
@@ -294,6 +305,11 @@ static i32 gl_ao_height = 0;
 #define MATERIAL_UBO_BINDING  0
 #define MODEL_UBO_BINDING     1
 
+/* VBAO UBO block binding indices. Distinct from material (0) and model (1)
+ * so no per-dispatch rebinding is required. */
+#define VBAO_UBO_BINDING       2
+#define VBAO_BLUR_UBO_BINDING  3
+
 /* ------------------------------------------------------------
    MATERIAL UBO
    ------------------------------------------------------------ */
@@ -325,10 +341,11 @@ typedef struct {
     float uSheenColor[3];           float uSheenRoughness;
     float uSheenStrength;
     float uMatAnisotropic;
-    float _pad7[2];
-    float uMatTransmissionTint[3];  float _pad6;
+    float _pa6[2];
+    float uMatTransmissionTint[3];  float _pad7;
+    float uMatF82Tint[3];          float _pad8;
 } material_ubo_t;
-STATIC_ASSERT(sizeof(material_ubo_t) == 320, material_ubo_t__size__wrong);
+STATIC_ASSERT(sizeof(material_ubo_t) == 336, material_ubo_t__size__wrong);
 
 #define MAX_MODEL_MATRICES 1024
 
@@ -427,6 +444,15 @@ static shader_variant_t *gl_shader_cache = NULL;
 static int gl_shader_cache_size = 0;
 static int gl_shader_cache_count = 0;
 static int gl_shader_compilations = 0;
+
+/* ---- Shared full-screen vertex shader ----
+ *
+ * oit_composite.vert is used by three programs: the WBOIT composite, the
+ * VBAO pass, and the VBAO blur pass. Compiling it once and attaching the
+ * same handle to all three saves two shader compiles at startup. The
+ * handle is deleted in render_shutdown after every program that uses it
+ * has been destroyed. */
+static GLuint gl_fullscreen_vs = 0;
 
 /* ---- UBO handles ---- */
 static GLuint gl_material_ubo = 0;
@@ -536,6 +562,11 @@ static GLint  oit_u_reveal_tex         = -1;
  * Both passes are full-screen fragment draws using gl_oit_vao, which is the
  * empty VAO used by the WBOIT composite. The vertex stage is the
  * gl_VertexID-generated triangle from oit_composite.vert.
+ *
+ * The UBO contents only depend on the projection matrix and the half-res
+ * target size, both of which change only on render_set_camera or
+ * render_set_render_resolution. A dirty flag gates the per-frame upload and
+ * the CPU-side mat4_inverse.
  */
 static GLuint gl_ao_tex        = 0;
 static GLuint gl_ao_fbo        = 0;
@@ -545,6 +576,11 @@ static GLuint gl_vbao_program      = 0;
 static GLuint gl_vbao_ubo          = 0;
 static GLuint gl_vbao_blur_program = 0;
 static GLuint gl_vbao_blur_ubo     = 0;
+
+static vbao_ubo_t      gl_vbao_ubo_cache;
+static int             gl_vbao_ubo_dirty      = 1;
+static vbao_blur_ubo_t gl_vbao_blur_ubo_cache;
+static int             gl_vbao_blur_ubo_dirty = 1;
 
 /* ---- Batching state ---- */
 #define MAX_BATCHES         256
@@ -1083,46 +1119,46 @@ static void update_material_ubo(const material_definition *mat) {
     material_ubo_t ubo;
     memset(&ubo, 0, sizeof(ubo));
 
-    ubo.uMatColor[0] = mat->color.position.x;
-    ubo.uMatColor[1] = mat->color.position.y;
-    ubo.uMatColor[2] = mat->color.position.z;
-    ubo.uMatTint[0] = mat->tint.position.x;
-    ubo.uMatTint[1] = mat->tint.position.y;
-    ubo.uMatTint[2] = mat->tint.position.z;
+    ubo.uMatColor[0] = mat->color.color.r;
+    ubo.uMatColor[1] = mat->color.color.g;
+    ubo.uMatColor[2] = mat->color.color.b;
+    ubo.uMatTint[0] = mat->tint.color.r;
+    ubo.uMatTint[1] = mat->tint.color.g;
+    ubo.uMatTint[2] = mat->tint.color.b;
     ubo.uMatAlpha = mat->alpha;
-    ubo.uMatEmissiveColor[0] = mat->emissive_color.position.x;
-    ubo.uMatEmissiveColor[1] = mat->emissive_color.position.y;
-    ubo.uMatEmissiveColor[2] = mat->emissive_color.position.z;
+    ubo.uMatEmissiveColor[0] = mat->emissive_color.color.r;
+    ubo.uMatEmissiveColor[1] = mat->emissive_color.color.g;
+    ubo.uMatEmissiveColor[2] = mat->emissive_color.color.b;
     ubo.uMatEmissivePulseAmplitude = mat->emissive_pulse_amplitude;
     ubo.uMatEmissivePulseFrequency = mat->emissive_pulse_frequency;
     ubo.uMatEmissivePulsePhase     = mat->emissive_pulse_phase;
     ubo.uMatTransmissionStrength   = mat->transmission_strength;
-    ubo.uMatSpecularTint[0] = mat->specular_tint.position.x;
-    ubo.uMatSpecularTint[1] = mat->specular_tint.position.y;
-    ubo.uMatSpecularTint[2] = mat->specular_tint.position.z;
+    ubo.uMatSpecularTint[0] = mat->specular_tint.color.r;
+    ubo.uMatSpecularTint[1] = mat->specular_tint.color.g;
+    ubo.uMatSpecularTint[2] = mat->specular_tint.color.b;
     ubo.uMatSpecularRoughness = mat->specular_roughness;
-    ubo.uMatRimColor[0] = mat->rim_color.position.x;
-    ubo.uMatRimColor[1] = mat->rim_color.position.y;
-    ubo.uMatRimColor[2] = mat->rim_color.position.z;
+    ubo.uMatRimColor[0] = mat->rim_color.color.r;
+    ubo.uMatRimColor[1] = mat->rim_color.color.g;
+    ubo.uMatRimColor[2] = mat->rim_color.color.b;
     ubo.uMatRimExponent = mat->rim_exponent;
     ubo.uMatMetallic = mat->metallic;
     ubo.uMatIOR      = mat->ior;
     ubo.uMatSubsurfaceStrength = mat->subsurface_strength;
     ubo.uMatClearcoatIOR = mat->clearcoat_ior;
-    ubo.uMatGoochCool[0] = mat->gooch_cool.position.x;
-    ubo.uMatGoochCool[1] = mat->gooch_cool.position.y;
-    ubo.uMatGoochCool[2] = mat->gooch_cool.position.z;
-    ubo.uMatGoochWarm[0] = mat->gooch_warm.position.x;
-    ubo.uMatGoochWarm[1] = mat->gooch_warm.position.y;
-    ubo.uMatGoochWarm[2] = mat->gooch_warm.position.z;
+    ubo.uMatGoochCool[0] = mat->gooch_cool.color.r;
+    ubo.uMatGoochCool[1] = mat->gooch_cool.color.g;
+    ubo.uMatGoochCool[2] = mat->gooch_cool.color.b;
+    ubo.uMatGoochWarm[0] = mat->gooch_warm.color.r;
+    ubo.uMatGoochWarm[1] = mat->gooch_warm.color.g;
+    ubo.uMatGoochWarm[2] = mat->gooch_warm.color.b;
     ubo.uMatAmbientLightFactor = mat->ambient_light_factor;
     ubo.uMatDiffuseRoughness     = mat->diffuse_roughness;
     ubo.uMatTransmissionRoughness = mat->transmission_roughness;
     ubo.uMatSaturation         = mat->saturation;
     ubo.uMatIridescenceStrength = mat->iridescence_strength;
-    ubo.uMatBackGlowColor[0] = mat->back_glow_color.position.x;
-    ubo.uMatBackGlowColor[1] = mat->back_glow_color.position.y;
-    ubo.uMatBackGlowColor[2] = mat->back_glow_color.position.z;
+    ubo.uMatBackGlowColor[0] = mat->back_glow_color.color.r;
+    ubo.uMatBackGlowColor[1] = mat->back_glow_color.color.g;
+    ubo.uMatBackGlowColor[2] = mat->back_glow_color.color.b;
     ubo.uMatBumpWaveAmplitude = mat->bump_wave_amplitude;
     ubo.uMatBumpWaveFrequency = mat->bump_wave_frequency;
     ubo.uMatBumpWaveSpeed     = mat->bump_wave_speed;
@@ -1131,25 +1167,28 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatCelBands      = mat->cel_bands;
     ubo.uMatGlitchIntensity = mat->glitch_intensity;
     ubo.uMatPosterizeLevels = mat->posterize_levels;
-    ubo.uMatStrobeColor[0] = mat->strobe_color.position.x;
-    ubo.uMatStrobeColor[1] = mat->strobe_color.position.y;
-    ubo.uMatStrobeColor[2] = mat->strobe_color.position.z;
+    ubo.uMatStrobeColor[0] = mat->strobe_color.color.r;
+    ubo.uMatStrobeColor[1] = mat->strobe_color.color.g;
+    ubo.uMatStrobeColor[2] = mat->strobe_color.color.b;
     ubo.uMatStrobeFrequency = mat->strobe_frequency;
     ubo.uMatStrobePhase     = mat->strobe_phase;
-    ubo.uClearcoatColor[0] = mat->clearcoat_color.position.x;
-    ubo.uClearcoatColor[1] = mat->clearcoat_color.position.y;
-    ubo.uClearcoatColor[2] = mat->clearcoat_color.position.z;
+    ubo.uClearcoatColor[0] = mat->clearcoat_color.color.r;
+    ubo.uClearcoatColor[1] = mat->clearcoat_color.color.g;
+    ubo.uClearcoatColor[2] = mat->clearcoat_color.color.b;
     ubo.uClearcoatRoughness = mat->clearcoat_roughness;
     ubo.uClearcoatStrength = mat->clearcoat_strength;
-    ubo.uSheenColor[0] = mat->sheen_color.position.x;
-    ubo.uSheenColor[1] = mat->sheen_color.position.y;
-    ubo.uSheenColor[2] = mat->sheen_color.position.z;
+    ubo.uSheenColor[0] = mat->sheen_color.color.r;
+    ubo.uSheenColor[1] = mat->sheen_color.color.g;
+    ubo.uSheenColor[2] = mat->sheen_color.color.b;
     ubo.uSheenRoughness = mat->sheen_roughness;
     ubo.uSheenStrength = mat->sheen_strength;
     ubo.uMatAnisotropic = mat->anisotropic;
     ubo.uMatTransmissionTint[0] = mat->transmission_tint.color.r;
     ubo.uMatTransmissionTint[1] = mat->transmission_tint.color.g;
     ubo.uMatTransmissionTint[2] = mat->transmission_tint.color.b;
+    ubo.uMatF82Tint[0] = mat->f82_tint.color.r;
+    ubo.uMatF82Tint[1] = mat->f82_tint.color.g;
+    ubo.uMatF82Tint[2] = mat->f82_tint.color.b;
 
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(material_ubo_t), &ubo);
@@ -1177,13 +1216,13 @@ static void upload_lights_to_ssbo(void) {
         gpu_lights[count].pos[1] = g_lights[i].position.position.y;
         gpu_lights[count].pos[2] = g_lights[i].position.position.z;
         gpu_lights[count].pos[3] = (float)g_lights[i].type;
-        gpu_lights[count].dir[0] = g_lights[i].direction.position.x;
-        gpu_lights[count].dir[1] = g_lights[i].direction.position.y;
-        gpu_lights[count].dir[2] = g_lights[i].direction.position.z;
+        gpu_lights[count].dir[0] = g_lights[i].direction.rotation.i;
+        gpu_lights[count].dir[1] = g_lights[i].direction.rotation.j;
+        gpu_lights[count].dir[2] = g_lights[i].direction.rotation.k;
         gpu_lights[count].dir[3] = 0.0f;
-        gpu_lights[count].color[0] = g_lights[i].color.position.x;
-        gpu_lights[count].color[1] = g_lights[i].color.position.y;
-        gpu_lights[count].color[2] = g_lights[i].color.position.z;
+        gpu_lights[count].color[0] = g_lights[i].color.color.r;
+        gpu_lights[count].color[1] = g_lights[i].color.color.g;
+        gpu_lights[count].color[2] = g_lights[i].color.color.b;
         gpu_lights[count].color[3] = 1.0f;
         gpu_lights[count].range = g_lights[i].range;
         gpu_lights[count].inner_cos = (float)cos(g_lights[i].spot_inner_angle);
@@ -1237,39 +1276,40 @@ static void dispatch_cluster_build(void) {
  * pass (Pass 3) so both inputs are populated, and before the transmissive
  * passes so the AO term is available when material.frag reads it.
  *
- * The view-position reconstruction in the shader needs four scalars
- * extracted from gl_proj. mat4 stores rows in .columns[i], so
- * columns[2].position.z is M[2][2], columns[2].position.w is M[2][3], and
- * columns[0].position.x / columns[1].position.y are M[0][0] / M[1][1].
+ * The UBO is only uploaded when the camera or AO resolution has changed,
+ * so the per-frame cost on an idle camera is a single FBO bind, a viewport
+ * set, two texture binds, and a draw.
+ *
+ * State (depth test, blend, colour/depth mask) is set up by the caller so
+ * that the blur dispatch that follows doesn't repeat it. This function
+ * leaves the FBO and viewport pointing at gl_ao_fbo.
  */
 static void dispatch_vbao(void) {
     if (!gl_vbao_program || !gl_vbao_ubo || !gl_ao_fbo) return;
 
-    vbao_ubo_t ubo;
-    mat4 inv_proj = mat4_inverse(gl_proj);
-    memcpy(ubo.inv_proj, &inv_proj, sizeof(float) * 16);
-    memcpy(ubo.proj,     &gl_proj,  sizeof(float) * 16);
-    memcpy(ubo.view,     &gl_view,  sizeof(float) * 16);
-    ubo.screen_size[0] = (float)gl_ao_width;
-    ubo.screen_size[1] = (float)gl_ao_height;
-    ubo.near_plane     = gl_near;
-    ubo.far_plane      = gl_far;
-    ubo.proj_a         =  gl_proj.columns[2].position.z;
-    ubo.proj_b         = -gl_proj.columns[2].position.w;
-    ubo.inv_proj_00    =  1.0f / gl_proj.columns[0].position.x;
-    ubo.inv_proj_11    =  1.0f / gl_proj.columns[1].position.y;
+    if (gl_vbao_ubo_dirty) {
+        mat4 inv_proj = mat4_inverse(gl_proj);
+        memcpy(gl_vbao_ubo_cache.inv_proj, &inv_proj, sizeof(float) * 16);
+        memcpy(gl_vbao_ubo_cache.proj,     &gl_proj,  sizeof(float) * 16);
+        memcpy(gl_vbao_ubo_cache.view,     &gl_view,  sizeof(float) * 16);
+        gl_vbao_ubo_cache.screen_size[0] = (float)gl_ao_width;
+        gl_vbao_ubo_cache.screen_size[1] = (float)gl_ao_height;
+        gl_vbao_ubo_cache.near_plane     = gl_near;
+        gl_vbao_ubo_cache.far_plane      = gl_far;
+        gl_vbao_ubo_cache.proj_a         =  gl_proj.columns[2].position.z;
+        gl_vbao_ubo_cache.proj_b         = -gl_proj.columns[2].position.w;
+        gl_vbao_ubo_cache.inv_proj_00    =  1.0f / gl_proj.columns[0].position.x;
+        gl_vbao_ubo_cache.inv_proj_11    =  1.0f / gl_proj.columns[1].position.y;
 
-    C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_ubo);
-    C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(vbao_ubo_t), &ubo);
-    C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_ubo);
+        C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(vbao_ubo_t),
+                              &gl_vbao_ubo_cache);
+        C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        gl_vbao_ubo_dirty = 0;
+    }
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_ao_fbo);
     C89GL_glViewport(0, 0, gl_ao_width, gl_ao_height);
-
-    C89GL_glDisable(GL_DEPTH_TEST);
-    C89GL_glDisable(GL_BLEND);
-    C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    C89GL_glDepthMask(GL_FALSE);
 
     C89GL_glActiveTexture(GL_TEXTURE0);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
@@ -1278,17 +1318,11 @@ static void dispatch_vbao(void) {
     C89GL_glActiveTexture(GL_TEXTURE0);
 
     C89GL_glUseProgram(gl_vbao_program);
-    C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl_vbao_ubo);
-
     C89GL_glBindVertexArray(gl_oit_vao);
     C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
-    C89GL_glBindVertexArray(gl_vao);
-
     C89GL_glUseProgram(0);
-
-    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-    C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
-    C89GL_glEnable(GL_DEPTH_TEST);
+    /* FBO/viewport deliberately left pointing at gl_ao_fbo; the caller
+     * (render_finish) restores them once after the blur dispatch. */
 }
 
 /* ---- Dispatch VBAO blur ----
@@ -1296,27 +1330,28 @@ static void dispatch_vbao(void) {
  * Reads the raw half-res AO image and the full-res depth, writes the
  * blurred half-res AO into gl_ao_blur_fbo. material.frag samples the
  * blurred texture (unit 4) with GL_LINEAR, which upsamples for free.
+ *
+ * UBO upload is gated on a dirty flag; only the AO resolution and the
+ * hardcoded depth threshold feed it, and the threshold never changes.
  */
 static void dispatch_vbao_blur(void) {
     if (!gl_vbao_blur_program || !gl_vbao_blur_ubo || !gl_ao_blur_fbo) return;
 
-    vbao_blur_ubo_t ubo;
-    ubo.screen_size[0]  = (float)gl_ao_width;
-    ubo.screen_size[1]  = (float)gl_ao_height;
-    ubo.depth_threshold = 0.0005f;
-    ubo._pad            = 0.0f;
+    if (gl_vbao_blur_ubo_dirty) {
+        gl_vbao_blur_ubo_cache.screen_size[0]  = (float)gl_ao_width;
+        gl_vbao_blur_ubo_cache.screen_size[1]  = (float)gl_ao_height;
+        gl_vbao_blur_ubo_cache.depth_threshold = 0.0005f;
+        gl_vbao_blur_ubo_cache._pad            = 0.0f;
 
-    C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_blur_ubo);
-    C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(vbao_blur_ubo_t), &ubo);
-    C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_blur_ubo);
+        C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(vbao_blur_ubo_t),
+                              &gl_vbao_blur_ubo_cache);
+        C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        gl_vbao_blur_ubo_dirty = 0;
+    }
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_ao_blur_fbo);
     C89GL_glViewport(0, 0, gl_ao_width, gl_ao_height);
-
-    C89GL_glDisable(GL_DEPTH_TEST);
-    C89GL_glDisable(GL_BLEND);
-    C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    C89GL_glDepthMask(GL_FALSE);
 
     C89GL_glActiveTexture(GL_TEXTURE0);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_tex);
@@ -1325,17 +1360,10 @@ static void dispatch_vbao_blur(void) {
     C89GL_glActiveTexture(GL_TEXTURE0);
 
     C89GL_glUseProgram(gl_vbao_blur_program);
-    C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl_vbao_blur_ubo);
-
     C89GL_glBindVertexArray(gl_oit_vao);
     C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
-    C89GL_glBindVertexArray(gl_vao);
-
     C89GL_glUseProgram(0);
-
-    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-    C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
-    C89GL_glEnable(GL_DEPTH_TEST);
+    /* FBO/viewport deliberately left pointing at gl_ao_blur_fbo. */
 }
 
 /* ---- Init cluster resources ---- */
@@ -1498,15 +1526,15 @@ static void init_wboit_resources(void) {
     C89GL_glGenVertexArrays(1, &gl_oit_vao);
 
     {
-        GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER,
-                                                "oit_composite.vert",
-                                                "#version 430 core\n");
+        /* Use the shared full-screen vertex shader rather than recompiling
+         * oit_composite.vert here. The shared handle is deleted once in
+         * render_shutdown; do NOT delete it here. */
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
                                                 "oit_composite.frag",
                                                 "#version 430 core\n");
-        if (vs && fs) {
+        if (gl_fullscreen_vs && fs) {
             gl_oit_composite_program = C89GL_glCreateProgram();
-            C89GL_glAttachShader(gl_oit_composite_program, vs);
+            C89GL_glAttachShader(gl_oit_composite_program, gl_fullscreen_vs);
             C89GL_glAttachShader(gl_oit_composite_program, fs);
             C89GL_glLinkProgram(gl_oit_composite_program);
             GLint st;
@@ -1524,10 +1552,8 @@ static void init_wboit_resources(void) {
                 oit_u_reveal_tex = C89GL_glGetUniformLocation(
                                        gl_oit_composite_program, "uRevealTexture");
             }
-            C89GL_glDeleteShader(vs);
             C89GL_glDeleteShader(fs);
         } else {
-            if (vs) C89GL_glDeleteShader(vs);
             if (fs) C89GL_glDeleteShader(fs);
             printf("ERROR: Failed to compile OIT composite shaders.\n");
         }
@@ -1539,10 +1565,14 @@ static void init_wboit_resources(void) {
 /* ---- VBAO init ----
  *
  * Creates the raw half-res AO target (r8), its FBO, and compiles the
- * fragment-stage VBAO program from vbao.frag + oit_composite.vert. The
- * fragment shader writes to gl_ao_tex as a normal colour output; the
- * vertex stage provides gl_FragCoord via the gl_VertexID-generated
- * full-screen triangle.
+ * fragment-stage VBAO program from vbao.frag + the shared full-screen
+ * vertex shader. The fragment shader writes to gl_ao_tex as a normal
+ * colour output; the vertex stage provides gl_FragCoord via the
+ * gl_VertexID-generated full-screen triangle.
+ *
+ * The VBAO UBO is bound once to VBAO_UBO_BINDING and its storage is
+ * STATIC_DRAW since the dispatch path only writes to it on camera or
+ * resolution change.
  */
 static void init_vbao_resources(void) {
     /* --- Raw AO target at half resolution --- */
@@ -1571,24 +1601,19 @@ static void init_vbao_resources(void) {
     }
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    /* --- Program: full-screen triangle vertex + vbao.frag --- */
-    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER,
-                                            "oit_composite.vert",
-                                            "#version 430 core\n");
+    /* --- Program: shared full-screen triangle vertex + vbao.frag --- */
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
                                             "vbao.frag",
                                             "#version 430 core\n");
-    if (!vs || !fs) {
-        if (vs) C89GL_glDeleteShader(vs);
+    if (!gl_fullscreen_vs || !fs) {
         if (fs) C89GL_glDeleteShader(fs);
         fprintf(stderr, "ERROR: Failed to compile vbao program\n");
         return;
     }
     gl_vbao_program = C89GL_glCreateProgram();
-    C89GL_glAttachShader(gl_vbao_program, vs);
+    C89GL_glAttachShader(gl_vbao_program, gl_fullscreen_vs);
     C89GL_glAttachShader(gl_vbao_program, fs);
     C89GL_glLinkProgram(gl_vbao_program);
-    C89GL_glDeleteShader(vs);
     C89GL_glDeleteShader(fs);
 
     GLint status;
@@ -1604,11 +1629,15 @@ static void init_vbao_resources(void) {
 
     GLuint block = C89GL_glGetUniformBlockIndex(gl_vbao_program, "VBAOUniforms");
     if (block != GL_INVALID_INDEX)
-        C89GL_glUniformBlockBinding(gl_vbao_program, block, 0);
+        C89GL_glUniformBlockBinding(gl_vbao_program, block, VBAO_UBO_BINDING);
 
     C89GL_glGenBuffers(1, &gl_vbao_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_ubo);
-    C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(vbao_ubo_t), NULL, GL_DYNAMIC_DRAW);
+    C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(vbao_ubo_t), NULL, GL_STATIC_DRAW);
+    /* Bind the UBO to its block binding index once. The per-frame dispatch
+     * only calls glBufferSubData when the camera changes; it never touches
+     * glBindBufferBase. */
+    C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, VBAO_UBO_BINDING, gl_vbao_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     printf("VBAO initialised (fragment stage, half-res %dx%d).\n",
@@ -1647,23 +1676,18 @@ static void init_vbao_blur_resources(void) {
     }
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER,
-                                            "oit_composite.vert",
-                                            "#version 430 core\n");
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
                                             "vbao_blur.frag",
                                             "#version 430 core\n");
-    if (!vs || !fs) {
-        if (vs) C89GL_glDeleteShader(vs);
+    if (!gl_fullscreen_vs || !fs) {
         if (fs) C89GL_glDeleteShader(fs);
         fprintf(stderr, "ERROR: Failed to compile vbao_blur program\n");
         return;
     }
     gl_vbao_blur_program = C89GL_glCreateProgram();
-    C89GL_glAttachShader(gl_vbao_blur_program, vs);
+    C89GL_glAttachShader(gl_vbao_blur_program, gl_fullscreen_vs);
     C89GL_glAttachShader(gl_vbao_blur_program, fs);
     C89GL_glLinkProgram(gl_vbao_blur_program);
-    C89GL_glDeleteShader(vs);
     C89GL_glDeleteShader(fs);
 
     GLint status;
@@ -1679,11 +1703,12 @@ static void init_vbao_blur_resources(void) {
 
     GLuint block = C89GL_glGetUniformBlockIndex(gl_vbao_blur_program, "BlurUniforms");
     if (block != GL_INVALID_INDEX)
-        C89GL_glUniformBlockBinding(gl_vbao_blur_program, block, 0);
+        C89GL_glUniformBlockBinding(gl_vbao_blur_program, block, VBAO_BLUR_UBO_BINDING);
 
     C89GL_glGenBuffers(1, &gl_vbao_blur_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_blur_ubo);
-    C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(vbao_blur_ubo_t), NULL, GL_DYNAMIC_DRAW);
+    C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(vbao_blur_ubo_t), NULL, GL_STATIC_DRAW);
+    C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, VBAO_BLUR_UBO_BINDING, gl_vbao_blur_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     printf("VBAO blur initialised (fragment stage, half-res %dx%d).\n",
@@ -1891,7 +1916,7 @@ static void dispatch_audio_compute(void) {
 
 /* ---- Public: feed audio voice positions ---- */
 #ifdef AUDIO_OCCLUSION
-void render_set_audio_voice_data(const vec3 *positions, int count) {
+INLINE void render_set_audio_voice_data(const vec3 *positions, int count) {
     g_audio_voice_count_gpu = count;
     if (count <= 0 || !gl_audio_voice_input_ssbo) return;
     if (count > MAX_AUDIO_VOICES_GPU) count = MAX_AUDIO_VOICES_GPU;
@@ -1900,7 +1925,7 @@ void render_set_audio_voice_data(const vec3 *positions, int count) {
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voices) {
+INLINE int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voices) {
     if (!gl_audio_propagation_ssbo[0] || !gl_audio_propagation_ssbo[1]) return 0;
     if (!gl_audio_occlusion_fence) return 0;
     GLenum status = C89GL_glClientWaitSync(gl_audio_occlusion_fence, 0, 0);
@@ -1928,7 +1953,7 @@ int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voice
 #endif
 
 #ifdef AUDIO_REVERB
-int render_poll_audio_global_stats(audio_global_stats_t *stats) {
+INLINE int render_poll_audio_global_stats(audio_global_stats_t *stats) {
     if (!gl_audio_global_stats_ssbo[0] || !gl_audio_global_stats_ssbo[1]) return 0;
     if (!gl_audio_reverb_fence) return 0;
     GLenum status = C89GL_glClientWaitSync(gl_audio_reverb_fence, 0, 0);
@@ -1982,7 +2007,7 @@ int render_poll_audio_global_stats(audio_global_stats_t *stats) {
 #endif
 
 #ifdef AUDIO_PORTAL
-void render_trigger_portal_search(void) {
+INLINE void render_trigger_portal_search(void) {
     if (!gl_audio_portal_program) return;
     if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1]) return;
     if (gl_audio_portal_fence) return;
@@ -2043,7 +2068,7 @@ void render_trigger_portal_search(void) {
     gl_audio_portal_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 }
 
-int render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices) {
+INLINE int render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices) {
     if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1]) return 0;
     if (!gl_audio_portal_fence) return 0;
 
@@ -2432,6 +2457,9 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     gl_shader_cache = NULL;
     gl_shader_cache_size = 0;
     gl_shader_cache_count = 0;
+    /* Force the first VBAO upload on the first frame. */
+    gl_vbao_ubo_dirty      = 1;
+    gl_vbao_blur_ubo_dirty = 1;
 
     if (!C89GL_create_context(window_get(), &gl_ctx)) {
         printf("ERROR: Failed to create OpenGL context\n");
@@ -2604,6 +2632,16 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glEnable(GL_CULL_FACE);
     C89GL_glFrontFace(GL_CCW);
 
+    /* Compile the full-screen triangle vertex shader once; all three
+     * full-screen programs (WBOIT composite, VBAO, VBAO blur) share it. */
+    gl_fullscreen_vs = compile_shader_with_defines(GL_VERTEX_SHADER,
+                                                   "oit_composite.vert",
+                                                   "#version 430 core\n");
+    if (!gl_fullscreen_vs) {
+        printf("ERROR: Failed to compile shared full-screen vertex shader.\n");
+        return 0;
+    }
+
     init_cluster_resources();
     init_audio_resources();
     init_transmissive_depth_program();
@@ -2657,6 +2695,10 @@ INLINE void render_shutdown(void) {
     if (gl_transmissive_depth_col) { C89GL_glDeleteTextures(1, &gl_transmissive_depth_col); gl_transmissive_depth_col = 0; }
     if (gl_transmissive_depth_tex) { C89GL_glDeleteTextures(1, &gl_transmissive_depth_tex); gl_transmissive_depth_tex = 0; }
     if (gl_refraction_src) { C89GL_glDeleteTextures(1, &gl_refraction_src); gl_refraction_src = 0; }
+
+    /* Shared full-screen vertex shader — safe to delete now that every
+     * program that referenced it has been destroyed. */
+    if (gl_fullscreen_vs) { C89GL_glDeleteShader(gl_fullscreen_vs); gl_fullscreen_vs = 0; }
 
     if (gl_vertex_pool) { free(gl_vertex_pool); gl_vertex_pool = NULL; }
     if (gl_index_pool) { free(gl_index_pool); gl_index_pool = NULL; }
@@ -2771,6 +2813,10 @@ INLINE void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real asp
     extract_frustum_planes();
     gl_near = 0.05f;
     gl_far = 1000.0f;
+    /* The VBAO UBO carries the projection matrix and its four derived
+     * scalars; both have just changed, so request a re-upload on the next
+     * dispatch. */
+    gl_vbao_ubo_dirty = 1;
 }
 
 INLINE void render_set_fog(vec3 color, real start, real end) {
@@ -2801,6 +2847,9 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     gl_render_width = rw; gl_render_height = rh;
     gl_ao_width  = (gl_render_width  + 1) / 2;
     gl_ao_height = (gl_render_height + 1) / 2;
+    /* The half-res AO size is baked into both UBOs; force a re-upload. */
+    gl_vbao_ubo_dirty      = 1;
+    gl_vbao_blur_ubo_dirty = 1;
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
@@ -3027,20 +3076,24 @@ INLINE void render_finish(void) {
         if (current_program) C89GL_glUseProgram(0);
 
         /* ============================================================
-           Pass 3.5: VBAO (half-res)
-           Fragment-stage full-screen pass. Reads gl_depth_tex (opaque
-           depth from Pass 1) and gl_normal_tex (view normals from Pass
-           3), writes half-res gl_ao_tex.
+           Pass 3.5 + 3.6: VBAO and VBAO bilateral blur (half-res)
+           Both passes share the same disabled-depth / disabled-blend /
+           full-colour-mask / no-depth-write state. The two dispatches
+           each bind their own FBO, viewport, textures and program, and
+           the common state is restored once here afterwards.
            ============================================================ */
-        dispatch_vbao();
+        C89GL_glDisable(GL_DEPTH_TEST);
+        C89GL_glDisable(GL_BLEND);
+        C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        C89GL_glDepthMask(GL_FALSE);
 
-        /* ============================================================
-           Pass 3.6: VBAO bilateral blur (half-res)
-           Reads gl_ao_tex and gl_depth_tex, writes gl_ao_blurred_tex.
-           material.frag samples gl_ao_blurred_tex at unit 4 with
-           GL_LINEAR, which upsamples to full resolution for free.
-           ============================================================ */
+        dispatch_vbao();
         dispatch_vbao_blur();
+
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+        C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
+        C89GL_glEnable(GL_DEPTH_TEST);
+        C89GL_glBindVertexArray(gl_vao);
 
         /* Restore single-attachment draw buffer for downstream passes that
          * bind gl_fbo. The transmissive colour pass (Pass 7) and the
@@ -3074,7 +3127,7 @@ INLINE void render_finish(void) {
             C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
 
             C89GL_glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
-            C89GL_glDepthMask(GL_TRUE);
+            C89GL_glDepthMask(GL_FALSE);
             C89GL_glDepthFunc(GL_LESS);
             C89GL_glDisable(GL_BLEND);
 
