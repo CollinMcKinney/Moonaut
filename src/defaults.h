@@ -122,12 +122,11 @@ static void tag_register_default_all(void){
     /* Default particle emitter definitions. */
     tag_register_default("default_particle_emitter", TAG_particle_emitter, &DEFAULT_PARTICLE_EMITTER);
 
-    /* Default material definitions. */
+    /* Default dielectric material definitions. */
     tag_register_default("default_material_water",      TAG_material, &DEFAULT_MATERIAL_WATER);
     tag_register_default("default_material_grass",      TAG_material, &DEFAULT_MATERIAL_GRASS);
     tag_register_default("default_material_cloth",      TAG_material, &DEFAULT_MATERIAL_CLOTH);
     tag_register_default("default_material_wood",       TAG_material, &DEFAULT_MATERIAL_WOOD);
-    tag_register_default("default_material_metal",      TAG_material, &DEFAULT_MATERIAL_METAL);
     tag_register_default("default_material_glass",      TAG_material, &DEFAULT_MATERIAL_GLASS);
     tag_register_default("default_material_skin",       TAG_material, &DEFAULT_MATERIAL_SKIN);
     tag_register_default("default_material_rubber",     TAG_material, &DEFAULT_MATERIAL_RUBBER);
@@ -140,7 +139,6 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_plastic",    TAG_material, &DEFAULT_MATERIAL_PLASTIC);
     tag_register_default("default_material_brick",      TAG_material, &DEFAULT_MATERIAL_BRICK);
     tag_register_default("default_material_leather",    TAG_material, &DEFAULT_MATERIAL_LEATHER);
-    tag_register_default("default_material_gold",       TAG_material, &DEFAULT_MATERIAL_GOLD);
     tag_register_default("default_material_snow",       TAG_material, &DEFAULT_MATERIAL_SNOW);
     tag_register_default("default_material_dirt",       TAG_material, &DEFAULT_MATERIAL_DIRT);
     tag_register_default("default_material_neon",       TAG_material, &DEFAULT_MATERIAL_NEON);
@@ -154,9 +152,12 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_frost",      TAG_material, &DEFAULT_MATERIAL_FROST);
     tag_register_default("default_material_rust",       TAG_material, &DEFAULT_MATERIAL_RUST);
     tag_register_default("default_material_carbon",     TAG_material, &DEFAULT_MATERIAL_CARBON);
-    tag_register_default("default_material_chrome",     TAG_material, &DEFAULT_MATERIAL_CHROME);
     tag_register_default("default_material_emerald",    TAG_material, &DEFAULT_MATERIAL_EMERALD);
     tag_register_default("default_material_oilslick",   TAG_material, &DEFAULT_MATERIAL_OILSLICK);
+    
+    /* Default metallic material definitions. */
+    tag_register_default("default_material_gold",       TAG_material, &DEFAULT_MATERIAL_GOLD);
+    tag_register_default("default_material_chrome",     TAG_material, &DEFAULT_MATERIAL_CHROME);
     tag_register_default("default_material_silver",     TAG_material, &DEFAULT_MATERIAL_SILVER);
     tag_register_default("default_material_aluminum",   TAG_material, &DEFAULT_MATERIAL_ALUMINUM);
     tag_register_default("default_material_copper",     TAG_material, &DEFAULT_MATERIAL_COPPER);
@@ -167,6 +168,15 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_tungsten",   TAG_material, &DEFAULT_MATERIAL_TUNGSTEN);
     tag_register_default("default_material_brass",      TAG_material, &DEFAULT_MATERIAL_BRASS);
     tag_register_default("default_material_bronze",     TAG_material, &DEFAULT_MATERIAL_BRONZE);
+    tag_register_default("default_material_steel",      TAG_material, &DEFAULT_MATERIAL_STEEL);
+    tag_register_default("default_material_lead",       TAG_material, &DEFAULT_MATERIAL_LEAD);
+    tag_register_default("default_material_caesium",    TAG_material, &DEFAULT_MATERIAL_CAESIUM);
+    tag_register_default("default_material_germanium",  TAG_material, &DEFAULT_MATERIAL_GERMANIUM);
+    tag_register_default("default_material_silicon",    TAG_material, &DEFAULT_MATERIAL_SILICON);
+    tag_register_default("default_material_zinc",       TAG_material, &DEFAULT_MATERIAL_ZINC);
+    tag_register_default("default_material_rubidium",   TAG_material, &DEFAULT_MATERIAL_RUBIDIUM);
+    tag_register_default("default_material_mercury",    TAG_material, &DEFAULT_MATERIAL_MERCURY);
+
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);

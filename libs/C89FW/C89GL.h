@@ -125,6 +125,24 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_STENCIL_ATTACHMENT                       0x8D20
 #define GL_DEPTH_STENCIL_ATTACHMENT                 0x821A
 #define GL_DEPTH24_STENCIL8                         0x88F0
+
+/* ---- Default framebuffer attachment points ---- */
+#define GL_FRONT_LEFT                               0x0400
+#define GL_FRONT_RIGHT                              0x0401
+#define GL_BACK_LEFT                                0x0402
+#define GL_BACK_RIGHT                               0x0403
+
+/* ---- FBO attachment query enums ---- */
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE       0x8CD0
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME       0x8CD1
+#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL     0x8CD2
+#define GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING    0x8210
+
+/* ---- Color encoding values ---- */
+#define GL_SRGB                                     0x8C40
+#define GL_SRGB8                                    0x8C41
+#define GL_SRGB8_ALPHA8                             0x8C43
+
 #define GL_FRAMEBUFFER_COMPLETE                     0x8CD5
 #define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT        0x8CD6
 #define GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT 0x8CD7
@@ -426,6 +444,7 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glRenderbufferStorageMultisample)(unsign
 typedef void (C89GL_APIENTRY *C89GL_PFN_glFramebufferTexture2D)(unsigned int target, unsigned int attachment, unsigned int textarget, unsigned int texture, int level);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glFramebufferRenderbuffer)(unsigned int target, unsigned int attachment, unsigned int renderbuffertarget, unsigned int renderbuffer);
 typedef unsigned int (C89GL_APIENTRY *C89GL_PFN_glCheckFramebufferStatus)(unsigned int target);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glGetFramebufferAttachmentParameteriv)(unsigned int target, unsigned int attachment, unsigned int pname, int* params);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glBlitFramebuffer)(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, unsigned int mask, unsigned int filter);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDrawArrays)(unsigned int mode, int first, int count);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDrawElements)(unsigned int mode, int count, unsigned int type, const void* indices);
@@ -613,6 +632,7 @@ extern C89GL_PFN_glRenderbufferStorageMultisample C89GL_glRenderbufferStorageMul
 extern C89GL_PFN_glFramebufferTexture2D C89GL_glFramebufferTexture2D;
 extern C89GL_PFN_glFramebufferRenderbuffer C89GL_glFramebufferRenderbuffer;
 extern C89GL_PFN_glCheckFramebufferStatus C89GL_glCheckFramebufferStatus;
+extern C89GL_PFN_glGetFramebufferAttachmentParameteriv C89GL_glGetFramebufferAttachmentParameteriv;
 extern C89GL_PFN_glBlitFramebuffer C89GL_glBlitFramebuffer;
 extern C89GL_PFN_glDrawArrays C89GL_glDrawArrays;
 extern C89GL_PFN_glDrawElements C89GL_glDrawElements;
@@ -865,6 +885,7 @@ C89GL_PFN_glRenderbufferStorageMultisample C89GL_glRenderbufferStorageMultisampl
 C89GL_PFN_glFramebufferTexture2D C89GL_glFramebufferTexture2D = NULL;
 C89GL_PFN_glFramebufferRenderbuffer C89GL_glFramebufferRenderbuffer = NULL;
 C89GL_PFN_glCheckFramebufferStatus C89GL_glCheckFramebufferStatus = NULL;
+C89GL_PFN_glGetFramebufferAttachmentParameteriv C89GL_glGetFramebufferAttachmentParameteriv = NULL;
 C89GL_PFN_glBlitFramebuffer C89GL_glBlitFramebuffer = NULL;
 C89GL_PFN_glDrawArrays C89GL_glDrawArrays = NULL;
 C89GL_PFN_glDrawElements C89GL_glDrawElements = NULL;
@@ -1033,6 +1054,7 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glFramebufferTexture2D, "glFramebufferTexture2D");
     C89GL_LOAD_FUNC(C89GL_glFramebufferRenderbuffer, "glFramebufferRenderbuffer");
     C89GL_LOAD_FUNC(C89GL_glCheckFramebufferStatus, "glCheckFramebufferStatus");
+    C89GL_LOAD_FUNC(C89GL_glGetFramebufferAttachmentParameteriv, "glGetFramebufferAttachmentParameteriv");
     C89GL_LOAD_FUNC(C89GL_glBlitFramebuffer, "glBlitFramebuffer");
     C89GL_LOAD_FUNC(C89GL_glDrawArrays, "glDrawArrays");
     C89GL_LOAD_FUNC(C89GL_glDrawElements, "glDrawElements");

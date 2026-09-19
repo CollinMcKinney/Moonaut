@@ -343,9 +343,10 @@ typedef struct {
     float uMatAnisotropic;
     float _pa6[2];
     float uMatTransmissionTint[3];  float _pad7;
-    float uMatF82Tint[3];          float _pad8;
+    float uMatF82Tint[3];           float _pad8;
+    float uMatSubsurfaceColor[3];   float _pad9;
 } material_ubo_t;
-STATIC_ASSERT(sizeof(material_ubo_t) == 336, material_ubo_t__size__wrong);
+STATIC_ASSERT(sizeof(material_ubo_t) == 352, material_ubo_t__size__wrong);
 
 #define MAX_MODEL_MATRICES 1024
 
@@ -1189,6 +1190,9 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatF82Tint[0] = mat->f82_tint.color.r;
     ubo.uMatF82Tint[1] = mat->f82_tint.color.g;
     ubo.uMatF82Tint[2] = mat->f82_tint.color.b;
+    ubo.uMatSubsurfaceColor[0] = mat->subsurface_color.color.r;
+    ubo.uMatSubsurfaceColor[1] = mat->subsurface_color.color.g;
+    ubo.uMatSubsurfaceColor[2] = mat->subsurface_color.color.b;
 
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_material_ubo);
     C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(material_ubo_t), &ubo);
@@ -2474,6 +2478,22 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     printf("OpenGL version: %s\n", C89GL_glGetString(GL_VERSION));
     printf("OpenGL vendor: %s\n", C89GL_glGetString(GL_VENDOR));
     printf("OpenGL renderer: %s\n", C89GL_glGetString(GL_RENDERER));
+
+    GLint back_encoding = 0;
+    GLint front_encoding = 0;
+    GLint fb_binding = -1;
+    C89GL_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb_binding);
+    C89GL_glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_BACK_LEFT,
+        GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &back_encoding);
+    C89GL_glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_FRONT_LEFT,
+        GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &front_encoding);
+    printf("default FBO binding at init: %d\n", fb_binding);
+    printf("default FBO BACK_LEFT encoding: %s\n",
+           (back_encoding == GL_SRGB) ? "GL_SRGB" : "GL_LINEAR");
+    printf("default FBO FRONT_LEFT encoding: %s\n",
+           (front_encoding == GL_SRGB) ? "GL_SRGB" : "GL_LINEAR");
 
     C89GL_glGenVertexArrays(1, &gl_vao);
     C89GL_glBindVertexArray(gl_vao);

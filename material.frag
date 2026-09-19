@@ -17,96 +17,59 @@
 //      Specular AA uses half-vector slope-space NDF filtering.
 //   4. Loop over the lights in the fragment's cluster.
 //        For each light:
-//          a. Evaluate diffuse (EON or VMF, selected by EFFECT_VMF_DIFFUSE),
-//             specular, transmission, clearcoat, sheen, back glow, and rim.
+//          a. Evaluate diffuse (EON), specular, transmission, clearcoat,
+//             sheen, back glow, and rim.
 //          b. Attenuate the base by the layers above it (energy conservation).
 //             Clearcoat uses OpenPBR darkening; sheen uses Kulla-Conty
 //             multiscatter compensation with an analytic Charlie albedo fit.
 //          c. Accumulate.
 //   5. Add ambient lighting via sample_env_map(), a placeholder environment
-//      probe. The function returns a procedural sky/ground gradient with a
-//      checker overlay so that reflective surfaces have spatial content to
-//      reflect — a perfectly uniform environment makes every reflective
-//      surface look identical to a diffuse one, because the outgoing
-//      radiance carries no directional information. Every ambient lobe
-//      reads from it with the shape it has in a real split-sum IBL:
-//
-//        diffuse      : irradiance × albedo × (1 - F_avg)
-//        specular     : radiance × (F0 * A + B) × specularTint × specOcc
-//        clearcoat    : radiance × clearcoatColor × F_cc × ccStrength × specOcc
-//        sheen        : irradiance × sheenColor × E_sheen(NdotV) × strength
-//        transmission : refracted_radiance × transmissionTint × kT × strength
-//
-//      Hemispherical lobes (diffuse, sheen) sample along the GEOMETRIC
-//      normal, not the perturbed one. The irradiance arriving at a surface
-//      is the integral of the incoming radiance over the hemisphere above
-//      the surface; the hemisphere is defined by the surface's geometry,
-//      not by its micro-facets. Using the perturbed normal couples the
-//      ambient to the bump pattern and produces bright/dark patches on
-//      any material with bump noise. The directional lobes (specular,
-//      clearcoat, transmission) reflect along a single direction and DO
-//      use the perturbed normal — that's where the micro-facets belong.
-//
-//      Anisotropic materials use a bent normal for the ambient reflection
-//      vector. The direct specular lobe stretches along the material's
-//      tangent direction (positive anisotropy) or bitangent (negative);
-//      the ambient reflection is sheared in the same direction so that
-//      the reflection and the highlight agree. See the block after the
-//      reflection-vector computation in shade_surface().
-//
-//      Diffuse energy conservation uses the hemispherical average Fresnel
-//      F_avg, NOT the view-dependent F_env: the diffuse lobe gathers
-//      incident radiance from every direction, so the fraction of energy
-//      reaching it is the average over the hemisphere.
-//
-//      Specular ambient uses the split-sum formulation of Karis 2013:
-//
-//          specular_ambient = env * (F0 * A(roughness, NdotV)
-//                                  +     B(roughness, NdotV))
-//
-//      where A and B are the analytic BRDF LUT fit. This is exact at
-//      roughness 0 (A = 1, B = 0) and roughness 1 (A → 0, B → F_avg), and
-//      within a couple of percent across the whole domain. It is the
-//      standard formula for IBL specular in every production renderer and
-//      it survives the substitution of the placeholder with a real
-//      prefiltered cubemap unchanged.
-//
-//      When a real cubemap is bound, sample_env_map() becomes a single
-//      textureLod(uEnvMap, dir, roughness * uEnvMaxLod) call and every
-//      call site stays the same.
-//
-//      Metallic materials use an authorable F82 grazing Fresnel tint.
-//      The tint convention (Disney/OpenPBR-style multiplier) is used
-//      rather than the Adobe reflectance convention: white (1,1,1) is a
-//      no-op that collapses the curve to plain Schlick, and darker values
-//      pull the grazing response toward zero. Every material defaults to
-//      white, so the tint is opt-in — only metals that want a different
-//      grazing response than Schlick need to author it.
+//      probe.
 //   6. If EFFECT_TRANSMISSION is defined, sample the pre-transmissive colour
-//      buffer along the refracted ray, apply the material's transmission
-//      tint, and blend by Fresnel. This gives the glass/water/ice/etc.
-//      surface its refracted background.
-//   7. Apply VBAO to every ambient lobe except transmission. VBAO encodes
-//      visibility of the hemisphere above the surface; the transmitted
-//      environment comes from the opposite hemisphere, which VBAO does not
-//      measure. Direct lighting is NOT multiplied by AO either — AO is a
-//      visibility approximation for the ambient term, not a shadow.
-//      Darkening direct light by AO turns matte materials with zero specular
-//      tint pure black.
+//      buffer along the refracted ray.
+//   7. Apply VBAO to every ambient lobe except transmission.
 //   8. Add emissive, strobe, tint, fog.
-//   9. Tone map (Halo 3 style luminance-only filmic curve, hue-preserving).
-//  10. Apply LDR post effects.
+//   9. Apply HDR post effects (iridescence, fringe).
+//  10. Tone map (luminance-only filmic curve, hue-preserving).
+//  11. Apply LDR post effects (glitch, saturation, posterize).
+//  12. Apply the color grade.
+//  13. Encode to sRGB for display.
 //
-// Output paths:
-//   - Opaque and transmissive variants write a single FragColor plus the
-//     view-space geometric normal for VBAO (target 1).
-//   - Alpha variants compile with WBOIT_PASS and emit to a pair of
-//     (accumulation, revealage) targets instead. The C side resolves them
-//     with a full-screen composite between the two alpha passes.
+// =============================================================================
+// PHYSICAL ACCURACY NOTES
+// =============================================================================
 //
-// Subsurface scattering uses a Burley-inspired local diffusion
-// approximation (exponential sum) instead of the previous wrap-light
-// heuristic.
+// The following invariants are maintained to keep the shading model
+// energy-conserving:
+//
+//   * F_Schlick_F82 output is clamped to [0, 1]. The F82-tint parameter is a
+//     ratio applied to the Schlick edge value at mu = 1/7, not a reflectance.
+//     For some materials the ratio exceeds 1, which makes the evaluated
+//     Fresnel exceed unity at certain angles. A reflectance cannot exceed 1,
+//     so the clamp is required. The same clamp appears in the OpenPBR
+//     specification, equation 66.
+//
+//   * compute_fresnel_avg is clamped to [0, 1] for the same reason.
+//
+//   * Fresnel shadowing is applied to the Fresnel term itself, before the
+//     microfacet BRDF is evaluated. On rough surfaces at grazing angles,
+//     microfacets self-occlude more, reducing the effective reflectance
+//     below the ideal Schlick estimate. Formula from Lagarde & de Rousiers
+//     2014, "Moving Frostbite to PBR", section 4.3.
+//
+//   * The subsurface lobe uses per-channel albedo modulation rather than
+//     mixing two BRDFs. A weighted sum of two BRDFs with different albedos
+//     does not preserve the material's total energy; per-channel modulation
+//     does. This is documented at subsurface_chromatic_modulation.
+//
+//   * Transmission attenuation of the diffuse lobe is derived from F_avg,
+//     the hemispherical average Fresnel. The diffuse lobe integrates over
+//     the hemisphere, so the fraction of energy reaching it is the
+//     hemispherical average transmittance, not the view-angle transmittance.
+//
+//   * Sheen attenuation of the base layer is a function of view angle only.
+//     Sheen is a top layer; its transmittance to the layers below depends
+//     on the view direction, not on any particular light direction.
 //
 // =============================================================================
 
@@ -121,27 +84,8 @@ void main() { }
 
 const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
 
-// Lower bound on the perceptual roughness used by D_GGX, V_Smith, and the
-// split-sum fit. The bound exists for three reasons:
-//
-//   1. Numerical: at roughness r, D_GGX divides by alpha2 = r^4 at NdotH=1.
-//      Anything above ~1e-6 stays well within float range.
-//   2. Specular AA: the filter in specular_aa_roughness has a 1e-6 epsilon
-//      in its denominator. Below r ~ 1e-3 the epsilon dominates and the
-//      filter stops correcting aliasing.
-//   3. Sub-pixel aliasing: a highlight narrower than a pixel aliases no
-//      matter how good the filter is. At r = 0.01 the lobe is roughly 2e-4
-//      radians wide, about half a pixel at 1080p 60° FOV.
-//
-// 0.01 sits above all three floors: it lets polished metals (chrome authored
-// at 0.03) through unclamped, keeps the AA filter effective, and is stable
-// on curved surfaces. Flat, perfectly-mirror surfaces at exactly 0.01 will
-// have a pixel-wide highlight — sharp but not unstable. If you need to go
-// lower, 0.002 is the hard practical floor before the AA epsilon starts
-// interfering.
 #define MIN_PERCEPTUAL_ROUGHNESS 0.01
 
-// EON Oren-Nayar model constants.
 const float EON_CONST1 = 0.5 - 2.0 / (3.0 * PI);
 const float EON_CONST2 = 2.0 / 3.0 - 28.0 / (15.0 * PI);
 
@@ -158,9 +102,6 @@ in vec3 vLocalPos;
 in vec3 vTangent;
 in vec3 vBitangent;
 
-// Linear eye-space depth, positive in front of the camera. Equals -view_z,
-// interpolated exactly by the rasterizer from gl_Position.w. Used only by
-// the WBOIT weight function.
 in float vEyeDepth;
 
 uniform vec3  uAmbientCol;
@@ -171,25 +112,8 @@ uniform float uFogStart;
 uniform float uFogEnd;
 uniform vec2  uScreenSize;
 
-// View matrix. Used to transform the geometric world-space normal into
-// view space for the VBAO normal buffer output.
 uniform mat4  uView;
 
-// --- Refraction inputs -------------------------------------------------------
-// uRefractionSrc          : copy of the opaque + behind-alpha colour buffer,
-//                           made just before the transmissive colour pass.
-// uTransmissiveDepthTex   : frontmost transmissive gl_FragCoord.z, or 1.0
-//                           where no transmissive surface is present.
-// uAOTex                  : VBAO output, single channel, sampled on the
-//                           ambient terms of the non-WBOIT variants.
-// uAlphaPass              : 0 for ALPHA_PASS_BEHIND, 1 for ALPHA_PASS_FRONT.
-//                           Informational; the compile-time defines select
-//                           the behaviour. Kept for future runtime branches.
-// uRefractionScale        : scalar applied to R.xy before the UV offset.
-//
-// These samplers are declared with layout(binding = N), so they have no
-// addressable uniform location. The C side binds them to their fixed units
-// (2, 3, 4) unconditionally in set_uniforms_for_variant.
 layout(binding = 2) uniform sampler2D uRefractionSrc;
 
 #ifdef ALPHA_PASS_BEHIND
@@ -249,6 +173,7 @@ layout(std140) uniform MaterialUniforms {
     float uMatAnisotropic;
     vec3  uMatTransmissionTint;
     vec3  uMatF82Tint;
+    vec3  uMatSubsurfaceColor;
 };
 
 // =============================================================================
@@ -283,29 +208,7 @@ float saturate(float x) { return clamp(x, 0.0, 1.0); }
 // =============================================================================
 // Environment map sampling
 // =============================================================================
-//
-// Placeholder environment probe. Returns a procedural sky/ground gradient
-// with a checker overlay so that reflective surfaces have spatial content
-// to reflect. A perfectly uniform environment makes every reflective
-// surface look identical to a diffuse one — the outgoing radiance carries
-// no directional information, so a chrome sphere and a matte grey sphere
-// produce the same pixel values. The checker gives the eye something to
-// track as the camera moves.
-//
-// When a real cubemap is bound, this function becomes:
-//
-//     return textureLod(uEnvMap, dir, roughness * uEnvMaxLod).rgb;
-//
-// and every call site stays the same. `dir` is the reflection vector for
-// specular lobes and the geometric normal for hemispherical lobes;
-// `roughness` selects the mip level that approximates the lobe's
-// footprint.
 vec3 sample_env_map(vec3 dir, float roughness) {
-    // Sky above, ground below. As roughness rises the horizon blurs — the
-    // same thing a prefiltered cubemap's lower mips do. At roughness 0
-    // the transition is sharp; at roughness 1 the environment reads as
-    // its average (heavily blurred hemisphere). Without this, rough
-    // metals show a hard horizon line, which is physically wrong.
     float horizon_blur = saturate(roughness * 1.5);
     float horizon_lo   = mix(-0.25, -0.95, horizon_blur);
     float horizon_hi   = mix( 0.25,  0.95, horizon_blur);
@@ -314,14 +217,6 @@ vec3 sample_env_map(vec3 dir, float roughness) {
     vec3  ground       = uAmbientCol * 0.22;
     vec3  base         = mix(ground, sky, sky_t);
 
-    // 3D checker in direction space. Unlike a per-face projection, this
-    // is continuous across cube edges — no visible seams where the
-    // dominant axis changes. Each cell is a cube in direction space,
-    // appearing as a roughly square patch on the unit sphere.
-    //
-    // CHECKER_CELLS controls the density. 4 gives roughly 4 cells per
-    // 90-degree arc, which is coarse enough to see clearly without
-    // looking like a debug grid.
     const float CHECKER_CELLS = 4.0;
     const mat3 CHECKER_ROT = mat3(
         0.8165, -0.4082,  0.4082,
@@ -332,20 +227,11 @@ vec3 sample_env_map(vec3 dir, float roughness) {
     vec3 grid = floor(gdir * CHECKER_CELLS);
     float check = mod(grid.x + grid.y + grid.z, 2.0);
 
-    // Softer contrast than the previous 0.65 / 1.25. Values closer to
-    // 1.0 read as "content in the sky" rather than as a debug pattern.
     float check_mul = mix(0.75, 1.15, check);
     vec3  env       = base * check_mul;
 
-    // Fade the checker to the base gradient as roughness rises. On a
-    // real prefiltered cubemap this is the mip chain's blur; here we
-    // approximate it by pulling the pattern toward its average.
     env = mix(env, base, saturate(roughness * 2.0));
 
-    // Fade the checker where its screen footprint drops below a pixel.
-    // Uses fwidth of the direction vector as a proxy for how fast the
-    // reflection direction changes per pixel. When a cell's screen size
-    // approaches a pixel, collapse to the flat sky/ground value.
     vec3  dir_fw = fwidth(dir);
     float cell_footprint = CHECKER_CELLS
                          * (abs(dir_fw.x) + abs(dir_fw.y) + abs(dir_fw.z));
@@ -449,7 +335,7 @@ vec3 perturb_normal_noise(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 V = normalize(uCamEye - worldPos);
     float NdotV = max(dot(N, V), 0.0);
     float grazing = 1.0 - NdotV;
-    strength *= (0.5 + 0.5 * (1.0 - grazing));
+    strength *= (0.5 + 0.5 * grazing);
     strength *= fadeSmooth;
 
     vec3 perturb = tangent * grad_u * strength + bitangent * grad_v * strength;
@@ -503,8 +389,6 @@ float specular_aa_roughness_halfvec(vec3 N, vec3 V, vec3 L,
     return sqrt(min(filtered2, 1.0));
 }
 
-// Legacy normal-variance filter, retained as a fallback for call sites that
-// don't have L available (e.g. ambient).
 float specular_aa_roughness(vec3 N, float perceptualRoughness) {
     vec3 dndx = dFdx(N);
     vec3 dndy = dFdy(N);
@@ -630,20 +514,16 @@ vec3 F_Schlick(vec3 F0, float cosTheta) {
     return F0 + (1.0 - F0) * pow(saturate(1.0 - cosTheta), 5.0);
 }
 
-// F82-tinted Schlick.
+// -----------------------------------------------------------------------------
+// F82-tinted Schlick, output clamped to [0, 1].
 //
-// The grazing-angle response is scaled by an authorable per-material tint.
-// This uses the *tint-multiplier* convention (Disney Principled, Unity,
-// Unreal, OpenPBR): the tint is a multiplier on the F82 edge value, so
-// white (1,1,1) leaves the curve as plain Schlick and darker values pull
-// the grazing response toward zero. Every material defaults to white, so
-// the tint is opt-in.
-//
-// This is NOT the Adobe F82-tint model from Kutz et al. 2021, where the
-// second input is the actual reflectance at μ_hat = 1/7. The two produce
-// similar visual results on realistic metals, but the tint convention is
-// the correct default for a system with existing materials because white
-// is a bit-exact no-op that doesn't require re-authoring anything.
+// The F82-tint parameter is a ratio applied to the Schlick edge value at
+// mu = 1/7, not a reflectance. For some materials the ratio exceeds 1,
+// which makes the evaluated Fresnel exceed unity at certain angles. A
+// reflectance cannot exceed 1 (that would reflect more energy than is
+// incident), so the clamp is required. The same clamp appears in the
+// OpenPBR specification, equation 66.
+// -----------------------------------------------------------------------------
 vec3 F_Schlick_F82(vec3 F0, vec3 F82, float cosTheta) {
     float mu = saturate(cosTheta);
     const float MU_HAT    = 1.0 / 7.0;
@@ -652,14 +532,19 @@ vec3 F_Schlick_F82(vec3 F0, vec3 F82, float cosTheta) {
     float denom = MU_HAT * pow(ONE_MINUS, 6.0);
     vec3 b = F_schlick_edge * (1.0 - F82) / denom;
     vec3 F_schlick = F_Schlick(F0, mu);
-    return F_schlick - b * mu * pow(1.0 - mu, 6.0);
+    vec3 F = F_schlick - b * mu * pow(1.0 - mu, 6.0);
+    return clamp(F, vec3(0.0), vec3(1.0));
 }
 
-// Hemispherical average of the F82-tinted Fresnel. The tint correction is
-// gated by `metallic` because non-metals use plain Schlick in the direct
-// lobe, so the tint has no effect on their energy budget. With F82 = 1
-// the correction term vanishes and this reduces exactly to the Schlick
-// average.
+// -----------------------------------------------------------------------------
+// Hemispherical average of the F82-tinted Fresnel, clamped to [0, 1].
+//
+// The correction term is gated by `metallic` because non-metals use plain
+// Schlick in the direct lobe, so the tint has no effect on their energy
+// budget. With F82 = 1 the correction vanishes and this reduces exactly to
+// the Schlick average. The final clamp guarantees energy conservation for
+// authorable tints whose F82 exceeds the conversion's no-op value.
+// -----------------------------------------------------------------------------
 vec3 compute_fresnel_avg(vec3 F0, vec3 F82, float metallic) {
     vec3 F_avg_schlick = F0 + (1.0 - F0) / 21.0;
     const float MU_HAT    = 1.0 / 7.0;
@@ -667,7 +552,8 @@ vec3 compute_fresnel_avg(vec3 F0, vec3 F82, float metallic) {
     vec3 F_schlick_edge = F_Schlick(F0, MU_HAT);
     float denom = MU_HAT * pow(ONE_MINUS, 6.0);
     vec3 b_metal = F_schlick_edge * (1.0 - F82) / denom;
-    return F_avg_schlick - metallic * b_metal / 126.0;
+    vec3 F_avg = F_avg_schlick - metallic * b_metal / 126.0;
+    return clamp(F_avg, vec3(0.0), vec3(1.0));
 }
 
 // =============================================================================
@@ -682,24 +568,6 @@ float E_ss_GGX(float NdotV, float perceptualRoughness) {
     return AB.x + AB.y;
 }
 
-// Analytic approximation of the split-sum BRDF LUT (Karis 2013). Returns
-// (A, B) such that, for a given environment radiance E:
-//
-//     specular_ambient = E * (F0 * A + B)
-//
-// A scales the material's F0 (the mirror response); B is the constant bias
-// that keeps rough surfaces from going black. This is the same fit that
-// E_ss_GGX uses internally — E_ss_GGX returns A + B, the total directional
-// albedo evaluated at F0 = 1. It is exact at roughness 0 (A = 1, B = 0) and
-// roughness 1 (A → 0, B → F_avg), and within a couple of percent across the
-// whole domain, which is why it is the standard IBL specular approximation
-// in production renderers.
-//
-// The fit is derived against the Schlick Fresnel, not the F82-tinted form.
-// For materials with a non-white F82 tint this introduces a small mismatch
-// between the direct and ambient specular lobes at grazing angles on rough
-// surfaces — on the order of a few percent, well below the tone-mapped
-// noise floor. This is the same trade-off every production renderer makes.
 vec2 env_brdf_approx(float NdotV, float perceptualRoughness) {
     const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
     const vec4 c1 = vec4( 1.0,  0.0425,  1.040, -0.040);
@@ -708,23 +576,6 @@ vec2 env_brdf_approx(float NdotV, float perceptualRoughness) {
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
 
-// Multiple-scattering microfacet energy compensation.
-//
-// Fdez-Agüera 2018, "A Multiple-Scattering Microfacet Model for Real-Time
-// Image Based Lighting". The numerator is the Turquin-corrected single-
-// scatter energy factor; the denominator removes the energy that the
-// numerator would otherwise double-count at high roughness, by normalising
-// against the directional albedo of the correction itself rather than
-// against unity.
-//
-// Both F0 (the mirror-direction Fresnel) and F_avg (the hemispherical
-// average) are needed: F0 weights the specular lobe, F_avg is what the
-// multi-scattered light actually sees on average after bouncing around the
-// micro-surface.
-//
-// At low roughness E_ss → 1, inv → 0, and the expression collapses to 1.0,
-// identical to single-scattering. At high roughness the correction can
-// differ from the simpler Turquin form by up to 15% on very rough metals.
 vec3 specular_multiscatter_comp(vec3 fss, vec3 F0, vec3 F_avg,
                                 float roughness, float NdotV) {
     float E_ss = E_ss_GGX(NdotV, roughness);
@@ -770,10 +621,8 @@ vec3 specular_microfacet_aniso(vec3 V, vec3 L, vec3 H,
 }
 
 // =============================================================================
-// Diffuse lobes — EON and VMF, selectable at the call site
+// Diffuse lobe — EON Oren-Nayar
 // =============================================================================
-
-// ---- EON Oren-Nayar --------------------------------------------------------
 float E_FON_approx(float mu, float r) {
     float mucomp  = 1.0 - mu;
     float mucomp2 = mucomp * mucomp;
@@ -816,178 +665,39 @@ vec3 diffuse_eon_oren_nayar(vec3 N, vec3 V, vec3 L, vec3 baseColor, float roughn
     return f_ss + f_ms;
 }
 
-// ---- VMF von Mises-Fisher --------------------------------------------------
-float Coth(float x) { return (exp(-x) + exp(x)) / (-exp(-x) + exp(x)); }
-float Sinh(float x) { return -0.5 * 1.0 / exp(x) + exp(x) / 2.0; }
-
-float erf_approx(float x) {
-    float sgn = sign(x);
-    float ax  = abs(x);
-    float t   = 1.0 / (1.0 + 0.3275911 * ax);
-    float y   = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
-                      - 0.284496736) * t + 0.254829592) * t * exp(-ax * ax);
-    return sgn * y;
-}
-
-float sigmaBeckmannExpanded(float u, float m) {
-    if (0.0 == m) return (u + abs(u)) / 2.0;
-    float m2 = m * m;
-    if (1.0 == u) return 1.0 - 0.5 * m2;
-    float expansionTerm = -0.25 * m2 * (u + abs(u));
-    float u2 = u * u;
-    return ((exp(u2 / (m2 * (-1.0 + u2))) * m * sqrt(1.0 - u2)) / sqrt(PI)
-            + u * (1.0 + erf_approx(u / (m * sqrt(1.0 - u2))))) / 2.0
-           + expansionTerm;
-}
-
-float sigmaVMF(float u, float m) {
-    if (m < 0.25) return sigmaBeckmannExpanded(u, m);
-    float m2 = m * m;
-    float m4 = m2 * m2;
-    float m8 = m4 * m4;
-    float u2 = u * u;
-    float u4 = u2 * u2;
-    float u6 = u2 * u4;
-    float u8 = u4 * u4;
-    float u10 = u6 * u4;
-    float u12 = u6 * u6;
-    float coth2m2 = Coth(2.0 / m2);
-    float sinh2m2 = Sinh(2.0 / m2);
-    if (m > 0.9)
-        return 0.25 - 0.25 * u * (m2 - 2.0 * coth2m2)
-             + 0.0390625 * (-1.0 + 3.0 * u2)
-               * (4.0 + 3.0 * m4 - 6.0 * m2 * coth2m2);
-    return 0.25 - 0.25 * u * (m2 - 2.0 * coth2m2)
-         + 0.0390625 * (-1.0 + 3.0 * u2)
-           * (4.0 + 3.0 * m4 - 6.0 * m2 * coth2m2)
-         - 0.000732421875 * (3.0 - 30.0 * u2 + 35.0 * u4)
-           * (16.0 + 180.0 * m4 + 105.0 * m8
-              - 10.0 * m2 * (8.0 + 21.0 * m4) * coth2m2)
-         + 0.000049591064453125 * (-5.0 + 105.0 * u2 - 315.0 * u4 + 231.0 * u6)
-           * (64.0 + 105.0 * m4 * (32.0 + 180.0 * m4 + 99.0 * m8)
-              - 42.0 * m2 * (16.0 + 240.0 * m4 + 495.0 * m8) * coth2m2)
-         + (1.0132789611816406e-6 * (35.0 - 1260.0 * u2 + 6930.0 * u4
-              - 12012.0 * u6 + 6435.0 * u8) * (1.0 + coth2m2)
-            * (-256.0 - 315.0 * m4 * (128.0 + 33.0 * m4
-                 * (80.0 + 364.0 * m4 + 195.0 * m8))
-               + 18.0 * m2 * (256.0 + 385.0 * m4
-                 * (32.0 + 312.0 * m4 + 585.0 * m8)) * coth2m2)
-            * sinh2m2) / exp(2.0 / m2)
-         - (9.12696123123169e-8 * (-63.0 + 3465.0 * u2 - 30030.0 * u4
-              + 90090.0 * u6 - 109395.0 * u8 + 46189.0 * u10)
-            * (1.0 + coth2m2)
-            * (-1024.0 - 495.0 * m4 * (768.0 + 91.0 * m4
-                 * (448.0 + 15.0 * m4 * (448.0 + 1836.0 * m4 + 969.0 * m8)))
-               + 110.0 * m2 * (256.0 + 117.0 * m4
-                 * (256.0 + 21.0 * m4
-                    * (336.0 + 85.0 * m4 * (32.0 + 57.0 * m4)))) * coth2m2)
-            * sinh2m2) / exp(2.0 / m2)
-         + (4.3655745685100555e-9 * (231.0 - 18018.0 * u2 + 225225.0 * u4
-              - 1.02102e6 * u6 + 2.078505e6 * u8
-              - 1.939938e6 * u10 + 676039.0 * u12)
-            * (1.0 + coth2m2)
-            * (-4096.0 - 3003.0 * m4 * (1024.0 + 45.0 * m4
-                 * (2560.0 + 51.0 * m4
-                    * (1792.0 + 285.0 * m4
-                       * (80.0 + 308.0 * m4 + 161.0 * m8))))
-               + 78.0 * m2 * (2048.0 + 385.0 * m4
-                 * (1280.0 + 153.0 * m4
-                    * (512.0 + 57.0 * m4
-                       * (192.0 + 35.0 * m4 * (40.0 + 69.0 * m4)))))
-               * coth2m2)
-            * sinh2m2) / exp(2.0 / m2);
-}
-
-vec3 Erf(vec3 c) {
-    return vec3(erf_approx(c.x), erf_approx(c.y), erf_approx(c.z));
-}
-
-vec3 nonNegative(vec3 c) { return vec3(max(0.0, c.x), max(0.0, c.y), max(0.0, c.z)); }
-
-vec3 fm(float ui, float uo, float r, vec3 c) {
-    vec3 C = sqrt(1.0 - c);
-    vec3 Ck = (1.0 - 0.5441615108674713 * C
-                   - 0.45302863761693374 * (1.0 - c))
-            / (1.0 + 1.4293127703064865 * C);
-    vec3 Ca = c / pow(1.0075 + 1.16942 * C,
-                      atan((0.0225272 + (-0.264641 + r) * r) * Erf(C)));
-    return nonNegative(0.384016 * (-0.341969 + Ca) * Ca * Ck
-                       * (-0.0578978 / (0.287663 + ui * uo)
-                          + abs(-0.0898863 + tanh(r))));
-}
-
-vec3 vMFdiffuseBRDF(float ui, float uo, float phi, float r, vec3 c) {
-    if (0.0 == r) return c / PI;
-    float m = -log(1.0 - sqrt(r));
-    float sigmai = sigmaVMF(ui, m);
-    float sigmao = sigmaVMF(uo, m);
-    float sigmano = sigmaVMF(-uo, m);
-    float sigio = sigmai * sigmao;
-    float sigdenom = uo * sigmai + ui * sigmano;
-    float r2 = r * r;
-    float r25 = r2 * sqrt(r);
-    float r3 = r * r2;
-    float r4 = r2 * r2;
-    float r45 = r4 * sqrt(r);
-    float r5 = r3 * r2;
-    float ui2 = ui * ui;
-    float uo2 = uo * uo;
-    float sqrtuiuo = sqrt((1.0 - ui2) * (1.0 - uo2));
-    float C100 = 1.0 + (-0.1 * r + 0.84 * r4) / (1.0 + 9.0 * r3);
-    float C101 = (0.0173 * r + 20.4 * r2 - 9.47 * r3) / (1.0 + 7.46 * r);
-    float C102 = (-0.927 * r + 2.37 * r2) / (1.24 + r2);
-    float C103 = (-0.11 * r - 1.54 * r2) / (1.0 - 1.05 * r + 7.1 * r2);
-    float f10 = ((C100 + C101 * ui * uo + C102 * ui2 * uo2
-                  + C103 * (ui2 + uo2)) * sigio) / sigdenom;
-    float C110 = (0.54 * r - 0.182 * r3) / (1.0 + 1.32 * r2);
-    float C111 = (-0.097 * r + 0.62 * r2 - 0.375 * r3) / (1.0 + 0.4 * r3);
-    float C112 = 0.283 + 0.862 * r - 0.681 * r2;
-    float f11 = (sqrtuiuo * (C110 + C111 * ui * uo))
-              * pow(sigio, C112) / sigdenom;
-    float C120 = (2.25 * r + 5.1 * r2) / (1.0 + 9.8 * r + 32.4 * r2);
-    float C121 = (-4.32 * r + 6.0 * r3) / (1.0 + 9.7 * r + 287.0 * r3);
-    float f12 = ((1.0 - ui2) * (1.0 - uo2) * (C120 + C121 * uo)
-                 * (C120 + C121 * ui)) / (ui + uo);
-    float C200 = (0.00056 * r + 0.226 * r2) / (1.0 + 7.07 * r2);
-    float C201 = (-0.268 * r + 4.57 * r2 - 12.04 * r3) / (1.0 + 36.7 * r3);
-    float C202 = (0.418 * r + 2.52 * r2 - 0.97 * r3) / (1.0 + 10.0 * r2);
-    float C203 = (0.068 * r - 2.25 * r2 + 2.65 * r3) / (1.0 + 21.4 * r3);
-    float C204 = (0.05 * r - 4.22 * r3) / (1.0 + 17.6 * r2 + 43.1 * r3);
-    float f20 = (C200 + C201 * ui * uo + C203 * ui2 * uo2
-                 + C202 * (ui + uo) + C204 * (ui2 + uo2)) / (ui + uo);
-    float C210 = (-0.049 * r - 0.027 * r3) / (1.0 + 3.36 * r2);
-    float C211 = (2.77 * r2 - 8.332 * r25 + 6.073 * r3) / (1.0 + 50.0 * r4);
-    float C212 = (-0.431 * r2 - 0.295 * r3) / (1.0 + 23.9 * r3);
-    float f21 = (sqrtuiuo * (C210 + C211 * ui * uo
-                             + C212 * (ui + uo))) / (ui + uo);
-    float C300 = (-0.083 * r3 + 0.262 * r4) / (1.0 - 1.9 * r2 + 38.6 * r4);
-    float C301 = (-0.627 * r2 + 4.95 * r25 - 2.44 * r3) / (1.0 + 31.5 * r4);
-    float C302 = (0.33 * r2 + 0.31 * r25 + 1.4 * r3) / (1.0 + 20.0 * r3);
-    float C303 = (-0.74 * r2 + 1.77 * r25 - 4.06 * r3) / (1.0 + 215.0 * r5);
-    float C304 = (-1.026 * r3) / (1.0 + 5.81 * r2 + 13.2 * r3);
-    float f30 = (C300 + C301 * ui * uo + C303 * ui2 * uo2
-                 + C302 * (ui + uo) + C304 * (ui2 + uo2)) / (ui + uo);
-    float C310 = (0.028 * r2 - 0.0132 * r3) / (1.0 + 7.46 * r2 - 3.315 * r4);
-    float C311 = (-0.134 * r2 + 0.162 * r25 + 0.302 * r3) / (1.0 + 57.5 * r45);
-    float C312 = (-0.119 * r2 + 0.5 * r25 - 0.207 * r3) / (1.0 + 18.7 * r3);
-    float f31 = (sqrtuiuo * (C310 + C311 * ui * uo
-                             + C312 * (ui + uo))) / (ui + uo);
-    return (1.0 / PI) * (c * max(0.0, f10 + f11 * cos(phi) * 2.0
-                                 + f12 * cos(2.0 * phi) * 2.0)
-                         + c * c * max(0.0, f20 + f21 * cos(phi) * 2.0)
-                         + c * c * c * max(0.0, f30 + f31 * cos(phi) * 2.0))
-           + fm(ui, uo, r, c);
-}
-
 // =============================================================================
-// Subsurface scattering — Burley-inspired local diffusion
+// Subsurface scattering — chromatic albedo modulation
 // =============================================================================
-float subsurface_burley(float NdotL_raw, float NdotV, float strength) {
-    float d = 1.0 / max(strength, 1e-3);
-    float r = 1.0 / max(NdotV, 0.1);
-    float R = (exp(-r / d) + exp(-r / (3.0 * d))) / (8.0 * PI * d);
-    float wrap = (NdotL_raw + 0.5) / 1.5;
-    return clamp(R * pow(saturate(wrap), 2.0), 0.0, 1.0);
+//
+// Chromatic SSS via per-channel albedo modulation.
+//
+// The physically-important effect of subsurface scattering is the
+// wavelength-dependent transport distance: channels the material transmits
+// strongly (high uMatSubsurfaceColor) travel farther through the material
+// and re-emerge at grazing view angles, so they read brighter there;
+// channels the material absorbs stay dark. This produces the warm-red
+// silhouette on red-dominant materials and the cool-blue cast on
+// blue-dominant materials.
+//
+// We reproduce that effect by modulating the diffuse albedo per channel with
+// a view-dependent factor whose per-channel sum averages to 1 over the view
+// hemisphere, so the total energy of the diffuse lobe is unchanged — only
+// its distribution across channels and view angles.
+//
+// A weighted sum of two BRDFs with different albedos does not have this
+// property: the blend of two BRDFs produces a total energy that depends on
+// the view/light angle and does not equal either lobe's. The single-BRDF
+// modulation is exactly energy-conserving.
+vec3 subsurface_chromatic_modulation(vec3 subsurfaceColor, float NdotV, float strength) {
+    float maxC = max(subsurfaceColor.r,
+                     max(subsurfaceColor.g, subsurfaceColor.b));
+    maxC = max(maxC, 1e-4);
+    vec3 albedo = subsurfaceColor / maxC;
+    float mean_albedo = (albedo.r + albedo.g + albedo.b) * (1.0 / 3.0);
+    vec3 delta = albedo - mean_albedo;
+    float grazing = pow(1.0 - NdotV, 2.0);
+    vec3 mod = vec3(1.0) + delta * grazing * strength;
+    return max(mod, vec3(0.0));
 }
 
 // =============================================================================
@@ -1003,10 +713,6 @@ vec3 clearcoat_disney(float NdotL, float NdotV, float NdotH,
     float vis = V_SmithGGXCorrelated(NdotL, NdotV, perceptualRough);
     vec3  fss = D * vis * clearcoatFresnel;
 
-    // The Fdez-Agüera multiscatter form needs both endpoints of the
-    // Fresnel range: F0 (the mirror value, which the coat's specular lobe
-    // is authored with) and F_avg (the hemispherical average, which is
-    // what the multi-bounce correction is normalised against).
     vec3 clearcoatF_avg = clearcoatF0 + (1.0 - clearcoatF0) / 21.0;
 
     return specular_multiscatter_comp(fss, clearcoatF0, clearcoatF_avg,
@@ -1045,7 +751,7 @@ float compute_coat_darkening(vec3 coatF0, vec3 baseColor,
 }
 
 // =============================================================================
-// Sheen energy compensation — Kulla-Conty with analytic Charlie albedo
+// Sheen energy compensation
 // =============================================================================
 float sheen_directional_albedo(float NdotV, float sheenRoughness) {
     float r2 = sheenRoughness * sheenRoughness;
@@ -1065,20 +771,30 @@ float sheen_directional_albedo(float NdotV, float sheenRoughness) {
     return saturate(DG / PI);
 }
 
-float sheen_multiscatter_comp(float NdotL, float NdotV, float sheenRoughness,
-                              vec3 sheenColorTint) {
-    float E_o = sheen_directional_albedo(NdotV, sheenRoughness);
-    float E_i = sheen_directional_albedo(NdotL, sheenRoughness);
-    float E_avg = 0.5 * (E_o + E_i);
+// -----------------------------------------------------------------------------
+// View-only sheen base-layer transmittance.
+//
+// Sheen is a top layer; its transmittance to the base layers below is a
+// property of the layer and the view direction, not of any particular light
+// direction. The full Kulla-Conty compensation uses E_o (at the view angle)
+// and E_i (at the light angle), which makes the base-layer attenuation
+// L-dependent. Using E_o for both ends removes the L-dependence while
+// preserving the view-angle variation of the energy budget.
+// -----------------------------------------------------------------------------
+float sheen_base_transmittance(float NdotV) {
+    float E_o = sheen_directional_albedo(NdotV, uSheenRoughness);
+    vec3 F_avg = clamp(uSheenColor, 0.0, 0.99);
+    float F_luma = dot(F_avg, LUMA_REC709);
 
-    vec3 F_avg = clamp(sheenColorTint, 0.0, 0.99);
+    float num = (1.0 - E_o) * (1.0 - E_o) * F_luma * F_luma * E_o;
+    float den = PI * (1.0 - E_o) * (1.0 - F_luma * (1.0 - E_o));
+    den = max(den, 1e-4);
 
-    float num = (1.0 - E_o) * (1.0 - E_i)
-              * dot(F_avg, LUMA_REC709) * dot(F_avg, LUMA_REC709) * E_avg;
-    float den = PI * (1.0 - E_avg)
-              * (1.0 - dot(F_avg, LUMA_REC709) * (1.0 - E_avg));
+    float opacity = saturate(num / den)
+                  * dot(uSheenColor, LUMA_REC709)
+                  * uSheenStrength;
 
-    return saturate(num / max(den, 1e-4));
+    return saturate(1.0 - opacity);
 }
 
 // =============================================================================
@@ -1177,15 +893,6 @@ vec3 soft_knee_exponential(vec3 c, float knee) {
     return c * (Mc / M);
 }
 
-vec3 soft_knee_rational(vec3 c, float knee) {
-    float M = max(c.r, max(c.g, c.b));
-    if (M <= knee) return c;
-    float K  = 1.0 - knee;
-    float t  = (M - knee) / K;
-    float Mc = 1.0 - K / (1.0 + t + t * t);
-    return c * (Mc / M);
-}
-
 vec3 tone_map(vec3 color) {
     const float A = 0.15;
     const float B = 0.55;
@@ -1195,8 +902,7 @@ vec3 tone_map(vec3 color) {
     const float F = 0.35;
     const float W = 10.0;
 
-    const float exposure = 2.93;
-
+    const float exposure = 1.4;
     color = max(color * exposure, vec3(0.0));
 
     float L  = dot(color, LUMA_REC709);
@@ -1218,7 +924,91 @@ vec3 tone_map(vec3 color) {
     float L_final = dot(mapped, LUMA_REC709);
     mapped += TOE_AMOUNT * (1.0 - smoothstep(0.0, TOE_RADIUS, L_final));
 
+#ifdef EFFECT_SATURATION
+    float luma = dot(mapped, LUMA_REC709);
+    mapped = mix(vec3(luma), mapped, uMatSaturation);
+#endif
+
     return mapped;
+}
+
+// =============================================================================
+// Color grade
+// =============================================================================
+//
+// Applied after tone mapping, in display-referred [0,1] space, before the
+// sRGB encode. The grade is a sequence of three perceptual operations:
+//
+//   1. Black-point lift. Real film blacks are not pure black; they carry a
+//      small amount of density from the print stock and scanner. A lift of
+//      0.005 in linear space becomes roughly byte 13 after sRGB encoding,
+//      which is a proper film-style black — visible as a dark tone, not a
+//      flat zero.
+//
+//   2. Shadow/highlight split. Shadows shift toward cool (blue/teal),
+//      highlights toward warm (orange). The mask is computed from luminance
+//      so the shift applies per-tone-range rather than per-channel. The
+//      magnitudes are deliberately small — at 0.002–0.010 in linear space,
+//      the split is atmospheric rather than theatrical.
+//
+//   3. Mild S-curve on luminance. A smoothstep applied to the luminance
+//      with a 35% mix strength. This adds a small amount of contrast to the
+//      midtones without clipping the ends.
+//
+// The values below are calibrated for a pipeline that:
+//   - Tone maps with the Hable curve at exposure 1.4
+//   - Applies this grade
+//   - Encodes to sRGB in the shader (linear_to_srgb)
+//   - Writes to a GL_LINEAR framebuffer
+//
+// If any of those stages change, this grade needs to be retuned.
+// =============================================================================
+vec3 apply_color_grade(vec3 c) {
+    // 1. Black-point lift. A small amount of lift gives the image a
+    //    film-like black floor. Increase the offset for a heavier film
+    //    look; decrease toward 0.002 for a cleaner, more modern look.
+    c = c * 0.98 + 0.005;
+
+    // 2. Shadow / highlight color split.
+    float luma = dot(c, LUMA_REC709);
+    float shadow_mask    = 1.0 - smoothstep(0.0, 0.45, luma);
+    float highlight_mask = smoothstep(0.55, 1.0, luma);
+
+    // Cool shadows: pull red slightly, push blue.
+    c.r -= 0.004 * shadow_mask;
+    c.g += 0.002 * shadow_mask;
+    c.b += 0.010 * shadow_mask;
+
+    // Warm highlights: push red, pull blue.
+    c.r += 0.008 * highlight_mask;
+    c.g += 0.003 * highlight_mask;
+    c.b -= 0.006 * highlight_mask;
+
+    // 3. Mild contrast S-curve on luminance, applied chroma-preserving.
+    //    The smoothstep is used as a cheap contrast function; 0.35 is the
+    //    blend strength between the original luminance and the curved one.
+    float L = max(dot(c, LUMA_REC709), 1e-4);
+    float L_curved = L * L * (3.0 - 2.0 * L);
+    L_curved = mix(L, L_curved, 0.35);
+    c *= L_curved / L;
+
+    return c;
+}
+
+// =============================================================================
+// sRGB transfer function (linear -> gamma-encoded)
+// =============================================================================
+//
+// The framebuffer format is GL_RGBA8, which stores linear values as-is.
+// The display expects gamma-encoded values, so the shader applies the
+// transfer curve explicitly. If the framebuffer is ever changed to
+// GL_SRGB8_ALPHA8, delete this function — the GPU will apply the encoding
+// automatically on write.
+vec3 linear_to_srgb(vec3 c) {
+    c = max(c, vec3(0.0));
+    vec3 low  = c * 12.92;
+    vec3 high = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), c));
 }
 
 // =============================================================================
@@ -1284,21 +1074,19 @@ vec3 lobe_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol,
                   float NdotL, float NdotL_raw) {
     vec3 diffuseColor = uMatColor * (1.0 - uMatMetallic);
 
-#ifdef EFFECT_VMF_DIFFUSE
-    float ui = NdotL;
-    float uo = max(dot(N, V), 1e-4);
-
-    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 T  = normalize(cross(up, N));
-    vec3 B  = cross(N, T);
-    vec2 Lp = vec2(dot(L, T), dot(L, B));
-    vec2 Vp = vec2(dot(V, T), dot(V, B));
-    float phi = atan(dot(Lp, Vp), dot(Lp, vec2(-Vp.y, Vp.x)));
-
-    vec3 brdf = vMFdiffuseBRDF(ui, uo, phi, uMatDiffuseRoughness, diffuseColor);
-#else
-    vec3 brdf = diffuse_eon_oren_nayar(N, V, L, diffuseColor, uMatDiffuseRoughness);
+#ifdef EFFECT_SUBSURFACE
+    // Chromatic SSS via per-channel albedo modulation. See
+    // subsurface_chromatic_modulation for the derivation.
+    {
+        float sssStrength = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
+        float NdotV_local = max(dot(N, V), 1e-4);
+        vec3 mod = subsurface_chromatic_modulation(uMatSubsurfaceColor,
+                                                   NdotV_local, sssStrength);
+        diffuseColor *= mod;
+    }
 #endif
+
+    vec3 brdf = diffuse_eon_oren_nayar(N, V, L, diffuseColor, uMatDiffuseRoughness);
 
 #ifdef EFFECT_DIFFUSE_WRAP
     float wrapFactor     = NdotL * NdotL * (3.0 - 2.0 * NdotL);
@@ -1314,28 +1102,67 @@ vec3 lobe_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     brdf *= (celFactor / safeNdotL_cel);
 #endif
 
+    vec3 result = brdf * NdotL;
+
 #ifdef EFFECT_SUBSURFACE
-    float sssStrength = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
-    float NdotV_local = max(dot(N, V), 1e-4);
-    float blend       = subsurface_burley(NdotL_raw, NdotV_local, sssStrength);
-    vec3  sssBRDF     = pow(clamp((NdotL_raw + 0.5) / 1.5, 0.0, 1.0), 2.0)
-                      * (uMatColor / PI);
-    brdf = mix(brdf, sssBRDF, blend);
+    // Back-transmission. Light entering the back of the surface, scattering
+    // through the material, and exiting toward the viewer. This is the
+    // "backlit ears glow red" effect. Only fires for light that arrives on
+    // the opposite side of the surface from the viewer, and only for
+    // translucent (non-metallic) materials.
+    if (NdotL_raw < 0.0 && uMatMetallic < 0.5) {
+        float sssStrength  = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
+        float NdotLneg     = -NdotL_raw;
+        float VdotLneg     = saturate(dot(V, -L));
+        float metallicMask = 1.0 - clamp(uMatMetallic, 0.0, 1.0);
+
+        float phase = pow(VdotLneg, 4.0);
+
+        float pathLength = 1.0 / max(NdotLneg, 0.1);
+
+        float maxC = max(uMatSubsurfaceColor.r,
+                         max(uMatSubsurfaceColor.g, uMatSubsurfaceColor.b));
+        maxC = max(maxC, 1e-4);
+        vec3 albedo = uMatSubsurfaceColor / maxC;
+        vec3 absorption = (1.0 - albedo) / max(sssStrength, 0.1) + 0.05;
+
+        vec3 transmittance = exp(-absorption * pathLength);
+
+        result += transmittance * uMatSubsurfaceColor * phase * metallicMask;
+    }
 #endif
 
-    return brdf * NdotL * lightCol * (1.0 - F_avg);
+    return result * lightCol * (1.0 - F_avg);
 }
 
-vec3 lobe_specular(vec3 V, vec3 L, vec3 H, vec3 F0, vec3 F_avg, vec3 lightCol,
+vec3 lobe_specular(vec3 N, vec3 V, vec3 L, vec3 H, vec3 F0, vec3 F_avg, vec3 lightCol,
                    vec3 Tangent, vec3 Bitangent,
                    float NdotL, float NdotV, float NdotH, float VdotH,
-                   float specularRoughness) {
+                   float baseRoughness) {
     if (NdotL <= 0.0 || NdotV <= 0.0) return vec3(0.0);
+
+    float specularRoughness =
+        specular_aa_roughness_halfvec(N, V, L, baseRoughness);
 
     float metallic = clamp(uMatMetallic, 0.0, 1.0);
     vec3 F_schlick = F_Schlick(F0, VdotH);
     vec3 F_f82     = F_Schlick_F82(F0, uMatF82Tint, VdotH);
     vec3 fresnel   = mix(F_schlick, F_f82, metallic);
+
+    // -------------------------------------------------------------------------
+    // Fresnel shadowing (grazing-visibility reduction).
+    //
+    // On rough surfaces at grazing angles, microfacets are more likely to
+    // be self-occluded by their neighbours, which reduces the effective
+    // reflectance below the ideal Schlick estimate. The correction is
+    // applied to the Fresnel term itself, before the microfacet BRDF is
+    // evaluated, and is a function of the view angle NdotV rather than the
+    // half-vector angle VdotH.
+    //
+    // Formula from Lagarde & de Rousiers 2014, "Moving Frostbite to PBR",
+    // section 4.3. The same idea appears in Karis 2013, section 4.2.
+    // -------------------------------------------------------------------------
+    fresnel *= saturate(1.0 - specularRoughness * pow(1.0 - NdotV, 5.0));
 
 #ifdef EFFECT_ANISOTROPIC
     vec3 spec = specular_microfacet_aniso(V, L, H,
@@ -1412,11 +1239,17 @@ vec3 lobe_rim(vec3 lightCol, float NdotV) {
 // =============================================================================
 // Layer attenuation
 // =============================================================================
+//
+// Clearcoat and transmission attenuate the base layers per-light. Sheen is
+// L-independent (see sheen_base_transmittance) but is computed here so the
+// same view-only factor multiplies every light's contribution — which is
+// equivalent to applying it once to the accumulated total.
 void apply_layer_attenuation(inout vec3 diffuseContrib,
                              inout vec3 specContrib,
                              float NdotL, float NdotV,
                              float clearcoatStrength,
-                             vec3 clearcoatF0) {
+                             vec3 clearcoatF0,
+                             vec3 F_avg) {
 #ifdef EFFECT_CLEARCOAT
     vec3 coatF_light = F_Schlick(clearcoatF0, NdotL);
 
@@ -1432,20 +1265,35 @@ void apply_layer_attenuation(inout vec3 diffuseContrib,
 #endif
 
 #ifdef EFFECT_TRANSMISSION
-    float transScale = 1.0 - clamp(uMatTransmissionStrength, 0.0, 1.0);
-    diffuseContrib *= transScale;
-    //specContrib    *= transScale;
+    // -------------------------------------------------------------------------
+    // Fresnel-derived transmission attenuation of the diffuse lobe.
+    //
+    // The diffuse lobe integrates incident light over the hemisphere above
+    // the surface, so the correct fraction of energy reaching it is the
+    // hemispherical average transmittance: (1 - F_avg * strength).
+    //
+    // The specular lobe is NOT attenuated here: it represents the surface
+    // reflection, which coexists with transmission. The transmission lobe
+    // itself carries (1 - F) at its own half-vector, so the three lobes
+    // together conserve energy by construction.
+    // -------------------------------------------------------------------------
+    vec3 transmittance = vec3(1.0)
+                       - F_avg * clamp(uMatTransmissionStrength, 0.0, 1.0);
+    diffuseContrib *= transmittance;
 #endif
 
 #ifdef EFFECT_SHEEN
-    float sheenComp = sheen_multiscatter_comp(NdotL, NdotV,
-                                              uSheenRoughness, uSheenColor);
-    float sheenOpacity = saturate(sheenComp
-                                  * dot(uSheenColor, LUMA_REC709)
-                                  * uSheenStrength);
-
-    diffuseContrib *= (1.0 - sheenOpacity);
-    specContrib    *= (1.0 - sheenOpacity);
+    // -------------------------------------------------------------------------
+    // Sheen base-layer attenuation, L-independent.
+    //
+    // sheen_base_transmittance() depends on NdotV and sheen roughness only,
+    // so the same scalar multiplies every light's contribution. This makes
+    // the base layer's attenuation a well-defined, view-dependent quantity,
+    // which is what energy conservation requires for a top layer.
+    // -------------------------------------------------------------------------
+    float sheen_trans = sheen_base_transmittance(NdotV);
+    diffuseContrib *= sheen_trans;
+    specContrib    *= sheen_trans;
 #endif
 }
 
@@ -1458,7 +1306,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
                       inout vec3 diffuse, inout vec3 specular,
                       inout vec3 clearcoat, inout vec3 sheen,
                       inout vec3 rim, inout vec3 backGlow,
-                      float NdotV, float specularRoughness,
+                      float NdotV, float baseRoughness,
                       vec3 clearcoatF0) {
     float NdotL_raw = dot(N, L);
     float NdotL     = max(NdotL_raw, 0.0);
@@ -1473,10 +1321,10 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
 
     vec3 diffuseContrib   = lobe_diffuse(N, V, L, lightCol,
                                          F_avg, NdotL, NdotL_raw);
-    vec3 specContrib      = lobe_specular(V, L, H, F0, F_avg, lightCol,
+    vec3 specContrib      = lobe_specular(N, V, L, H, F0, F_avg, lightCol,
                                           Tangent, Bitangent,
                                           NdotL, NdotV, NdotH, VdotH,
-                                          specularRoughness);
+                                          baseRoughness);
     vec3 transContrib     = vec3(0.0);
     vec3 clearcoatContrib = vec3(0.0);
     vec3 sheenContrib     = vec3(0.0);
@@ -1504,7 +1352,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
 
     apply_layer_attenuation(diffuseContrib, specContrib,
                             NdotL, NdotV, clearcoatStrength,
-                            clearcoatF0);
+                            clearcoatF0, F_avg);
 
     diffuse   += diffuseContrib;
     specular  += specContrib + transContrib;
@@ -1520,7 +1368,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lightCol,
 void accumulate_direct_lighting(vec3 N, vec3 V, vec3 worldPos,
                                 vec3 F0, vec3 F_avg,
                                 vec3 Tangent, vec3 Bitangent,
-                                float NdotV, float specularRoughness,
+                                float NdotV, float baseRoughness,
                                 vec3 clearcoatF0,
                                 out vec3 totalDiffuse,
                                 out vec3 totalSpec,
@@ -1561,7 +1409,7 @@ void accumulate_direct_lighting(vec3 N, vec3 V, vec3 worldPos,
                          Tangent, Bitangent,
                          totalDiffuse, totalSpec, totalClearcoat, totalSheen,
                          totalRim, totalBackGlow,
-                         NdotV, specularRoughness,
+                         NdotV, baseRoughness,
                          clearcoatF0);
 
 #ifdef EFFECT_GOOCH
@@ -1569,59 +1417,12 @@ void accumulate_direct_lighting(vec3 N, vec3 V, vec3 worldPos,
         avgWeight += intensity;
 #endif
     }
-}
 
-// =============================================================================
-// LDR post effects
-// =============================================================================
-vec3 apply_ldr_post_effects(vec3 color, float NdotV, vec3 worldPos) {
-#ifdef EFFECT_IRIDESCENCE
-    float angle    = NdotV * 2.0 * PI;
-    float c        = cos(angle);
-    float s_ir     = sin(angle);
-    float rot0 = 0.299 + 0.701 * c + 0.168 * s_ir;
-    float rot1 = 0.587 - 0.587 * c + 0.330 * s_ir;
-    float rot2 = 0.114 - 0.114 * c - 0.497 * s_ir;
-    float rot3 = 0.299 - 0.299 * c - 0.328 * s_ir;
-    float rot4 = 0.587 + 0.413 * c + 0.035 * s_ir;
-    float rot5 = 0.114 - 0.114 * c + 0.292 * s_ir;
-    float rot6 = 0.299 - 0.300 * c + 1.250 * s_ir;
-    float rot7 = 0.587 - 0.588 * c - 1.050 * s_ir;
-    float rot8 = 0.114 + 0.886 * c - 0.203 * s_ir;
-    float r = color.r * rot0 + color.g * rot1 + color.b * rot2;
-    float g = color.r * rot3 + color.g * rot4 + color.b * rot5;
-    float b = color.r * rot6 + color.g * rot7 + color.b * rot8;
-    float strength = uMatIridescenceStrength;
-    color.r = r * strength + color.r * (1.0 - strength);
-    color.g = g * strength + color.g * (1.0 - strength);
-    color.b = b * strength + color.b * (1.0 - strength);
-#endif
-
-#ifdef EFFECT_GLITCH
-    vec3 q = floor(worldPos * 4096.0 + uTime * 60.0);
-    float offset = (hash_float(q) - 0.5) * uMatGlitchIntensity;
-    color.r += offset;
-    color.g += offset * 0.7;
-    color.b -= offset;
-#endif
-
-#ifdef EFFECT_SATURATION
-    float luma = dot(color, LUMA_REC709);
-    color = mix(vec3(luma), color, uMatSaturation);
-#endif
-
-#ifdef EFFECT_FRINGE
-    float fringe = pow(saturate(1.0 - NdotV), 3.0) * uMatFringeIntensity;
-    color.r += fringe;
-    color.b -= fringe;
-#endif
-
-#ifdef EFFECT_POSTERIZE
-    float levels = float(uMatPosterizeLevels);
-    color = floor(color * levels + 0.5) / levels;
-#endif
-
-    return color;
+    // The sheen attenuation has already been applied per-light inside
+    // apply_layer_attenuation, using the view-only sheen_base_transmittance().
+    // Because that factor does not depend on the light direction, applying it
+    // per-light is mathematically identical to applying it once to the
+    // accumulated total after the loop.
 }
 
 // =============================================================================
@@ -1630,43 +1431,33 @@ vec3 apply_ldr_post_effects(vec3 color, float NdotV, vec3 worldPos) {
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (!gl_FrontFacing) N = -N;
 
-    // Geometric normal, saved before the perturbation. The hemispherical
-    // ambient lobes (diffuse, sheen) integrate over the hemisphere above
-    // the SURFACE, which is defined by the geometric normal — not by the
-    // micro-facets that the perturbed normal represents. Using the
-    // perturbed normal for those lobes couples the ambient to the bump
-    // pattern and produces bright/dark patches on any material with bump
-    // noise. The directional lobes (specular, clearcoat, transmission)
-    // reflect along a single direction and still use the perturbed
-    // normal, which is where the micro-facets belong.
     vec3 N_geom = N;
 
     vec3 V = normalize(uCamEye - worldPos);
 
     N = perturb_normal(N, worldPos, localPos);
 
-    // Specular AA: half-vector slope-space filtering. We need L for the
-    // half-vector, so this is computed per-light in accumulate_light.
-    // Here we set a base filtered roughness using the normal-variance
-    // fallback for the ambient path and the coat roughening.
-    float specularRoughness = clamp(
-        specular_aa_roughness(N, uMatSpecularRoughness),
-        MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+    float baseRoughness = clamp(uMatSpecularRoughness,
+                                MIN_PERCEPTUAL_ROUGHNESS, 1.0);
 
 #ifdef EFFECT_CLEARCOAT
     {
         float coatStrength = clamp(uClearcoatStrength, 0.0, 1.0);
-        float p_b = specularRoughness;
+        float p_b = baseRoughness;
         float p_c = clamp(uClearcoatRoughness, 0.0, 1.0);
         float p_b2 = p_b * p_b;
         float p_c2 = p_c * p_c;
         float p_b4 = p_b2 * p_b2;
         float p_c4 = p_c2 * p_c2;
         float p_eff = pow(p_b4 + p_c4, 0.25);
-        specularRoughness = clamp(mix(p_b, p_eff, coatStrength),
-                                  MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+        baseRoughness = clamp(mix(p_b, p_eff, coatStrength),
+                              MIN_PERCEPTUAL_ROUGHNESS, 1.0);
     }
 #endif
+
+    float ambientRoughness = clamp(
+        specular_aa_roughness(N, baseRoughness),
+        MIN_PERCEPTUAL_ROUGHNESS, 1.0);
 
     float NdotV = max(dot(N, V), 0.0);
 
@@ -1689,81 +1480,29 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     accumulate_direct_lighting(N, V, worldPos, F0, F_avg,
                                Tangent, Bitangent,
-                               NdotV, specularRoughness,
+                               NdotV, baseRoughness,
                                coatF0,
                                totalDiffuse, totalSpec, totalClearcoat,
                                totalSheen, totalRim, totalBackGlow,
                                avgDir, avgWeight);
 
-    // -------------------------------------------------------------------------
-    // Ambient lighting via sample_env_map().
-    //
-    // The environment is a placeholder today (procedural sky/ground +
-    // checker) but the shape of every ambient lobe is the shape it would
-    // have with a real prefiltered cubemap:
-    //
-    //   - diffuse and sheen are hemispherical integrals, so they sample
-    //     along the GEOMETRIC normal with the fully-blurred (roughness 1)
-    //     filter. The geometric normal is used, not the perturbed one,
-    //     because the hemisphere is a property of the surface geometry.
-    //   - specular and clearcoat reflect along a single direction, so
-    //     they sample along R = reflect(-V, N_perturbed) with a
-    //     roughness-driven filter. Anisotropic materials shear R along
-    //     the stretch direction; see the block below.
-    //   - transmission samples along the refracted direction.
-    //
-    // Energy conservation:
-    //   - diffuse uses (1 - F_avg), the hemispherical average Fresnel.
-    //   - specular uses the split-sum formulation of Karis 2013:
-    //         env * (F0 * A(roughness, NdotV) + B(roughness, NdotV))
-    //     where A and B are the analytic BRDF LUT fit. Exact at both
-    //     roughness endpoints, within a couple of percent in between.
-    //   - clearcoat uses the same split-sum form with the coat's own
-    //     Fresnel and roughness via F_Schlick + the coat average; the
-    //     coat reflectance is low enough that the full LUT correction is
-    //     below the noise floor.
-    //
-    // Direct lighting is NOT multiplied by AO — AO is a visibility
-    // approximation for the ambient term, not a shadow. Darkening direct
-    // light by AO turns matte materials with zero specular tint pure black.
-    // -------------------------------------------------------------------------
     vec3 diffuseColor  = uMatColor * (1.0 - metallic);
     vec3 directDiffuse = totalDiffuse;
 
-    float mat_ao  = clamp(uMatAmbientLightFactor, 0.0, 1.0);
-    float specOcc = specular_occlusion(NdotV, mat_ao, specularRoughness);
+    float vbao_ao = 1.0;
+#ifndef WBOIT_PASS
+    vbao_ao = texture(uAOTex, gl_FragCoord.xy / uScreenSize).r;
+#endif
 
-    // Split-sum specular response — the (A, B) pair from the BRDF LUT fit.
-    vec2 envBRDF = env_brdf_approx(NdotV, specularRoughness);
+    float specOcc = specular_occlusion(NdotV, vbao_ao, ambientRoughness);
 
-    // Diffuse energy conservation uses the hemispherical average.
+    vec2 envBRDF = env_brdf_approx(NdotV, ambientRoughness);
+
     vec3 kD_env = vec3(1.0) - F_avg;
 
-    // Reflection vector, shared by the base specular and clearcoat lobes.
-    // Uses the perturbed normal — reflections are a micro-facet effect.
     vec3 R = reflect(-V, N);
 
 #ifdef EFFECT_ANISOTROPIC
-    // Anisotropic bent normal.
-    //
-    // The direct specular lobe is stretched along the material's tangent
-    // direction (positive anisotropy) or bitangent (negative). To make
-    // the ambient reflection agree, shear the reflection vector in the
-    // same direction. The shear removes the component of the view vector
-    // along the "smooth axis" — the axis perpendicular to the stretch
-    // direction — so the reflection samples the environment along the
-    // stretch direction.
-    //
-    // This is the technique Filament, Far Cry 4/5, and The Order 1886
-    // use for anisotropic IBL. It is not exact (a real anisotropic
-    // reflection requires a 4D BRDF LUT indexed by azimuth), but it
-    // closes the perceptual gap between the anisotropic direct highlight
-    // and an isotropic ambient reflection, which is what the eye
-    // actually notices.
-    //
-    // Blend scales with |anisotropy|. At roughness 1 the mip chain has
-    // already blurred the reflection so much that the shear is invisible,
-    // which is why no explicit roughness term is needed in the blend.
     {
         vec3 bendAxis = (uMatAnisotropic >= 0.0) ? Bitangent : Tangent;
         vec3 perpV = V - bendAxis * dot(V, bendAxis);
@@ -1776,25 +1515,14 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
-    // --- Ambient diffuse (irradiance) ---
-    // Diffuse gathers from the whole hemisphere, so it samples the
-    // environment with a fully blurred (roughness 1) filter along the
-    // GEOMETRIC normal. The same value is reused for sheen below.
     vec3 irradiance = sample_env_map(N_geom, 1.0);
     vec3 ambientDiffuse = irradiance * diffuseColor * kD_env
                         * uMatAmbientLightFactor;
 
-    // --- Ambient specular (prefiltered radiance) ---
-    // Sharp reflection along R for smooth surfaces, blurred by
-    // specularRoughness. On a real cubemap this is the mip selection.
-    vec3 envSpec = sample_env_map(R, specularRoughness);
+    vec3 envSpec = sample_env_map(R, ambientRoughness);
     vec3 ambientSpec = envSpec * (F0 * envBRDF.x + envBRDF.y)
                      * uMatSpecularTint * specOcc * uMatAmbientLightFactor;
 
-    // --- Ambient clearcoat ---
-    // Same split-sum form as the base specular, with the coat's own
-    // Fresnel and roughness. Clearcoat has no diffuse lobe and does not
-    // participate in base diffuse energy conservation.
     vec3 ambientClearcoat = vec3(0.0);
 #ifdef EFFECT_CLEARCOAT
     {
@@ -1811,12 +1539,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
-    // --- Ambient sheen ---
-    // Kulla-Conty directional albedo times the sheen tint. Sheen is a
-    // retroreflective lobe integrated over the hemisphere, so it shares
-    // the diffuse irradiance sample (geometric normal). The tint uses
-    // the same base-color mixing as sheen_charlie() — using uSheenColor
-    // directly would give a colour that disagrees with the direct lobe.
     vec3 ambientSheen = vec3(0.0);
 #ifdef EFFECT_SHEEN
     {
@@ -1834,15 +1556,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
-    // --- Ambient transmission ---
-    // Sample along the refracted direction, falling back to -N_geom when
-    // total internal reflection kills the refract vector. Uses the
-    // material's transmission roughness for the lobe footprint. The
-    // attenuation kT uses the same split-sum response as the specular
-    // lobe so the two are energy-consistent. The technically correct
-    // Fresnel for transmission is at the refraction angle, not the view
-    // angle; using the view-angle response is the standard approximation
-    // and is what the direct transmission lobe does too.
     vec3 ambientTrans = vec3(0.0);
 #ifdef EFFECT_TRANSMISSION
     {
@@ -1860,8 +1573,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #endif
 
 #ifdef EFFECT_GOOCH
-    // GOOCH tints both ambient and direct diffuse by the average incoming
-    // light direction, before AO is applied to the ambient terms.
     if (avgWeight > 0.001) {
         vec3 dir = avgDir / avgWeight;
         float len = length(dir);
@@ -1876,31 +1587,14 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
-    // -------------------------------------------------------------------------
-    // VBAO — attenuate every ambient lobe except transmission. Transparent
-    // (WBOIT) variants do not receive AO; they are drawn after the AO
-    // dispatch and would need a second lookup to be occluded by opaque
-    // geometry behind them.
-    //
-    // Transmission ambient is excluded because VBAO measures visibility of
-    // the hemisphere above the surface; transmitted light comes from the
-    // opposite hemisphere, which VBAO does not encode.
-    // -------------------------------------------------------------------------
-#ifndef WBOIT_PASS
-    float vbao_ao = texture(uAOTex, gl_FragCoord.xy / uScreenSize).r;
     ambientDiffuse   *= vbao_ao;
-    ambientSpec      *= vbao_ao;
     ambientClearcoat *= vbao_ao;
     ambientSheen     *= vbao_ao;
-#endif
 
-    vec3 color = ambientDiffuse + ambientSpec + ambientClearcoat + ambientSheen
-               + ambientTrans + directDiffuse;
-    color += totalSpec + totalClearcoat + totalSheen + totalRim + totalBackGlow;
+    vec3 colorHDR = ambientDiffuse + ambientSpec + ambientClearcoat + ambientSheen
+                  + ambientTrans + directDiffuse;
+    colorHDR += totalSpec + totalClearcoat + totalSheen + totalRim + totalBackGlow;
 
-    // -------------------------------------------------------------------------
-    // Screen-space refraction.
-    // -------------------------------------------------------------------------
 #ifdef EFFECT_TRANSMISSION
     {
         vec3 R = refract(-V, N, 1.0 / max(uMatIOR, 1.001));
@@ -1915,7 +1609,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
             float strength = clamp(uMatTransmissionStrength, 0.0, 1.0);
 
             float transFraction = strength * (1.0 - Favg);
-            color = mix(color, transmitted, transFraction);
+            colorHDR = mix(colorHDR, transmitted, transFraction);
         }
     }
 #endif
@@ -1927,15 +1621,15 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
                 * sin(uTime * uMatEmissivePulseFrequency + uMatEmissivePulsePhase);
     emissive *= pulse;
 #endif
-    color += emissive;
+    colorHDR += emissive;
 #endif
 
 #ifdef EFFECT_STROBE
     float s = sin(uTime * uMatStrobeFrequency + uMatStrobePhase) * 0.5 + 0.5;
-    color += uMatStrobeColor * s;
+    colorHDR += uMatStrobeColor * s;
 #endif
 
-    color *= uMatTint;
+    colorHDR *= uMatTint;
 
 #ifdef EFFECT_FOG
     if (uFogEnd > uFogStart) {
@@ -1944,39 +1638,82 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         float range   = max(uFogEnd - uFogStart, 1e-4);
         float density = 3.0 / range;
         float t       = 1.0 - exp(-density * fogDist);
-        color = mix(color, uFogColor, t);
+        colorHDR = mix(colorHDR, uFogColor, t);
     }
 #endif
 
-    color = max(color, vec3(0.0));
+    colorHDR = max(colorHDR, vec3(0.0));
 
-    color = tone_map(color);
-    color = apply_ldr_post_effects(color, NdotV, worldPos);
+    // -------------------------------------------------------------------------
+    // HDR post effects (before tone mapping)
+    //
+    // Iridescence and chromatic fringe are spectral effects. They operate on
+    // the wavelength content of the signal, which is a linear-space property.
+    // Applying them after tone mapping would make their strength depend on
+    // the tone curve's compression, which is not physically motivated.
+    // -------------------------------------------------------------------------
+#ifdef EFFECT_IRIDESCENCE
+    {
+        float angle = NdotV * 2.0 * PI;
+        float c     = cos(angle);
+        float s_ir  = sin(angle);
+        float rot0 = 0.299 + 0.701 * c + 0.168 * s_ir;
+        float rot1 = 0.587 - 0.587 * c + 0.330 * s_ir;
+        float rot2 = 0.114 - 0.114 * c - 0.497 * s_ir;
+        float rot3 = 0.299 - 0.299 * c - 0.328 * s_ir;
+        float rot4 = 0.587 + 0.413 * c + 0.035 * s_ir;
+        float rot5 = 0.114 - 0.114 * c + 0.292 * s_ir;
+        float rot6 = 0.299 - 0.300 * c + 1.250 * s_ir;
+        float rot7 = 0.587 - 0.588 * c - 1.050 * s_ir;
+        float rot8 = 0.114 + 0.886 * c - 0.203 * s_ir;
+        float r = colorHDR.r * rot0 + colorHDR.g * rot1 + colorHDR.b * rot2;
+        float g = colorHDR.r * rot3 + colorHDR.g * rot4 + colorHDR.b * rot5;
+        float b = colorHDR.r * rot6 + colorHDR.g * rot7 + colorHDR.b * rot8;
+        float strength = uMatIridescenceStrength;
+        colorHDR.r = r * strength + colorHDR.r * (1.0 - strength);
+        colorHDR.g = g * strength + colorHDR.g * (1.0 - strength);
+        colorHDR.b = b * strength + colorHDR.b * (1.0 - strength);
+    }
+#endif
 
-    return color;
+#ifdef EFFECT_FRINGE
+    {
+        float fringe = pow(saturate(1.0 - NdotV), 3.0) * uMatFringeIntensity;
+        colorHDR.r += fringe;
+        colorHDR.b -= fringe;
+    }
+#endif
+
+
+    // -------------------------------------------------------------------------
+    // LDR post effects (after tone mapping)
+    //
+    // Stylized display effects. These operate on the tone-mapped perceptual
+    // output and are not physically derived.
+    // -------------------------------------------------------------------------
+#ifdef EFFECT_GLITCH
+    {
+        vec3 q = floor(worldPos * 4096.0 + uTime * 60.0);
+        float offset = (hash_float(q) - 0.5) * uMatGlitchIntensity;
+        colorHDR.r += offset;
+        colorHDR.g += offset * 0.7;
+        colorHDR.b -= offset;
+    }
+#endif
+
+#ifdef EFFECT_POSTERIZE
+    {
+        float levels = float(uMatPosterizeLevels);
+        colorHDR = floor(colorHDR * levels + 0.5) / levels;
+    }
+#endif
+
+    return colorHDR;
 }
 
 // =============================================================================
 // WBOIT weight
 // =============================================================================
-//
-// McGuire & Bavoil 2013, "Weighted Blended Order-Independent Transparency".
-// The weight biases nearer fragments more heavily so that when many
-// transparent layers overlap, closer ones dominate the resolved colour.
-//
-// Input is linear eye-space depth — the distance along the camera's view
-// axis, positive in front. This is NOT gl_FragCoord.z (hyperbolic, saturates
-// toward 1 past a few units) and NOT Euclidean distance from the camera
-// (nonlinear in view space, so interpolation is approximate on large
-// triangles). The vertex shader emits gl_Position.w as a varying; because
-// clip-space w equals -view_z for a standard perspective projection and is
-// linear in view space, perspective-correct interpolation recovers the
-// exact eye depth at every fragment.
-//
-// The 200.0 tuning constant is the eye distance beyond which layers start
-// contributing meaningfully less. Tune it to roughly the scale at which
-// your transparent geometry stops being visually important; for a scene
-// spanning 100–500 world units, 200 is a reasonable default.
 float wboit_weight(float eye_depth, float alpha) {
     float z = eye_depth;
     float w = 10.0 / (1e-5 + pow(z / 200.0, 4.0) + pow(z / 200.0, 2.0));
@@ -1995,32 +1732,27 @@ layout(location = 1) out vec4 outNormal;
 #endif
 
 void main() {
-    // -------------------------------------------------------------------------
-    // ALPHA_PASS_BEHIND culls fragments that are not strictly behind the
-    // frontmost transmissive surface. Fragments in front of it, or with no
-    // transmissive surface behind them, are drawn in ALPHA_PASS_FRONT
-    // instead. The test is a straight depth comparison against
-    // uTransmissiveDepthTex, which was filled by the transmissive depth pass.
-    // -------------------------------------------------------------------------
 #ifdef ALPHA_PASS_BEHIND
     float transmissive_z = texelFetch(uTransmissiveDepthTex,
                                       ivec2(gl_FragCoord.xy), 0).r;
-    if (transmissive_z >= 1.0) discard;            // no transmissive here
-    if (gl_FragCoord.z < transmissive_z) discard;  // in front of it
+    if (transmissive_z >= 1.0) discard;
+    if (gl_FragCoord.z < transmissive_z) discard;
 #endif
 
-    // -------------------------------------------------------------------------
-    // ALPHA_PASS_FRONT draws alpha geometry in front of a transmissive
-    // surface and alpha geometry with no transmissive surface behind it.
-    // Depth testing against the combined opaque + transmissive depth buffer
-    // culls fragments that ALPHA_PASS_BEHIND already drew. No branch is
-    // needed here because the pass identity is carried by the depth state
-    // set in the C code, not by the shader.
-    // -------------------------------------------------------------------------
 #ifdef ALPHA_PASS_FRONT
 #endif
 
-    vec3 color = shade_surface(vNormal, vWorldPos, vLocalPos);
+    vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
+    // TODO: output HDR so our alpha & transmissive passes see the plain HDR.
+    // then in a later pass apply tone mapping, color grading, sRGB conversion and gamma correction.
+    vec3 colorLDR = tone_map(colorHDR); 
+    colorLDR = apply_color_grade(colorLDR); // TODO: add a color-grading LUT uniform
+    colorLDR = linear_to_srgb(colorLDR);
+    // TODO: make gamma a uniform instead of hard-coding to 0.7
+    // Typically in the range [0.5, 2.5]
+    // 1.0 = no change, > 1.0 = brighter, < 1.0 = darker
+    float gamma = 0.7;
+    colorLDR = pow(colorLDR, vec3(1.0 / gamma));
 
     float alpha = 1.0;
 #ifdef EFFECT_ALPHA
@@ -2028,30 +1760,19 @@ void main() {
 #endif
 
 #ifdef WBOIT_PASS
-    // McGuire & Bavoil 2013 weighted-blended OIT. Weighting is on linear
-    // eye-space depth, not gl_FragCoord.z — see wboit_weight() above.
-    //
-    //   accum.rgb += color * w
-    //   accum.a   += w
-    //   revealage *= (1 - alpha)      (handled by fixed-function blend)
     float w = wboit_weight(vEyeDepth, alpha);
 
-    outAccumulation = vec4(color * w, w);
+    outAccumulation = vec4(colorLDR * w, w);
     outRevealage    = vec4(alpha);
 #else
-    // Opaque / transmissive variants write a single colour plus the view-
-    // space geometric normal for VBAO. The normal must be the un-perturbed
-    // surface normal, consistent with the depth buffer; perturbing it here
-    // would break the AO consistency at every bump-mapped pixel.
     vec3 N_geom = normalize(vNormal);
     if (!gl_FrontFacing) N_geom = -N_geom;
     vec3 viewNormal = normalize((uView * vec4(N_geom, 0.0)).xyz);
     outNormal = vec4(viewNormal * 0.5 + 0.5, 1.0);
 
-    // Dither to break up 8-bit banding on smooth gradients.
     float dither = (hash_float(vec3(gl_FragCoord.xy, uTime)) - 0.5) / 255.0;
-    color += dither;
-    FragColor = vec4(color, alpha);
+    colorLDR += dither;
+    FragColor = vec4(colorLDR, alpha);
 #endif
 }
 
