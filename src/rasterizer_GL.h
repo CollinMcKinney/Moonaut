@@ -5,19 +5,54 @@
  * Uses depth pre-pass + compute light culling + per-pixel shading.
  *
  * Shader files (read from disk):
- *   material.vert    – vertex shader (same for depth and colour passes)
+ *   material.vert    – vertex shader (same for depth and color passes)
  *   material.frag    – fragment shader with #ifdef DEPTH_ONLY and
- *                      #ifdef WBOIT_PASS guards
+ *                      #ifdef WBOIT_PASS guards. Writes linear HDR only.
+ *   post_process.frag – full-screen HDR->LDR resolve: tone map, color
+ *                      grade, sRGB encode, gamma, dither, per-material
+ *                      posterize mask.
  *   cluster.comp     – compute shader for light culling
  *   vbao.frag        – fragment shader for visibility-bitmask AO (half-res)
  *   vbao_blur.frag   – fragment shader for edge-aware AO blur (half-res)
- *   oit_composite.vert – full-screen triangle (also used by VBAO passes)
+ *   fullscreen.vert  – full-screen triangle
  *   particle.vert    – particle vertex shader
  *   particle.frag    – particle fragment shader (has #ifdef WBOIT_PASS)
  *   oit_composite.frag – weighted-blended OIT composite
+ *   transmissive_depth.vert – vertex shader for the transmissive depth pass
+ *   transmissive_depth.frag – fragment shader for the transmissive depth pass
+ *                             (depth test against opaque, discard + write z)
  *   audio_occlusion.comp – compute shader for per-voice occlusion
  *   audio_reverb.comp    – compute shader for room statistics
  *   audio_portal.comp    – compute shader for per-voice portal search
+ *
+ * Color pipeline:
+ *   Everything up to and including the two WBOIT composites and the
+ *   transmissive color pass operates on linear HDR radiance. The main
+ *   color buffer (gl_color_tex) and the refraction source
+ *   (gl_refraction_src) are RGBA16F. Tone mapping, color grading, sRGB
+ *   encoding, gamma correction, and the per-material posterize all happen
+ *   in the final post-process pass, which reads the composited HDR image
+ *   and writes display-referred values to the default framebuffer.
+ *
+ *   This ordering matters: WBOIT and alpha blending are linear, tone
+ *   mapping is nonlinear, and the two do not commute. Tone mapping per
+ *   material and then blending produces incorrect composites for bright
+ *   or saturated content. Compositing in HDR and tone mapping once at
+ *   the end is the only ordering that is physically correct.
+ *
+ *   The post-process pass runs at the window resolution (gl_win_width ×
+ *   gl_win_height), not the internal render resolution. It is the only
+ *   place in the pipeline where a display-referred operation occurs.
+ *
+ * Posterize mask:
+ *   EFFECT_POSTERIZE is a per-material flag. The material shader writes a
+ *   mask into the alpha channel of the normal output (gl_normal_tex.a):
+ *   0.0 = no posterize, (levels / 16.0) = posterize with that many levels.
+ *   The post-process pass reads the mask and applies posterize in display
+ *   space, which is where the quantization produces even perceptual steps.
+ *   Posterize is not supported on WBOIT materials because the WBOIT
+ *   variants do not write the normal output; combining EFFECT_POSTERIZE
+ *   with EFFECT_ALPHA is an unsupported configuration.
  *
  * Transparency: Weighted Blended Order-Independent Transparency
  * (McGuire & Bavoil 2013). Transparent fragments render into an
@@ -27,14 +62,14 @@
  *
  * Ambient occlusion: Visibility Bitmask Ambient Occlusion (VBAO).
  * Reads the opaque depth buffer and a view-space normal buffer written by
- * the opaque colour pass, and produces a single-channel AO image applied
+ * the opaque color pass, and produces a single-channel AO image applied
  * to the ambient term in material.frag. Only opaque geometry receives AO;
  * WBOIT transparent surfaces are drawn after the VBAO passes and sample
  * the AO image only for the opaque scene behind them.
  *
  * Both VBAO passes are fragment shaders drawn as full-screen triangles,
  * not compute dispatches. The workload is a per-pixel gather with a single
- * colour output, which is what the fragment stage is for.
+ * color output, which is what the fragment stage is for.
  *
  * VBAO runs at HALF the render resolution. The raw and blurred AO textures
  * are gl_ao_width x gl_ao_height. material.frag samples the blurred one
@@ -51,28 +86,38 @@
  * material/model UBOs on 0 and 1, and the per-dispatch glBindBufferBase
  * calls are gone.
  *
- * The full-screen triangle vertex shader (oit_composite.vert) is compiled
- * once at startup and attached to all three programs that use it (WBOIT
- * composite, VBAO, VBAO blur), instead of being recompiled three times.
+ * The full-screen triangle vertex shader (fullscreen.vert) is compiled
+ * once at startup and attached to all four programs that use it (WBOIT
+ * composite, VBAO, VBAO blur, post-process).
  *
- * Transparency pipeline (thirteen passes):
- *   1.  Opaque depth pre-pass         -> gl_depth_tex
- *   2.  Cluster build
- *   3.  Opaque colour pass            -> gl_color_tex + gl_normal_tex
- *   3.5 VBAO (half-res)               -> gl_ao_tex
- *   3.6 VBAO bilateral blur (half-res)-> gl_ao_blurred_tex
- *   4.  Transmissive depth pass       -> gl_transmissive_depth_col
- *                                        + gl_transmissive_depth_tex
- *   5.  ALPHA_PASS_BEHIND (WBOIT)     -> gl_oit_fbo accum + reveal,
- *                                        then composite over gl_color_tex
- *   6.  Copy gl_color_tex             -> gl_refraction_src
- *   7.  Transmissive colour pass      -> gl_color_tex, writes depth
- *                                        (samples gl_refraction_src)
- *   8.  ALPHA_PASS_FRONT (WBOIT)      -> gl_oit_fbo accum + reveal,
- *                                        then composite over gl_color_tex
- *   9.  Transparent depth-only pass   -> gl_depth_tex (frontmost alpha)
- *  10.  Blit depth to low-res FBO for audio
- *  11.  Blit to default FBO
+ * GL STATE HYGIENE:
+ *   Each pass is responsible for enabling the state it depends on and
+ *   restoring the state it perturbs. Pass 11 (post-process) in particular
+ *   disables depth test and depth write, and MUST restore them before
+ *   returning, because Pass 1 (opaque depth pre-pass) does not enable
+ *   depth test itself. If Pass 11 leaves depth test disabled, the next
+ *   frame's pre-pass writes garbage depth and the opaque color pass
+ *   renders without depth testing, producing the wrong draw order.
+ *
+ * Transparency pipeline (fourteen passes):
+ *   1.   Opaque depth pre-pass         -> gl_depth_tex
+ *   2.   Cluster build
+ *   3.   Opaque color pass            -> gl_color_tex (HDR) + gl_normal_tex
+ *   3.5  VBAO (half-res)               -> gl_ao_tex
+ *   3.6  VBAO bilateral blur (half-res)-> gl_ao_blurred_tex
+ *   4.   Transmissive depth pass       -> gl_transmissive_depth_col
+ *                                         + gl_transmissive_depth_tex
+ *   5.   ALPHA_PASS_BEHIND (WBOIT)     -> gl_oit_fbo accum + reveal,
+ *                                         then composite over gl_color_tex
+ *   6.   Copy gl_color_tex             -> gl_refraction_src (HDR)
+ *   7.   Transmissive color pass      -> gl_color_tex, writes depth
+ *                                         (samples gl_refraction_src)
+ *   8.   ALPHA_PASS_FRONT (WBOIT)      -> gl_oit_fbo accum + reveal,
+ *                                         then composite over gl_color_tex
+ *   9.   Transparent depth-only pass   -> gl_depth_tex (frontmost alpha)
+ *   10.  Blit depth to low-res FBO for audio
+ *   11.  Post-process                  -> default FBO (tone map, grade,
+ *                                         sRGB, gamma, posterize, dither)
  *
  * All materials with EFFECT_ALPHA (window glass, smoke, holograms, oil
  * slicks, …) go through the two WBOIT passes. Materials with
@@ -103,9 +148,13 @@
  *   material.frag declares uRefractionSrc, uTransmissiveDepthTex and
  *   uAOTex with layout(binding = N). Those samplers have no addressable
  *   uniform location (glGetUniformLocation returns -1), so the C side binds
- *   the source textures to their fixed units 2, 3 and 4 unconditionally in
+ *   the source textures to their fixed units (2, 3 and 4) unconditionally in
  *   set_uniforms_for_variant. Unit 4 receives the *blurred* AO texture;
  *   the raw gl_ao_tex is only ever read by the blur pass.
+ *
+ *   post_process.frag declares uColorHDR (binding = 0) and uMaskTex
+ *   (binding = 1). Both are fixed-unit; the C side binds them to units 0
+ *   and 1 unconditionally in the Pass 11 draw.
  *
  * Usage:
  *   #define RASTERIZER_GL_IMPLEMENTATION
@@ -186,6 +235,10 @@ void render_set_render_resolution(i32 render_width, i32 render_height);
 i32 render_get_render_width(void);
 i32 render_get_render_height(void);
 static INLINE u8 color_to_u8(real x);
+
+/* Post-process controls */
+void render_set_exposure(real exposure);
+void render_set_gamma(real gamma);
 
 /* Particle system */
 void render_particle_system_init(int max_particles);
@@ -448,11 +501,11 @@ static int gl_shader_compilations = 0;
 
 /* ---- Shared full-screen vertex shader ----
  *
- * oit_composite.vert is used by three programs: the WBOIT composite, the
- * VBAO pass, and the VBAO blur pass. Compiling it once and attaching the
- * same handle to all three saves two shader compiles at startup. The
- * handle is deleted in render_shutdown after every program that uses it
- * has been destroyed. */
+ * fullscreen.vert is used by four programs: the WBOIT composite, the
+ * VBAO pass, the VBAO blur pass, and the post-process pass. Compiling it
+ * once and attaching the same handle to all four saves three shader
+ * compiles at startup. The handle is deleted in render_shutdown after
+ * every program that uses it has been destroyed. */
 static GLuint gl_fullscreen_vs = 0;
 
 /* ---- UBO handles ---- */
@@ -479,6 +532,10 @@ static real gl_fog_start;
 static real gl_fog_end;
 static real gl_time;
 
+/* ---- Post-process parameters (defaults) ---- */
+static float gl_post_exposure = 1.27f;
+static float gl_post_gamma    = 1.0f;
+
 /* ---- Global light list ---- */
 static light_definition g_lights[MAX_LIGHTS];
 static int g_light_count = 0;
@@ -490,7 +547,19 @@ static GLuint gl_index_vbo = 0;
 static size_t gl_vbo_capacity_bytes = 0;
 static size_t gl_ibo_capacity_bytes = 0;
 
-/* ---- Main FBO (upscaling) ---- */
+/* ---- Main FBO (HDR intermediate + post-process source) ----
+ *
+ * gl_color_tex holds the fully composited linear HDR scene at the end of
+ * every frame. It is RGBA16F. The post-process pass reads it and writes
+ * display-referred values to the default framebuffer.
+ *
+ * gl_normal_tex holds the view-space geometric normal in .rgb and the
+ * per-material posterize mask in .a. It is RGBA8; the alpha channel is
+ * not part of the normal data, so it is a free channel for the mask.
+ *
+ * gl_depth_tex is the shared depth buffer used by gl_fbo, gl_oit_fbo, and
+ * the transmissive passes.
+ */
 static GLuint gl_fbo = 0;
 static GLuint gl_color_tex = 0;
 static GLuint gl_depth_tex = 0;
@@ -515,10 +584,11 @@ static const int gl_low_height = 36;
  *    reads it as a sampler for the opaque-occlusion test.)
  *
  * gl_refraction_src:
- *   RGBA8 copy of gl_color_tex made between the two alpha passes, after the
- *   ALPHA_PASS_BEHIND composite has run and before the transmissive colour
- *   pass. Sampled by the transmissive colour pass to sample the refracted
- *   background.
+ *   RGBA16F copy of gl_color_tex made between the two alpha passes, after
+ *   the ALPHA_PASS_BEHIND composite has run and before the transmissive
+ *   color pass. Sampled by the transmissive color pass to sample the
+ *   refracted background. HDR so that the refracted radiance is not
+ *   pre-compressed by a tone curve that has not yet run.
  */
 static GLuint gl_transmissive_fbo       = 0;
 static GLuint gl_transmissive_depth_col = 0;
@@ -530,10 +600,10 @@ static GLint  gl_transmissive_depth_u_opaque_depth = -1;
 
 /* ---- Weighted Blended OIT resources ----
  *
- * gl_oit_fbo shares gl_depth_tex with gl_fbo. It has two colour attachments:
+ * gl_oit_fbo shares gl_depth_tex with gl_fbo. It has two color attachments:
  *
  *   GL_COLOR_ATTACHMENT0 -> gl_oit_accum_tex (RGBA16F)
- *     RGB: sum of (colour * weight)
+ *     RGB: sum of (color * weight)
  *     A:   sum of (alpha * weight)
  *
  *   GL_COLOR_ATTACHMENT1 -> gl_oit_reveal_tex (R8)
@@ -554,7 +624,7 @@ static GLint  oit_u_reveal_tex         = -1;
 
 /* ---- VBAO resources ----
  *
- * Two single-channel colour textures and their FBOs, both at half the
+ * Two single-channel color textures and their FBOs, both at half the
  * render resolution. gl_ao_tex holds the raw VBAO output; gl_ao_blurred_tex
  * holds the bilateral-blurred version. material.frag samples
  * gl_ao_blurred_tex (bound to fixed unit 4) with GL_LINEAR, which upsamples
@@ -562,7 +632,7 @@ static GLint  oit_u_reveal_tex         = -1;
  *
  * Both passes are full-screen fragment draws using gl_oit_vao, which is the
  * empty VAO used by the WBOIT composite. The vertex stage is the
- * gl_VertexID-generated triangle from oit_composite.vert.
+ * gl_VertexID-generated triangle from fullscreen.vert.
  *
  * The UBO contents only depend on the projection matrix and the half-res
  * target size, both of which change only on render_set_camera or
@@ -582,6 +652,22 @@ static vbao_ubo_t      gl_vbao_ubo_cache;
 static int             gl_vbao_ubo_dirty      = 1;
 static vbao_blur_ubo_t gl_vbao_blur_ubo_cache;
 static int             gl_vbao_blur_ubo_dirty = 1;
+
+/* ---- Post-process resources ----
+ *
+ * gl_post_process_program reads the composited HDR image from gl_color_tex
+ * (bound to unit 0 via layout(binding = 0)) and the posterize mask from
+ * gl_normal_tex.a (bound to unit 1 via layout(binding = 1)). It writes
+ * display-referred values to the default framebuffer.
+ *
+ * The two samplers are fixed-unit, so they have no addressable uniform
+ * location. The C side binds them unconditionally in the Pass 11 draw.
+ */
+static GLuint gl_post_process_program = 0;
+static GLint  pp_u_screen_size = -1;
+static GLint  pp_u_exposure    = -1;
+static GLint  pp_u_gamma       = -1;
+static GLint  pp_u_time        = -1;
 
 /* ---- Batching state ---- */
 #define MAX_BATCHES         256
@@ -863,22 +949,6 @@ static GLuint compile_shader_with_defines(GLenum type, const char* filename, con
     return shader;
 }
 
-static GLuint compile_shader_from_string(GLenum type, const char* src) {
-    GLuint shader = C89GL_glCreateShader(type);
-    C89GL_glShaderSource(shader, 1, &src, NULL);
-    C89GL_glCompileShader(shader);
-    GLint status;
-    C89GL_glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if (!status) {
-        char log[512];
-        C89GL_glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-        fprintf(stderr, "Inline shader compile error:\n%s\n", log);
-        C89GL_glDeleteShader(shader);
-        return 0;
-    }
-    return shader;
-}
-
 /* ---- Generate defines for material variant ----
  *
  * is_depth         — DEPTH_ONLY variant (no fragment output).
@@ -886,7 +956,7 @@ static GLuint compile_shader_from_string(GLenum type, const char* src) {
  *                    one of the two ALPHA_PASS_* defines.
  *
  * EFFECT_ALPHA implies WBOIT_PASS: every alpha material writes to the
- * (accum, reveal) pair instead of a single colour output.
+ * (accum, reveal) pair instead of a single color output.
  */
 static void generate_defines(render_method key, int is_depth, alpha_pass_side side,
                              char* out, size_t out_size) {
@@ -1276,7 +1346,7 @@ static void dispatch_cluster_build(void) {
  *
  * Fragment-stage full-screen pass at half resolution. Reads gl_depth_tex
  * (unit 0) and gl_normal_tex (unit 1), writes the raw half-res AO into
- * gl_ao_fbo's colour attachment. Must be called after the opaque colour
+ * gl_ao_fbo's color attachment. Must be called after the opaque color
  * pass (Pass 3) so both inputs are populated, and before the transmissive
  * passes so the AO term is available when material.frag reads it.
  *
@@ -1284,7 +1354,7 @@ static void dispatch_cluster_build(void) {
  * so the per-frame cost on an idle camera is a single FBO bind, a viewport
  * set, two texture binds, and a draw.
  *
- * State (depth test, blend, colour/depth mask) is set up by the caller so
+ * State (depth test, blend, color/depth mask) is set up by the caller so
  * that the blur dispatch that follows doesn't repeat it. This function
  * leaves the FBO and viewport pointing at gl_ao_fbo.
  */
@@ -1425,36 +1495,13 @@ static void init_cluster_resources(void) {
            gl_num_tiles_x, gl_num_tiles_y, gl_num_clusters);
 }
 
-/* ---- Transmissive depth program (inline) ----
- *
- * Renders frontmost transmissive gl_FragCoord.z into
- * gl_transmissive_depth_col. A fragment is discarded if it lies behind the
- * opaque scene (sampled from uOpaqueDepthTex). Transmissive-vs-transmissive
- * is handled by the FBO's own depth attachment.
- */
-static const char* TRANSMISSIVE_DEPTH_VS =
-    "#version 430 core\n"
-    "layout(location=0) in vec3 aPos;\n"
-    "layout(location=3) in float aModelIndex;\n"
-    "uniform mat4 uViewProj;\n"
-    "layout(std140, row_major) uniform ModelMatrices { mat4 uModels[1024]; };\n"
-    "void main() {\n"
-    "    gl_Position = uViewProj * uModels[int(aModelIndex)] * vec4(aPos, 1.0);\n"
-    "}\n";
-
-static const char* TRANSMISSIVE_DEPTH_FS =
-    "#version 430 core\n"
-    "uniform sampler2D uOpaqueDepthTex;\n"
-    "out vec4 FragColor;\n"
-    "void main() {\n"
-    "    float opaque = texelFetch(uOpaqueDepthTex, ivec2(gl_FragCoord.xy), 0).r;\n"
-    "    if (gl_FragCoord.z > opaque) discard;\n"
-    "    FragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0);\n"
-    "}\n";
-
 static void init_transmissive_depth_program(void) {
-    GLuint vs = compile_shader_from_string(GL_VERTEX_SHADER, TRANSMISSIVE_DEPTH_VS);
-    GLuint fs = compile_shader_from_string(GL_FRAGMENT_SHADER, TRANSMISSIVE_DEPTH_FS);
+    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER,
+                                            "transmissive_depth.vert",
+                                            "#version 430 core\n");
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
+                                            "transmissive_depth.frag",
+                                            "#version 430 core\n");
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
         if (fs) C89GL_glDeleteShader(fs);
@@ -1530,9 +1577,6 @@ static void init_wboit_resources(void) {
     C89GL_glGenVertexArrays(1, &gl_oit_vao);
 
     {
-        /* Use the shared full-screen vertex shader rather than recompiling
-         * oit_composite.vert here. The shared handle is deleted once in
-         * render_shutdown; do NOT delete it here. */
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
                                                 "oit_composite.frag",
                                                 "#version 430 core\n");
@@ -1571,7 +1615,7 @@ static void init_wboit_resources(void) {
  * Creates the raw half-res AO target (r8), its FBO, and compiles the
  * fragment-stage VBAO program from vbao.frag + the shared full-screen
  * vertex shader. The fragment shader writes to gl_ao_tex as a normal
- * colour output; the vertex stage provides gl_FragCoord via the
+ * color output; the vertex stage provides gl_FragCoord via the
  * gl_VertexID-generated full-screen triangle.
  *
  * The VBAO UBO is bound once to VBAO_UBO_BINDING and its storage is
@@ -1717,6 +1761,48 @@ static void init_vbao_blur_resources(void) {
 
     printf("VBAO blur initialised (fragment stage, half-res %dx%d).\n",
            gl_ao_width, gl_ao_height);
+}
+
+/* ---- Post-process init ----
+ *
+ * Compiles post_process.frag and attaches the shared full-screen vertex
+ * shader. Two samplers are used (uColorHDR at binding 0, uMaskTex at
+ * binding 1), both fixed-unit, so no uniform lookup is needed for them.
+ * The scalar uniforms (screen size, exposure, gamma, time) are looked up
+ * normally.
+ */
+static void init_post_process_resources(void) {
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
+                                            "post_process.frag",
+                                            "#version 430 core\n");
+    if (!gl_fullscreen_vs || !fs) {
+        if (fs) C89GL_glDeleteShader(fs);
+        fprintf(stderr, "ERROR: Failed to compile post_process program\n");
+        return;
+    }
+    gl_post_process_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(gl_post_process_program, gl_fullscreen_vs);
+    C89GL_glAttachShader(gl_post_process_program, fs);
+    C89GL_glLinkProgram(gl_post_process_program);
+    C89GL_glDeleteShader(fs);
+
+    GLint status;
+    C89GL_glGetProgramiv(gl_post_process_program, GL_LINK_STATUS, &status);
+    if (!status) {
+        char log[512];
+        C89GL_glGetProgramInfoLog(gl_post_process_program, sizeof(log), NULL, log);
+        printf("post_process program link error:\n%s\n", log);
+        C89GL_glDeleteProgram(gl_post_process_program);
+        gl_post_process_program = 0;
+        return;
+    }
+
+    pp_u_screen_size = C89GL_glGetUniformLocation(gl_post_process_program, "uScreenSize");
+    pp_u_exposure    = C89GL_glGetUniformLocation(gl_post_process_program, "uExposure");
+    pp_u_gamma       = C89GL_glGetUniformLocation(gl_post_process_program, "uGamma");
+    pp_u_time        = C89GL_glGetUniformLocation(gl_post_process_program, "uTime");
+
+    printf("Post-process initialised (HDR resolve -> sRGB).\n");
 }
 
 /* ================================================================
@@ -2117,6 +2203,10 @@ INLINE void render_set_light_at_index(int index, const light_definition *def) {
     g_lights[index] = *def;
     if (index + 1 > g_light_count) g_light_count = index + 1;
 }
+
+/* ---- Public: post-process controls ---- */
+INLINE void render_set_exposure(real exposure) { gl_post_exposure = (float)exposure; }
+INLINE void render_set_gamma(real gamma)       { gl_post_gamma    = (float)gamma; }
 
 /* ---- Set uniforms for a shader variant ----
  *
@@ -2538,13 +2628,17 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     gl_default_fbo = 0;
     C89GL_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &gl_default_fbo);
 
-    /* ---- Main render FBO ---- */
+    /* ---- Main render FBO ----
+     *
+     * gl_color_tex is RGBA16F: it holds the composited linear HDR scene
+     * that the post-process pass reads. gl_normal_tex is RGBA8: .rgb is
+     * the view-space normal, .a is the per-material posterize mask. */
     C89GL_glGenFramebuffers(1, &gl_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
 
     C89GL_glGenTextures(1, &gl_color_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -2628,10 +2722,10 @@ INLINE int render_init(i32 window_width, i32 window_height) {
             printf("Transmissive FBO incomplete! status=0x%x\n", s);
     }
 
-    /* ---- Refraction source ---- */
+    /* ---- Refraction source (HDR) ---- */
     C89GL_glGenTextures(1, &gl_refraction_src);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -2652,10 +2746,11 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glEnable(GL_CULL_FACE);
     C89GL_glFrontFace(GL_CCW);
 
-    /* Compile the full-screen triangle vertex shader once; all three
-     * full-screen programs (WBOIT composite, VBAO, VBAO blur) share it. */
+    /* Compile the full-screen triangle vertex shader once; all four
+     * full-screen programs (WBOIT composite, VBAO, VBAO blur, post-process)
+     * share it. */
     gl_fullscreen_vs = compile_shader_with_defines(GL_VERTEX_SHADER,
-                                                   "oit_composite.vert",
+                                                   "fullscreen.vert",
                                                    "#version 430 core\n");
     if (!gl_fullscreen_vs) {
         printf("ERROR: Failed to compile shared full-screen vertex shader.\n");
@@ -2668,6 +2763,7 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     init_wboit_resources();
     init_vbao_resources();
     init_vbao_blur_resources();
+    init_post_process_resources();
 
     printf("render_init returning 1 (success)\n");
     return 1;
@@ -2708,6 +2804,9 @@ INLINE void render_shutdown(void) {
     if (gl_oit_reveal_tex)  { C89GL_glDeleteTextures(1, &gl_oit_reveal_tex); gl_oit_reveal_tex = 0; }
     if (gl_oit_accum_tex)   { C89GL_glDeleteTextures(1, &gl_oit_accum_tex); gl_oit_accum_tex = 0; }
     if (gl_oit_fbo)         { C89GL_glDeleteFramebuffers(1, &gl_oit_fbo); gl_oit_fbo = 0; }
+
+    /* Post-process cleanup */
+    if (gl_post_process_program) { C89GL_glDeleteProgram(gl_post_process_program); gl_post_process_program = 0; }
 
     /* Transmissive / refraction cleanup */
     if (gl_transmissive_depth_program) { C89GL_glDeleteProgram(gl_transmissive_depth_program); gl_transmissive_depth_program = 0; }
@@ -2849,8 +2948,12 @@ INLINE void render_clear_color(real r, real g, real b) {
     bind_fbo();
     C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     C89GL_glDepthMask(GL_TRUE);
-    C89GL_glClearColor(r, g, b, 1.0f);
-    C89GL_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    GLfloat color[4] = { r, g, b, 1.0f };
+    GLfloat zero[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
+    C89GL_glClearBufferfv(GL_COLOR, 0, color);
+    C89GL_glClearBufferfv(GL_COLOR, 1, zero);   /* normal + posterize mask */
+    C89GL_glClear(GL_DEPTH_BUFFER_BIT);
 }
 INLINE const u32* render_get_fb(void) { return NULL; }
 
@@ -2873,7 +2976,7 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_normal_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl_normal_tex, 0);
@@ -2894,7 +2997,7 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
                        GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
 
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
 
     /* WBOIT targets resize */
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
@@ -3000,7 +3103,7 @@ static void oit_composite_into_current_fbo(void) {
     C89GL_glDepthMask(GL_TRUE);
 }
 
-/* ---- render_finish (thirteen-pass pipeline with VBAO + WBOIT) ---- */
+/* ---- render_finish (fourteen-pass pipeline with VBAO + WBOIT + post) ---- */
 INLINE void render_finish(void) {
     GLuint current_program = 0;
     int current_cull = 1;
@@ -3025,11 +3128,26 @@ INLINE void render_finish(void) {
 
         /* ============================================================
            Pass 1: Opaque depth pre-pass
+
+           Self-contained state setup. Depth test is enabled explicitly
+           here rather than assumed, because Pass 11 (post-process) disables
+           it at the end of the previous frame and restores it — but this
+           pass must not depend on that restore having happened. If depth
+           test is not enabled here, the pre-pass writes garbage depth
+           (last-fragment-wins instead of closest-fragment-wins) and the
+           following color pass renders with depth testing off, producing
+           the wrong draw order.
+
+           GL_BLEND is disabled because the pre-pass writes no color and
+           leaving blend state from a previous pass would only matter if
+           blending were somehow enabled here, which it should never be.
            ============================================================ */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glBindVertexArray(gl_vao);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
 
+        C89GL_glEnable(GL_DEPTH_TEST);
+        C89GL_glDisable(GL_BLEND);
         C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         C89GL_glDepthMask(GL_TRUE);
         C89GL_glDepthFunc(GL_LESS);
@@ -3059,9 +3177,9 @@ INLINE void render_finish(void) {
         C89GL_glDepthFunc(GL_LEQUAL);
 
         /* ============================================================
-           Pass 3: Opaque colour pass
-           Writes colour to gl_color_tex and view-space normal to
-           gl_normal_tex (both attached to gl_fbo).
+           Pass 3: Opaque color pass
+           Writes linear HDR color to gl_color_tex and view-space normal
+           to gl_normal_tex.rgb, plus the posterize mask in gl_normal_tex.a.
            ============================================================ */
         {
             GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
@@ -3070,6 +3188,7 @@ INLINE void render_finish(void) {
         C89GL_glBindVertexArray(gl_vao);
         C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         C89GL_glDepthMask(GL_TRUE);
+        C89GL_glEnable(GL_DEPTH_TEST);
         C89GL_glEnable(GL_BLEND);
         C89GL_glBlendFunc(GL_ONE, GL_ZERO);
         current_program = 0;
@@ -3098,7 +3217,7 @@ INLINE void render_finish(void) {
         /* ============================================================
            Pass 3.5 + 3.6: VBAO and VBAO bilateral blur (half-res)
            Both passes share the same disabled-depth / disabled-blend /
-           full-colour-mask / no-depth-write state. The two dispatches
+           full-color-mask / no-depth-write state. The two dispatches
            each bind their own FBO, viewport, textures and program, and
            the common state is restored once here afterwards.
            ============================================================ */
@@ -3116,9 +3235,9 @@ INLINE void render_finish(void) {
         C89GL_glBindVertexArray(gl_vao);
 
         /* Restore single-attachment draw buffer for downstream passes that
-         * bind gl_fbo. The transmissive colour pass (Pass 7) and the
+         * bind gl_fbo. The transmissive color pass (Pass 7) and the
          * transparent depth-only pass (Pass 9) both target gl_fbo with a
-         * single colour attachment. */
+         * single color attachment. */
         {
             GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
             C89GL_glDrawBuffers(1, bufs);
@@ -3131,7 +3250,7 @@ INLINE void render_finish(void) {
         for (i = 0; i < gl_batch_count; i++)
             if (gl_batches[i].is_refractive) { have_transmissive = 1; break; }
 
-        /* Always clear the transmissive depth colour to 1.0 so the
+        /* Always clear the transmissive depth color to 1.0 so the
          * alpha-behind shader can trust "1.0 means no transmissive here". */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
@@ -3149,6 +3268,7 @@ INLINE void render_finish(void) {
             C89GL_glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
             C89GL_glDepthMask(GL_FALSE);
             C89GL_glDepthFunc(GL_LESS);
+            C89GL_glEnable(GL_DEPTH_TEST);
             C89GL_glDisable(GL_BLEND);
 
             C89GL_glActiveTexture(GL_TEXTURE0);
@@ -3190,6 +3310,7 @@ INLINE void render_finish(void) {
         C89GL_glEnable(GL_BLEND);
         C89GL_glBlendFunci(0, GL_ONE, GL_ONE);
         C89GL_glBlendFunci(1, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+        C89GL_glEnable(GL_DEPTH_TEST);
         C89GL_glDepthMask(GL_FALSE);
         C89GL_glDepthFunc(GL_LEQUAL);
 
@@ -3223,7 +3344,7 @@ INLINE void render_finish(void) {
         oit_composite_into_current_fbo();
 
         /* ============================================================
-           Pass 6: Copy gl_color_tex -> gl_refraction_src
+           Pass 6: Copy gl_color_tex -> gl_refraction_src (HDR)
            ============================================================ */
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
         C89GL_glActiveTexture(GL_TEXTURE0);
@@ -3232,7 +3353,7 @@ INLINE void render_finish(void) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
 
         /* ============================================================
-           Pass 7: Transmissive colour pass
+           Pass 7: Transmissive color pass
            ============================================================ */
         if (have_transmissive) {
             C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
@@ -3241,6 +3362,7 @@ INLINE void render_finish(void) {
             C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
             C89GL_glDepthMask(GL_TRUE);
             C89GL_glDepthFunc(GL_LEQUAL);
+            C89GL_glEnable(GL_DEPTH_TEST);
             C89GL_glEnable(GL_BLEND);
             C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -3285,6 +3407,7 @@ INLINE void render_finish(void) {
         C89GL_glEnable(GL_BLEND);
         C89GL_glBlendFunci(0, GL_ONE, GL_ONE);
         C89GL_glBlendFunci(1, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+        C89GL_glEnable(GL_DEPTH_TEST);
         C89GL_glDepthMask(GL_FALSE);
         C89GL_glDepthFunc(GL_LESS);
 
@@ -3366,14 +3489,78 @@ INLINE void render_finish(void) {
     }
 
     /* ============================================================
-       Pass 11: Blit to default FBO
+       Pass 11: Post-process to default FBO
+       ============================================================
+       Reads the composited linear HDR scene from gl_color_tex, tone maps,
+       color grades, encodes to sRGB, applies the user gamma, applies the
+       per-material posterize mask from gl_normal_tex.a, and dithers.
+
+       This is the only pass in the entire pipeline that produces
+       display-referred values. Every upstream pass operates on linear
+       HDR so that the nonlinear tone curve is applied exactly once,
+       after all linear blending has already happened.
+
+       State restoration: this pass disables depth test and depth write
+       so that the full-screen triangle is not rejected by the depth
+       buffer left over from earlier passes. Both must be restored at
+       the end because Pass 1 of the next frame does not enable depth
+       test itself — it assumes the state is already correct from
+       render_init and the previous frame's cleanup. See the top-of-file
+       GL STATE HYGIENE note.
        ============================================================ */
-    C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
-    C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
-    C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
-                            0, 0, gl_win_width, gl_win_height,
-                            GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+    if (gl_post_process_program) {
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+        C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
+
+        C89GL_glDisable(GL_DEPTH_TEST);
+        C89GL_glDisable(GL_BLEND);
+        C89GL_glDepthMask(GL_FALSE);
+
+        C89GL_glUseProgram(gl_post_process_program);
+
+        /* Both samplers use layout(binding = N), so they are fixed-unit
+         * and have no addressable uniform location. Bind unconditionally. */
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
+
+        if (pp_u_screen_size != -1)
+            C89GL_glUniform2f(pp_u_screen_size, (float)gl_render_width, (float)gl_render_height);
+        if (pp_u_exposure != -1)
+            C89GL_glUniform1f(pp_u_exposure, gl_post_exposure);
+        if (pp_u_gamma != -1)
+            C89GL_glUniform1f(pp_u_gamma, gl_post_gamma);
+        if (pp_u_time != -1)
+            C89GL_glUniform1f(pp_u_time, (float)gl_time);
+
+        C89GL_glBindVertexArray(gl_oit_vao);
+        C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+        C89GL_glBindVertexArray(0);
+
+        C89GL_glUseProgram(0);
+        C89GL_glActiveTexture(GL_TEXTURE0);
+
+        /* Restore pipeline state perturbed by this pass. The depth test
+         * and depth write in particular MUST be restored: Pass 1 of the
+         * next frame (opaque depth pre-pass) does not enable depth test
+         * itself, so if we leave it disabled the pre-pass writes garbage
+         * depth and the following opaque color pass renders without
+         * depth testing, producing the wrong draw order. */
+        C89GL_glEnable(GL_DEPTH_TEST);
+        C89GL_glDepthMask(GL_TRUE);
+        C89GL_glEnable(GL_BLEND);
+        C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+        /* Fallback: raw blit, no post-process. Only useful for debugging
+         * when the post-process program failed to compile — the output
+         * will look wrong (linear HDR values interpreted as display). */
+        C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
+        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
+        C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
+                                0, 0, gl_win_width, gl_win_height,
+                                GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+    }
+
     C89GL_swap_buffers(&gl_ctx);
 
     gl_pool_used_floats = 0;

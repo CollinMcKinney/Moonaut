@@ -13,27 +13,27 @@
 //   2. Save the geometric normal, then perturb the shading normal (wave
 //      and/or noise bump).
 //   3. Compute specular-AA-filtered roughness, F0, F_avg, and coat F0.
-//      Apply OpenPBR coat roughening to the base specular roughness.
-//      Specular AA uses half-vector slope-space NDF filtering.
+//      Apply coat roughening to the base specular roughness.
 //   4. Loop over the lights in the fragment's cluster.
 //        For each light:
-//          a. Evaluate diffuse (EON), specular, transmission, clearcoat,
+//          a. Evaluate diffuse, specular, transmission, clearcoat,
 //             sheen, back glow, and rim.
 //          b. Attenuate the base by the layers above it (energy conservation).
-//             Clearcoat uses OpenPBR darkening; sheen uses Kulla-Conty
-//             multiscatter compensation with an analytic Charlie albedo fit.
 //          c. Accumulate.
 //   5. Add ambient lighting via sample_env_map(), a placeholder environment
 //      probe.
-//   6. If EFFECT_TRANSMISSION is defined, sample the pre-transmissive colour
+//   6. If EFFECT_TRANSMISSION is defined, sample the pre-transmissive color
 //      buffer along the refracted ray.
 //   7. Apply VBAO to every ambient lobe except transmission.
 //   8. Add emissive, strobe, tint, fog.
-//   9. Apply HDR post effects (iridescence, fringe).
-//  10. Tone map (luminance-only filmic curve, hue-preserving).
-//  11. Apply LDR post effects (glitch, saturation, posterize).
-//  12. Apply the color grade.
-//  13. Encode to sRGB for display.
+//   9. Apply per-material HDR stylizations (iridescence, fringe, glitch,
+//      saturation).
+//  10. Apply per-material posterize, then return linear HDR radiance.
+//      Write it to the appropriate target (single color, or WBOIT
+//      accumulation pair). The alpha channel of the normal output is
+//      zero for all materials; nothing reads.
+//
+// All outputs are linear HDR radiance.
 //
 // =============================================================================
 // PHYSICAL ACCURACY NOTES
@@ -71,6 +71,10 @@
 //     Sheen is a top layer; its transmittance to the layers below depends
 //     on the view direction, not on any particular light direction.
 //
+//   * The split-sum environment BRDF bias term (envBRDF.y) is tinted by the
+//     base color for metallic materials. See the ambientSpec computation in
+//     shade_surface for the derivation.
+//
 // =============================================================================
 
 #ifdef DEPTH_ONLY
@@ -80,7 +84,7 @@ void main() { }
 // =============================================================================
 // Constants
 // =============================================================================
-#define PI 3.14159265
+#define PI 3.141592653589793
 
 const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
 
@@ -207,6 +211,7 @@ float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
 // =============================================================================
 // Environment map sampling
+// TODO: Add an IBL environment map uniform and sample from it instead of generating checker pattern.
 // =============================================================================
 vec3 sample_env_map(vec3 dir, float roughness) {
     float horizon_blur = saturate(roughness * 1.5);
@@ -683,11 +688,6 @@ vec3 diffuse_eon_oren_nayar(vec3 N, vec3 V, vec3 L, vec3 baseColor, float roughn
 // a view-dependent factor whose per-channel sum averages to 1 over the view
 // hemisphere, so the total energy of the diffuse lobe is unchanged — only
 // its distribution across channels and view angles.
-//
-// A weighted sum of two BRDFs with different albedos does not have this
-// property: the blend of two BRDFs produces a total energy that depends on
-// the view/light angle and does not equal either lobe's. The single-BRDF
-// modulation is exactly energy-conserving.
 vec3 subsurface_chromatic_modulation(vec3 subsurfaceColor, float NdotV, float strength) {
     float maxC = max(subsurfaceColor.r,
                      max(subsurfaceColor.g, subsurfaceColor.b));
@@ -877,141 +877,6 @@ vec3 back_glow_lobe(vec3 N, vec3 L, float NdotV) {
 }
 
 // =============================================================================
-// Tone mapping
-// =============================================================================
-float filmic_base(float x, float A, float B, float C,
-                  float D, float E, float F) {
-    return ((x * (A * x + C * B) + D * E)
-          / (x * (A * x + B) + D * F)) - E / F;
-}
-
-vec3 soft_knee_exponential(vec3 c, float knee) {
-    float M = max(c.r, max(c.g, c.b));
-    if (M <= knee) return c;
-    float t  = (M - knee) / (1.0 - knee);
-    float Mc = 1.0 - (1.0 - knee) * exp(-t);
-    return c * (Mc / M);
-}
-
-vec3 tone_map(vec3 color) {
-    const float A = 0.15;
-    const float B = 0.55;
-    const float C = 0.10;
-    const float D = 0.20;
-    const float E = 0.02;
-    const float F = 0.35;
-    const float W = 10.0;
-
-    const float exposure = 1.4;
-    color = max(color * exposure, vec3(0.0));
-
-    float L  = dot(color, LUMA_REC709);
-    float Lm = filmic_base(L, A, B, C, D, E, F)
-             / filmic_base(W, A, B, C, D, E, F);
-
-    const float CHROMA_COMPRESS = 0.25;
-    float chromaScale = 1.0 - CHROMA_COMPRESS * smoothstep(0.70, 1.0, Lm);
-
-    vec3 grey   = vec3(Lm);
-    vec3 scaled = color * (Lm / max(L, 1e-5));
-    vec3 mapped = grey + (scaled - grey) * chromaScale;
-
-    const float KNEE = 0.80;
-    mapped = soft_knee_exponential(mapped, KNEE);
-
-    const float TOE_AMOUNT = 0.006;
-    const float TOE_RADIUS = 0.15;
-    float L_final = dot(mapped, LUMA_REC709);
-    mapped += TOE_AMOUNT * (1.0 - smoothstep(0.0, TOE_RADIUS, L_final));
-
-#ifdef EFFECT_SATURATION
-    float luma = dot(mapped, LUMA_REC709);
-    mapped = mix(vec3(luma), mapped, uMatSaturation);
-#endif
-
-    return mapped;
-}
-
-// =============================================================================
-// Color grade
-// =============================================================================
-//
-// Applied after tone mapping, in display-referred [0,1] space, before the
-// sRGB encode. The grade is a sequence of three perceptual operations:
-//
-//   1. Black-point lift. Real film blacks are not pure black; they carry a
-//      small amount of density from the print stock and scanner. A lift of
-//      0.005 in linear space becomes roughly byte 13 after sRGB encoding,
-//      which is a proper film-style black — visible as a dark tone, not a
-//      flat zero.
-//
-//   2. Shadow/highlight split. Shadows shift toward cool (blue/teal),
-//      highlights toward warm (orange). The mask is computed from luminance
-//      so the shift applies per-tone-range rather than per-channel. The
-//      magnitudes are deliberately small — at 0.002–0.010 in linear space,
-//      the split is atmospheric rather than theatrical.
-//
-//   3. Mild S-curve on luminance. A smoothstep applied to the luminance
-//      with a 35% mix strength. This adds a small amount of contrast to the
-//      midtones without clipping the ends.
-//
-// The values below are calibrated for a pipeline that:
-//   - Tone maps with the Hable curve at exposure 1.4
-//   - Applies this grade
-//   - Encodes to sRGB in the shader (linear_to_srgb)
-//   - Writes to a GL_LINEAR framebuffer
-//
-// If any of those stages change, this grade needs to be retuned.
-// =============================================================================
-vec3 apply_color_grade(vec3 c) {
-    // 1. Black-point lift. A small amount of lift gives the image a
-    //    film-like black floor. Increase the offset for a heavier film
-    //    look; decrease toward 0.002 for a cleaner, more modern look.
-    c = c * 0.98 + 0.005;
-
-    // 2. Shadow / highlight color split.
-    float luma = dot(c, LUMA_REC709);
-    float shadow_mask    = 1.0 - smoothstep(0.0, 0.45, luma);
-    float highlight_mask = smoothstep(0.55, 1.0, luma);
-
-    // Cool shadows: pull red slightly, push blue.
-    c.r -= 0.004 * shadow_mask;
-    c.g += 0.002 * shadow_mask;
-    c.b += 0.010 * shadow_mask;
-
-    // Warm highlights: push red, pull blue.
-    c.r += 0.008 * highlight_mask;
-    c.g += 0.003 * highlight_mask;
-    c.b -= 0.006 * highlight_mask;
-
-    // 3. Mild contrast S-curve on luminance, applied chroma-preserving.
-    //    The smoothstep is used as a cheap contrast function; 0.35 is the
-    //    blend strength between the original luminance and the curved one.
-    float L = max(dot(c, LUMA_REC709), 1e-4);
-    float L_curved = L * L * (3.0 - 2.0 * L);
-    L_curved = mix(L, L_curved, 0.35);
-    c *= L_curved / L;
-
-    return c;
-}
-
-// =============================================================================
-// sRGB transfer function (linear -> gamma-encoded)
-// =============================================================================
-//
-// The framebuffer format is GL_RGBA8, which stores linear values as-is.
-// The display expects gamma-encoded values, so the shader applies the
-// transfer curve explicitly. If the framebuffer is ever changed to
-// GL_SRGB8_ALPHA8, delete this function — the GPU will apply the encoding
-// automatically on write.
-vec3 linear_to_srgb(vec3 c) {
-    c = max(c, vec3(0.0));
-    vec3 low  = c * 12.92;
-    vec3 high = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
-    return mix(low, high, step(vec3(0.0031308), c));
-}
-
-// =============================================================================
 // Cluster lookup
 // =============================================================================
 void cluster_lookup(out uint count, out uint base) {
@@ -1075,8 +940,7 @@ vec3 lobe_diffuse(vec3 N, vec3 V, vec3 L, vec3 lightCol,
     vec3 diffuseColor = uMatColor * (1.0 - uMatMetallic);
 
 #ifdef EFFECT_SUBSURFACE
-    // Chromatic SSS via per-channel albedo modulation. See
-    // subsurface_chromatic_modulation for the derivation.
+    // Chromatic SSS via per-channel albedo modulation.
     {
         float sssStrength = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
         float NdotV_local = max(dot(N, V), 1e-4);
@@ -1519,8 +1383,26 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 ambientDiffuse = irradiance * diffuseColor * kD_env
                         * uMatAmbientLightFactor;
 
+    // -------------------------------------------------------------------------
+    // Split-sum environment BRDF bias tinting.
+    //
+    // envBRDF.y is an achromatic constant from the Karis split-sum fit.
+    // That is correct for dielectrics but wrong for metals: a metal's
+    // reflectance is tinted by its base color at every angle except
+    // grazing. Without tinting, the bias term injects white into the
+    // reflection, and because it grows as NdotV drops (envBRDF.y ≈ 0.36
+    // at NdotV = 0.1, roughness 0.3), a saturated gold sphere reads as
+    // pale off-white across most of its visible surface.
+    //
+    // The mix is continuous in metallic; pure dielectrics are unchanged.
+    // F0 * envBRDF.x is left untouched because F0 already carries the
+    // correct tint at every metallic value.
+    // -------------------------------------------------------------------------
     vec3 envSpec = sample_env_map(R, ambientRoughness);
-    vec3 ambientSpec = envSpec * (F0 * envBRDF.x + envBRDF.y)
+    vec3 biasTint = mix(vec3(1.0), uMatColor, metallic);
+    vec3 F_env = F0 * envBRDF.x + envBRDF.y * biasTint;
+
+    vec3 ambientSpec = envSpec * F_env
                      * uMatSpecularTint * specOcc * uMatAmbientLightFactor;
 
     vec3 ambientClearcoat = vec3(0.0);
@@ -1644,14 +1526,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     colorHDR = max(colorHDR, vec3(0.0));
 
-    // -------------------------------------------------------------------------
-    // HDR post effects (before tone mapping)
-    //
-    // Iridescence and chromatic fringe are spectral effects. They operate on
-    // the wavelength content of the signal, which is a linear-space property.
-    // Applying them after tone mapping would make their strength depend on
-    // the tone curve's compression, which is not physically motivated.
-    // -------------------------------------------------------------------------
 #ifdef EFFECT_IRIDESCENCE
     {
         float angle = NdotV * 2.0 * PI;
@@ -1684,13 +1558,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
-
-    // -------------------------------------------------------------------------
-    // LDR post effects (after tone mapping)
-    //
-    // Stylized display effects. These operate on the tone-mapped perceptual
-    // output and are not physically derived.
-    // -------------------------------------------------------------------------
 #ifdef EFFECT_GLITCH
     {
         vec3 q = floor(worldPos * 4096.0 + uTime * 60.0);
@@ -1701,9 +1568,16 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
+#ifdef EFFECT_SATURATION
+    {
+        float luma = dot(colorHDR, LUMA_REC709);
+        colorHDR = mix(vec3(luma), colorHDR, uMatSaturation);
+    }
+#endif
+
 #ifdef EFFECT_POSTERIZE
     {
-        float levels = float(uMatPosterizeLevels);
+        float levels = max(float(uMatPosterizeLevels), 2.0);
         colorHDR = floor(colorHDR * levels + 0.5) / levels;
     }
 #endif
@@ -1727,7 +1601,7 @@ float wboit_weight(float eye_depth, float alpha) {
 layout(location = 0) out vec4 outAccumulation;
 layout(location = 1) out vec4 outRevealage;
 #else
-out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 outNormal;
 #endif
 
@@ -1743,16 +1617,6 @@ void main() {
 #endif
 
     vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
-    // TODO: output HDR so our alpha & transmissive passes see the plain HDR.
-    // then in a later pass apply tone mapping, color grading, sRGB conversion and gamma correction.
-    vec3 colorLDR = tone_map(colorHDR); 
-    colorLDR = apply_color_grade(colorLDR); // TODO: add a color-grading LUT uniform
-    colorLDR = linear_to_srgb(colorLDR);
-    // TODO: make gamma a uniform instead of hard-coding to 0.7
-    // Typically in the range [0.5, 2.5]
-    // 1.0 = no change, > 1.0 = brighter, < 1.0 = darker
-    float gamma = 0.7;
-    colorLDR = pow(colorLDR, vec3(1.0 / gamma));
 
     float alpha = 1.0;
 #ifdef EFFECT_ALPHA
@@ -1760,19 +1624,20 @@ void main() {
 #endif
 
 #ifdef WBOIT_PASS
+    // Posterize has already been applied inside shade_surface. The value
+    // being weighted here is the quantized radiance.
     float w = wboit_weight(vEyeDepth, alpha);
-
-    outAccumulation = vec4(colorLDR * w, w);
+    outAccumulation = vec4(colorHDR * w, w);
     outRevealage    = vec4(alpha);
 #else
     vec3 N_geom = normalize(vNormal);
     if (!gl_FrontFacing) N_geom = -N_geom;
     vec3 viewNormal = normalize((uView * vec4(N_geom, 0.0)).xyz);
-    outNormal = vec4(viewNormal * 0.5 + 0.5, 1.0);
 
-    float dither = (hash_float(vec3(gl_FragCoord.xy, uTime)) - 0.5) / 255.0;
-    colorLDR += dither;
-    FragColor = vec4(colorLDR, alpha);
+    // View-space normal for VBAO. The .a channel is unused; VBAO reads
+    // only .rgb.
+    outNormal = vec4(viewNormal * 0.5 + 0.5, 0.0);
+    FragColor = vec4(colorHDR, alpha);
 #endif
 }
 
