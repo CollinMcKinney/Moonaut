@@ -144,6 +144,31 @@
  * Refraction is one layer deep: a transmissive surface behind another
  * transmissive surface is not refracted.
  *
+ * Audio async read:
+ *   Each audio compute subsystem (occlusion, reverb, portal) uses a
+ *   single SSBO with a "skip while in flight" policy:
+ *
+ *     - dispatch issues a compute into the buffer and records a fence;
+ *     - the next dispatch is skipped while the fence is pending, so the
+ *       buffer's contents are never overwritten before they are read;
+ *     - the poll checks the fence without flushing or waiting, and reads
+ *       the buffer with glGetBufferSubData when the fence has signaled;
+ *       the fence is then cleared so the next dispatch can proceed.
+ *
+ *   The cost is that a subsystem's results update at whatever rate the
+ *   GPU can complete its dispatch, not once per frame. For audio that is
+ *   still hundreds of updates per second at typical frame rates, and the
+ *   driver is never asked to flush its command queue, so the main
+ *   renderer's throughput is unaffected.
+ *
+ *   glGetBufferSubData is used rather than glMapBufferRange because on
+ *   several drivers map-with-read-flag forces a full command-queue stall
+ *   regardless of the number of bytes read, while GetBufferSubData copies
+ *   straight into caller memory. The portal reset path likewise avoids
+ *   GL_MAP_INVALIDATE_BUFFER_BIT, which triggers a backing-store
+ *   reallocation on some drivers; a small BufferSubData from a pre-built
+ *   template replaces it.
+ *
  * Sampler binding note:
  *   material.frag declares uRefractionSrc, uTransmissiveDepthTex and
  *   uAOTex with layout(binding = N). Those samplers have no addressable
@@ -734,7 +759,7 @@ static GLint cluster_u_near = -1;
 static GLint cluster_u_far = -1;
 
 /* ================================================================
-   AUDIO SSBOs & STATE (DOUBLE-BUFFERED)
+   AUDIO SSBOs & STATE
    ================================================================ */
 #ifdef AUDIO_OCCLUSION
 static GLuint gl_audio_occlusion_program = 0;
@@ -744,9 +769,21 @@ static GLint occ_u_inv_view_proj = -1;
 static GLint occ_u_listener_pos = -1;
 static GLint occ_u_num_voices = -1;
 static GLuint gl_audio_voice_input_ssbo = 0;
-static GLuint gl_audio_propagation_ssbo[2] = {0, 0};
-static int g_audio_voice_count_gpu = 0;
-static GLsync gl_audio_occlusion_fence = NULL;
+static int   g_audio_voice_count_gpu = 0;
+
+/* Single propagation buffer with backpressure. A dispatch is skipped while
+ * the previous one is still in flight; the poll returns data as soon as
+ * its fence signals and clears the fence so the next dispatch can proceed.
+ * No flush, no wait, no ring. The cost is that updates land at the rate
+ * the GPU can deliver them rather than once per frame; for audio that is
+ * still hundreds of updates per second. */
+static GLuint gl_audio_propagation_ssbo = 0;
+static GLsync gl_audio_propagation_fence = NULL;
+
+/* Voice-data upload skip: track the last uploaded positions so the
+ * per-frame upload is omitted entirely when nothing moved. */
+static vec3 gl_audio_last_voice_positions[MAX_AUDIO_VOICES_GPU];
+static int  gl_audio_last_voice_count = 0;
 #endif
 
 #ifdef AUDIO_REVERB
@@ -754,7 +791,7 @@ static GLuint gl_audio_reverb_program = 0;
 static GLint rev_u_depth_tex = -1;
 static GLint rev_u_inv_view_proj = -1;
 static GLint rev_u_listener_pos = -1;
-static GLuint gl_audio_global_stats_ssbo[2] = {0, 0};
+static GLuint gl_audio_global_stats_ssbo = 0;
 static GLsync gl_audio_reverb_fence = NULL;
 #endif
 
@@ -766,8 +803,12 @@ static GLint port_u_listener_pos = -1;
 static GLint port_u_threshold = -1;
 static GLint port_u_num_voices = -1;
 static GLint port_u_view_proj = -1;
-static GLuint gl_audio_portal_candidates_ssbo[2] = {0, 0};
+static GLuint gl_audio_portal_candidates_ssbo = 0;
 static GLsync gl_audio_portal_fence = NULL;
+
+/* Pre-built reset template. Avoids the map-with-invalidate path, which
+ * forces a backing-store reallocation on some drivers. */
+static portal_candidate_t gl_audio_portal_reset_template[MAX_AUDIO_VOICES_GPU];
 #endif
 
 static int gl_audio_stats_frame = 0;
@@ -1610,18 +1651,7 @@ static void init_wboit_resources(void) {
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-/* ---- VBAO init ----
- *
- * Creates the raw half-res AO target (r8), its FBO, and compiles the
- * fragment-stage VBAO program from vbao.frag + the shared full-screen
- * vertex shader. The fragment shader writes to gl_ao_tex as a normal
- * color output; the vertex stage provides gl_FragCoord via the
- * gl_VertexID-generated full-screen triangle.
- *
- * The VBAO UBO is bound once to VBAO_UBO_BINDING and its storage is
- * STATIC_DRAW since the dispatch path only writes to it on camera or
- * resolution change.
- */
+/* ---- VBAO init ---- */
 static void init_vbao_resources(void) {
     /* --- Raw AO target at half resolution --- */
     C89GL_glGenTextures(1, &gl_ao_tex);
@@ -1682,9 +1712,6 @@ static void init_vbao_resources(void) {
     C89GL_glGenBuffers(1, &gl_vbao_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_vbao_ubo);
     C89GL_glBufferData(GL_UNIFORM_BUFFER, sizeof(vbao_ubo_t), NULL, GL_STATIC_DRAW);
-    /* Bind the UBO to its block binding index once. The per-frame dispatch
-     * only calls glBufferSubData when the camera changes; it never touches
-     * glBindBufferBase. */
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, VBAO_UBO_BINDING, gl_vbao_ubo);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
@@ -1692,12 +1719,7 @@ static void init_vbao_resources(void) {
            gl_ao_width, gl_ao_height);
 }
 
-/* ---- VBAO blur init ----
- *
- * Second fragment pass: reads the raw AO and depth, writes a bilateral-
- * blurred half-res AO image into gl_ao_blur_fbo. material.frag samples
- * this blurred texture (bound to unit 4) with GL_LINEAR.
- */
+/* ---- VBAO blur init ---- */
 static void init_vbao_blur_resources(void) {
     C89GL_glGenTextures(1, &gl_ao_blurred_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_blurred_tex);
@@ -1763,14 +1785,7 @@ static void init_vbao_blur_resources(void) {
            gl_ao_width, gl_ao_height);
 }
 
-/* ---- Post-process init ----
- *
- * Compiles post_process.frag and attaches the shared full-screen vertex
- * shader. Two samplers are used (uColorHDR at binding 0, uMaskTex at
- * binding 1), both fixed-unit, so no uniform lookup is needed for them.
- * The scalar uniforms (screen size, exposure, gamma, time) are looked up
- * normally.
- */
+/* ---- Post-process init ---- */
 static void init_post_process_resources(void) {
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
                                             "post_process.frag",
@@ -1838,16 +1853,15 @@ static void init_audio_resources(void) {
         C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_voice_input_ssbo);
         C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(vec3) * MAX_AUDIO_VOICES_GPU, NULL, GL_STREAM_DRAW);
 
-        C89GL_glGenBuffers(2, gl_audio_propagation_ssbo);
-        {
-            int i;
-            for (i = 0; i < 2; i++) {
-                C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo[i]);
-                C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER,
-                                   sizeof(audio_propagation_output_t) * MAX_AUDIO_VOICES_GPU,
-                                   NULL, GL_STREAM_READ);
-            }
-        }
+        C89GL_glGenBuffers(1, &gl_audio_propagation_ssbo);
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo);
+        C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER,
+                           sizeof(audio_propagation_output_t) * MAX_AUDIO_VOICES_GPU,
+                           NULL, GL_STREAM_READ);
+        gl_audio_propagation_fence = NULL;
+
+        gl_audio_last_voice_count = 0;
+        memset(gl_audio_last_voice_positions, 0, sizeof(gl_audio_last_voice_positions));
     }
 #endif
 
@@ -1874,14 +1888,10 @@ static void init_audio_resources(void) {
             C89GL_glDeleteShader(cs_rev);
         }
 
-        C89GL_glGenBuffers(2, gl_audio_global_stats_ssbo);
-        {
-            int i;
-            for (i = 0; i < 2; i++) {
-                C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[i]);
-                C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, REVERB_ACCUM_SIZE, NULL, GL_STREAM_READ);
-            }
-        }
+        C89GL_glGenBuffers(1, &gl_audio_global_stats_ssbo);
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo);
+        C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, REVERB_ACCUM_SIZE, NULL, GL_STREAM_READ);
+        gl_audio_reverb_fence = NULL;
     }
 #endif
 
@@ -1911,13 +1921,17 @@ static void init_audio_resources(void) {
             C89GL_glDeleteShader(cs_port);
         }
 
-        C89GL_glGenBuffers(2, gl_audio_portal_candidates_ssbo);
-        {
-            int i;
-            for (i = 0; i < 2; i++) {
-                C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[i]);
-                C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, PORTAL_CANDIDATE_SIZE, NULL, GL_STREAM_READ);
-            }
+        C89GL_glGenBuffers(1, &gl_audio_portal_candidates_ssbo);
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo);
+        C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, PORTAL_CANDIDATE_SIZE, NULL, GL_STREAM_READ);
+        gl_audio_portal_fence = NULL;
+
+        /* Pre-build the reset template once so trigger doesn't need a map. */
+        for (int i = 0; i < MAX_AUDIO_VOICES_GPU; i++) {
+            gl_audio_portal_reset_template[i].dist = 1e10f;
+            gl_audio_portal_reset_template[i].pos_x = 0.0f;
+            gl_audio_portal_reset_template[i].pos_y = 0.0f;
+            gl_audio_portal_reset_template[i].pos_z = 0.0f;
         }
     }
 #endif
@@ -1944,11 +1958,11 @@ static void init_audio_resources(void) {
 }
 
 static void dispatch_audio_compute(void) {
-    int write_idx = gl_audio_stats_frame & 1;
-
 #ifdef AUDIO_REVERB
-    if (gl_audio_reverb_program && gl_audio_global_stats_ssbo[0] && gl_audio_global_stats_ssbo[1]) {
-        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[write_idx]);
+    /* Skip if the previous reverb dispatch is still in flight. Its results
+     * haven't been read yet, so dispatching again would overwrite them. */
+    if (gl_audio_reverb_program && gl_audio_global_stats_ssbo && !gl_audio_reverb_fence) {
+        C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo);
         C89GL_glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, 0, REVERB_ACCUM_SIZE,
                                    GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
         C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -1960,23 +1974,22 @@ static void dispatch_audio_compute(void) {
         mat4 inv_view_proj = mat4_inverse(gl_view_proj);
         C89GL_glUniformMatrix4fv(rev_u_inv_view_proj, 1, GL_TRUE, (float*)&inv_view_proj);
         C89GL_glUniform3fv(rev_u_listener_pos, 1, (float*)&gl_cam_eye);
-        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_audio_global_stats_ssbo[write_idx]);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_audio_global_stats_ssbo);
         GLuint groups_x = (gl_low_width + 7) / 8;
         GLuint groups_y = (gl_low_height + 7) / 8;
         C89GL_glDispatchCompute(groups_x, groups_y, 1);
         C89GL_glUseProgram(0);
         C89GL_glActiveTexture(GL_TEXTURE0);
 
-        if (gl_audio_reverb_fence) {
-            C89GL_glDeleteSync(gl_audio_reverb_fence);
-        }
         gl_audio_reverb_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
 #endif
 
 #ifdef AUDIO_OCCLUSION
     if (gl_audio_occlusion_program && g_audio_voice_count_gpu > 0 &&
-        gl_audio_voice_input_ssbo && gl_audio_propagation_ssbo[0] && gl_audio_propagation_ssbo[1]) {
+        gl_audio_voice_input_ssbo && gl_audio_propagation_ssbo &&
+        !gl_audio_propagation_fence) {
+
         C89GL_glActiveTexture(GL_TEXTURE0);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex_low);
         C89GL_glUseProgram(gl_audio_occlusion_program);
@@ -1987,21 +2000,16 @@ static void dispatch_audio_compute(void) {
         C89GL_glUniform3fv(occ_u_listener_pos, 1, (float*)&gl_cam_eye);
         C89GL_glUniform1i(occ_u_num_voices, g_audio_voice_count_gpu);
         C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gl_audio_voice_input_ssbo);
-        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl_audio_propagation_ssbo[write_idx]);
+        C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gl_audio_propagation_ssbo);
         GLuint groups = (g_audio_voice_count_gpu + 7) / 8;
         C89GL_glDispatchCompute(groups, 1, 1);
         C89GL_glUseProgram(0);
         C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         C89GL_glActiveTexture(GL_TEXTURE0);
 
-        if (gl_audio_occlusion_fence) {
-            C89GL_glDeleteSync(gl_audio_occlusion_fence);
-        }
-        gl_audio_occlusion_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl_audio_propagation_fence = C89GL_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
 #endif
-
-    gl_audio_stats_frame++;
 }
 
 /* ---- Public: feed audio voice positions ---- */
@@ -2010,33 +2018,36 @@ INLINE void render_set_audio_voice_data(const vec3 *positions, int count) {
     g_audio_voice_count_gpu = count;
     if (count <= 0 || !gl_audio_voice_input_ssbo) return;
     if (count > MAX_AUDIO_VOICES_GPU) count = MAX_AUDIO_VOICES_GPU;
+
+    /* Skip the upload entirely when nothing has changed. This is common for
+     * static test scenes and saves a per-frame buffer round-trip. */
+    if (count == gl_audio_last_voice_count &&
+        memcmp(positions, gl_audio_last_voice_positions, sizeof(vec3) * count) == 0) {
+        return;
+    }
+    memcpy(gl_audio_last_voice_positions, positions, sizeof(vec3) * count);
+    gl_audio_last_voice_count = count;
+
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_voice_input_ssbo);
     C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vec3) * count, positions);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
 INLINE int render_poll_audio_propagation(audio_propagation_output_t *out, int max_voices) {
-    if (!gl_audio_propagation_ssbo[0] || !gl_audio_propagation_ssbo[1]) return 0;
-    if (!gl_audio_occlusion_fence) return 0;
-    GLenum status = C89GL_glClientWaitSync(gl_audio_occlusion_fence, 0, 0);
+    if (!gl_audio_propagation_ssbo || !gl_audio_propagation_fence) return 0;
+
+    GLenum status = C89GL_glClientWaitSync(gl_audio_propagation_fence, 0, 0);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
-        return 0;
+        return 0;   /* still in flight; leave the fence for next time */
     }
 
-    C89GL_glDeleteSync(gl_audio_occlusion_fence);
-    gl_audio_occlusion_fence = NULL;
+    C89GL_glDeleteSync(gl_audio_propagation_fence);
+    gl_audio_propagation_fence = NULL;
 
-    int read_idx = (gl_audio_stats_frame & 1) ^ 1;
-    int count = 0;
-    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo[read_idx]);
-    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
-                                       sizeof(audio_propagation_output_t) * MAX_AUDIO_VOICES_GPU,
-                                       GL_MAP_READ_BIT);
-    if (ptr) {
-        count = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
-        memcpy(out, ptr, sizeof(audio_propagation_output_t) * count);
-        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    }
+    int count = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo);
+    C89GL_glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                             sizeof(audio_propagation_output_t) * count, out);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     return count;
 }
@@ -2044,8 +2055,8 @@ INLINE int render_poll_audio_propagation(audio_propagation_output_t *out, int ma
 
 #ifdef AUDIO_REVERB
 INLINE int render_poll_audio_global_stats(audio_global_stats_t *stats) {
-    if (!gl_audio_global_stats_ssbo[0] || !gl_audio_global_stats_ssbo[1]) return 0;
-    if (!gl_audio_reverb_fence) return 0;
+    if (!gl_audio_global_stats_ssbo || !gl_audio_reverb_fence) return 0;
+
     GLenum status = C89GL_glClientWaitSync(gl_audio_reverb_fence, 0, 0);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
         return 0;
@@ -2054,69 +2065,57 @@ INLINE int render_poll_audio_global_stats(audio_global_stats_t *stats) {
     C89GL_glDeleteSync(gl_audio_reverb_fence);
     gl_audio_reverb_fence = NULL;
 
-    int read_idx = (gl_audio_stats_frame & 1) ^ 1;
-    int ok = 0;
-    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo[read_idx]);
-    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
-                                       REVERB_ACCUM_SIZE,
-                                       GL_MAP_READ_BIT);
-    if (ptr) {
-        reverb_group_accum_t *groups = (reverb_group_accum_t*)ptr;
-        float total_sum = 0.0f, total_sumsq = 0.0f;
-        u32 total_count = 0;
-        u32 total_min_bits = 0xFFFFFFFF;
-        u32 total_max_bits = 0;
-        int i;
-        for (i = 0; i < MAX_REVERB_GROUPS; i++) {
-            if (groups[i].count > 0) {
-                total_sum += groups[i].sum;
-                total_sumsq += groups[i].sumsq;
-                total_count += groups[i].count;
-                if (groups[i].min_bits < total_min_bits) total_min_bits = groups[i].min_bits;
-                if (groups[i].max_bits > total_max_bits) total_max_bits = groups[i].max_bits;
-            }
-        }
-        if (total_count > 0) {
-            stats->avg_depth = (real)(total_sum / total_count);
-            stats->min_depth = u32_to_real(total_min_bits);
-            stats->max_depth = u32_to_real(total_max_bits);
-            real mean = stats->avg_depth;
-            stats->variance = (real)(total_sumsq / total_count) - mean * mean;
-        } else {
-            stats->avg_depth = (real)5.0f;
-            stats->min_depth = (real)0.5f;
-            stats->max_depth = (real)10.0f;
-            stats->variance = (real)1.0f;
-        }
-        ok = 1;
-        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    }
+    /* Read into a stack buffer, then reduce on the CPU. glGetBufferSubData
+     * copies directly into caller memory without the staging round-trip
+     * that glMapBufferRange(READ) requires on some drivers. */
+    reverb_group_accum_t groups[MAX_REVERB_GROUPS];
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_global_stats_ssbo);
+    C89GL_glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(groups), groups);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    return ok;
+
+    float total_sum = 0.0f, total_sumsq = 0.0f;
+    u32 total_count = 0;
+    u32 total_min_bits = 0xFFFFFFFF;
+    u32 total_max_bits = 0;
+    int i;
+    for (i = 0; i < MAX_REVERB_GROUPS; i++) {
+        if (groups[i].count > 0) {
+            total_sum += groups[i].sum;
+            total_sumsq += groups[i].sumsq;
+            total_count += groups[i].count;
+            if (groups[i].min_bits < total_min_bits) total_min_bits = groups[i].min_bits;
+            if (groups[i].max_bits > total_max_bits) total_max_bits = groups[i].max_bits;
+        }
+    }
+    if (total_count > 0) {
+        stats->avg_depth = (real)(total_sum / total_count);
+        stats->min_depth = u32_to_real(total_min_bits);
+        stats->max_depth = u32_to_real(total_max_bits);
+        real mean = stats->avg_depth;
+        stats->variance = (real)(total_sumsq / total_count) - mean * mean;
+    } else {
+        stats->avg_depth = (real)5.0f;
+        stats->min_depth = (real)0.5f;
+        stats->max_depth = (real)10.0f;
+        stats->variance = (real)1.0f;
+    }
+    return 1;
 }
 #endif
 
 #ifdef AUDIO_PORTAL
 INLINE void render_trigger_portal_search(void) {
     if (!gl_audio_portal_program) return;
-    if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1]) return;
-    if (gl_audio_portal_fence) return;
+    if (!gl_audio_portal_candidates_ssbo) return;
+    if (gl_audio_portal_fence) return;   /* already in flight */
 
-    int write_idx = gl_audio_stats_frame & 1;
-
-    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[write_idx]);
-    portal_candidate_t *reset_ptr = (portal_candidate_t*)C89GL_glMapBufferRange(
-        GL_SHADER_STORAGE_BUFFER, 0, PORTAL_CANDIDATE_SIZE,
-        GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
-    if (reset_ptr) {
-        for (int i = 0; i < MAX_AUDIO_VOICES_GPU; i++) {
-            reset_ptr[i].dist = 1e10f;
-            reset_ptr[i].pos_x = 0.0f;
-            reset_ptr[i].pos_y = 0.0f;
-            reset_ptr[i].pos_z = 0.0f;
-        }
-        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    }
+    /* Reset the buffer to "far" using a pre-built template. Avoids the
+     * GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT path, which forces a
+     * backing-store reallocation on some drivers. */
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo);
+    C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                          sizeof(gl_audio_portal_reset_template),
+                          gl_audio_portal_reset_template);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     C89GL_glActiveTexture(GL_TEXTURE0);
@@ -2146,7 +2145,7 @@ INLINE void render_trigger_portal_search(void) {
     return;
 #endif
 
-    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, gl_audio_portal_candidates_ssbo[write_idx]);
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, gl_audio_portal_candidates_ssbo);
 
     GLuint groups = (g_audio_voice_count_gpu + 7) / 8;
     if (groups == 0) groups = 1;
@@ -2159,8 +2158,7 @@ INLINE void render_trigger_portal_search(void) {
 }
 
 INLINE int render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, int *portal_active_flags, int max_voices) {
-    if (!gl_audio_portal_candidates_ssbo[0] || !gl_audio_portal_candidates_ssbo[1]) return 0;
-    if (!gl_audio_portal_fence) return 0;
+    if (!gl_audio_portal_candidates_ssbo || !gl_audio_portal_fence) return 0;
 
     GLenum status = C89GL_glClientWaitSync(gl_audio_portal_fence, 0, 0);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) return 0;
@@ -2168,27 +2166,24 @@ INLINE int render_poll_audio_portal(vec3 *portal_positions, float *portal_distan
     C89GL_glDeleteSync(gl_audio_portal_fence);
     gl_audio_portal_fence = NULL;
 
-    int read_idx = (gl_audio_stats_frame & 1) ^ 1;
-    int count = 0;
-    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo[read_idx]);
-    void *ptr = C89GL_glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, PORTAL_CANDIDATE_SIZE, GL_MAP_READ_BIT);
-    if (ptr) {
-        portal_candidate_t *cands = (portal_candidate_t*)ptr;
-        int num_to_read = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
-        for (int i = 0; i < num_to_read; i++) {
-            if (cands[i].dist < 1e9f) {
-                portal_positions[i] = vec3_init_from_3(cands[i].pos_x, cands[i].pos_y, cands[i].pos_z);
-                portal_distances[i] = cands[i].dist;
-                portal_active_flags[i] = 1;
-                count++;
-            } else {
-                portal_active_flags[i] = 0;
-                portal_distances[i] = 0.0f;
-            }
-        }
-        C89GL_glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    }
+    portal_candidate_t cands[MAX_AUDIO_VOICES_GPU];
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_portal_candidates_ssbo);
+    C89GL_glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(cands), cands);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    int count = 0;
+    int num_to_read = (g_audio_voice_count_gpu < max_voices) ? g_audio_voice_count_gpu : max_voices;
+    for (int i = 0; i < num_to_read; i++) {
+        if (cands[i].dist < 1e9f) {
+            portal_positions[i] = vec3_init_from_3(cands[i].pos_x, cands[i].pos_y, cands[i].pos_z);
+            portal_distances[i] = cands[i].dist;
+            portal_active_flags[i] = 1;
+            count++;
+        } else {
+            portal_active_flags[i] = 0;
+            portal_distances[i] = 0.0f;
+        }
+    }
     return count;
 }
 #endif
@@ -2208,20 +2203,7 @@ INLINE void render_set_light_at_index(int index, const light_definition *def) {
 INLINE void render_set_exposure(real exposure) { gl_post_exposure = (float)exposure; }
 INLINE void render_set_gamma(real gamma)       { gl_post_gamma    = (float)gamma; }
 
-/* ---- Set uniforms for a shader variant ----
- *
- * side: ALPHA_PASS_BEHIND or ALPHA_PASS_FRONT. Ignored for opaque and
- * depth-only variants. Written into the uAlphaPass uniform so the shader
- * can branch on the pass identity at runtime if it ever needs to.
- *
- * uRefractionSrc, uTransmissiveDepthTex and uAOTex are declared in
- * material.frag with layout(binding = N). The compiler resolves them to
- * fixed texture units at link time, so glGetUniformLocation returns -1 for
- * them and the usual != -1 guard would silently skip the bind. To avoid
- * that, the source textures are bound to their fixed units (2, 3, 4)
- * unconditionally here. Unit 4 receives the *blurred* half-res AO texture;
- * material.frag samples it with GL_LINEAR, which upsamples to full-res.
- */
+/* ---- Set uniforms for a shader variant ---- */
 static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pass,
                                      alpha_pass_side side) {
     if (!variant) return;
@@ -2261,14 +2243,6 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
         if (variant->u_num_tiles_y != -1)
             C89GL_glUniform1i(variant->u_num_tiles_y, gl_num_tiles_y);
 
-        /* Fixed-unit sampler binds. The shader uses
-         *   layout(binding = 2) uniform sampler2D uRefractionSrc;
-         *   #ifdef ALPHA_PASS_BEHIND
-         *   layout(binding = 3) uniform sampler2D uTransmissiveDepthTex;
-         *   #endif
-         *   layout(binding = 4) uniform sampler2D uAOTex;
-         * so glGetUniformLocation for all of them returns -1 and the guards
-         * above never fire. Bind unconditionally on every non-depth variant. */
         C89GL_glActiveTexture(GL_TEXTURE2);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
 
@@ -2294,13 +2268,7 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MODEL_UBO_BINDING, gl_model_ubo);
 }
 
-/* ---- Transparent sort comparator ----
- *
- * WBOIT is order-independent, so the only reason to sort is to group
- * consecutive triangles by material and reduce state changes during the
- * transparent pass. The depth fields on transparent_tri_t are no longer
- * read; they are retained for now to keep the diff small.
- */
+/* ---- Transparent sort comparator ---- */
 static int transparent_compare(const void* a, const void* b) {
     const transparent_tri_t* ta = (const transparent_tri_t*)a;
     const transparent_tri_t* tb = (const transparent_tri_t*)b;
@@ -2414,12 +2382,10 @@ static void draw_triangle_indexed(
         t->entity_depth = entity_depth;
         t->id = gl_transparent_triangle_id++;
         t->model_index = model_index;
-        /* depth is unused by WBOIT; retained for interface stability. */
         t->depth = entity_depth;
         return;
     }
 
-    /* Opaque or transmissive — grouped by material pointer */
     int batch_idx = -1;
     for (int i = 0; i < gl_batch_count; i++) {
         if (gl_batches[i].mat == mat && !gl_batches[i].is_transparent) {
@@ -2551,7 +2517,6 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     gl_shader_cache = NULL;
     gl_shader_cache_size = 0;
     gl_shader_cache_count = 0;
-    /* Force the first VBAO upload on the first frame. */
     gl_vbao_ubo_dirty      = 1;
     gl_vbao_blur_ubo_dirty = 1;
 
@@ -2628,11 +2593,7 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     gl_default_fbo = 0;
     C89GL_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &gl_default_fbo);
 
-    /* ---- Main render FBO ----
-     *
-     * gl_color_tex is RGBA16F: it holds the composited linear HDR scene
-     * that the post-process pass reads. gl_normal_tex is RGBA8: .rgb is
-     * the view-space normal, .a is the per-material posterize mask. */
+    /* ---- Main render FBO ---- */
     C89GL_glGenFramebuffers(1, &gl_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
 
@@ -2667,7 +2628,6 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
 
-    /* ---- Low-resolution FBO for audio analysis (64x36) ---- */
     C89GL_glGenFramebuffers(1, &gl_fbo_low);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo_low);
 
@@ -2689,7 +2649,6 @@ INLINE int render_init(i32 window_width, i32 window_height) {
         printf("Low-res FBO incomplete! status=0x%x\n", fbo_status_low);
     }
 
-    /* ---- Transmissive depth FBO ---- */
     C89GL_glGenFramebuffers(1, &gl_transmissive_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
 
@@ -2722,7 +2681,6 @@ INLINE int render_init(i32 window_width, i32 window_height) {
             printf("Transmissive FBO incomplete! status=0x%x\n", s);
     }
 
-    /* ---- Refraction source (HDR) ---- */
     C89GL_glGenTextures(1, &gl_refraction_src);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
@@ -2746,9 +2704,6 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glEnable(GL_CULL_FACE);
     C89GL_glFrontFace(GL_CCW);
 
-    /* Compile the full-screen triangle vertex shader once; all four
-     * full-screen programs (WBOIT composite, VBAO, VBAO blur, post-process)
-     * share it. */
     gl_fullscreen_vs = compile_shader_with_defines(GL_VERTEX_SHADER,
                                                    "fullscreen.vert",
                                                    "#version 430 core\n");
@@ -2787,7 +2742,6 @@ INLINE void render_shutdown(void) {
     if (gl_cluster_offset_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_offset_ssbo); gl_cluster_offset_ssbo = 0; }
     if (gl_cluster_program) { C89GL_glDeleteProgram(gl_cluster_program); gl_cluster_program = 0; }
 
-    /* VBAO cleanup */
     if (gl_vbao_program) { C89GL_glDeleteProgram(gl_vbao_program); gl_vbao_program = 0; }
     if (gl_vbao_ubo)     { C89GL_glDeleteBuffers(1, &gl_vbao_ubo);  gl_vbao_ubo = 0; }
     if (gl_ao_tex)       { C89GL_glDeleteTextures(1, &gl_ao_tex);   gl_ao_tex = 0; }
@@ -2798,25 +2752,20 @@ INLINE void render_shutdown(void) {
     if (gl_ao_blurred_tex)    { C89GL_glDeleteTextures(1, &gl_ao_blurred_tex); gl_ao_blurred_tex = 0; }
     if (gl_ao_blur_fbo)       { C89GL_glDeleteFramebuffers(1, &gl_ao_blur_fbo); gl_ao_blur_fbo = 0; }
 
-    /* WBOIT cleanup */
     if (gl_oit_composite_program) { C89GL_glDeleteProgram(gl_oit_composite_program); gl_oit_composite_program = 0; }
     if (gl_oit_vao)         { C89GL_glDeleteVertexArrays(1, &gl_oit_vao); gl_oit_vao = 0; }
     if (gl_oit_reveal_tex)  { C89GL_glDeleteTextures(1, &gl_oit_reveal_tex); gl_oit_reveal_tex = 0; }
     if (gl_oit_accum_tex)   { C89GL_glDeleteTextures(1, &gl_oit_accum_tex); gl_oit_accum_tex = 0; }
     if (gl_oit_fbo)         { C89GL_glDeleteFramebuffers(1, &gl_oit_fbo); gl_oit_fbo = 0; }
 
-    /* Post-process cleanup */
     if (gl_post_process_program) { C89GL_glDeleteProgram(gl_post_process_program); gl_post_process_program = 0; }
 
-    /* Transmissive / refraction cleanup */
     if (gl_transmissive_depth_program) { C89GL_glDeleteProgram(gl_transmissive_depth_program); gl_transmissive_depth_program = 0; }
     if (gl_transmissive_fbo) { C89GL_glDeleteFramebuffers(1, &gl_transmissive_fbo); gl_transmissive_fbo = 0; }
     if (gl_transmissive_depth_col) { C89GL_glDeleteTextures(1, &gl_transmissive_depth_col); gl_transmissive_depth_col = 0; }
     if (gl_transmissive_depth_tex) { C89GL_glDeleteTextures(1, &gl_transmissive_depth_tex); gl_transmissive_depth_tex = 0; }
     if (gl_refraction_src) { C89GL_glDeleteTextures(1, &gl_refraction_src); gl_refraction_src = 0; }
 
-    /* Shared full-screen vertex shader — safe to delete now that every
-     * program that referenced it has been destroyed. */
     if (gl_fullscreen_vs) { C89GL_glDeleteShader(gl_fullscreen_vs); gl_fullscreen_vs = 0; }
 
     if (gl_vertex_pool) { free(gl_vertex_pool); gl_vertex_pool = NULL; }
@@ -2832,42 +2781,27 @@ INLINE void render_shutdown(void) {
 #ifdef AUDIO_OCCLUSION
     if (gl_audio_occlusion_program) C89GL_glDeleteProgram(gl_audio_occlusion_program);
     if (gl_audio_voice_input_ssbo) C89GL_glDeleteBuffers(1, &gl_audio_voice_input_ssbo);
-    {
-        int j;
-        for (j = 0; j < 2; j++) {
-            if (gl_audio_propagation_ssbo[j]) {
-                C89GL_glDeleteBuffers(1, &gl_audio_propagation_ssbo[j]);
-                gl_audio_propagation_ssbo[j] = 0;
-            }
-        }
+    if (gl_audio_propagation_ssbo) C89GL_glDeleteBuffers(1, &gl_audio_propagation_ssbo);
+    if (gl_audio_propagation_fence) {
+        C89GL_glDeleteSync(gl_audio_propagation_fence);
+        gl_audio_propagation_fence = NULL;
     }
-    if (gl_audio_occlusion_fence) C89GL_glDeleteSync(gl_audio_occlusion_fence);
 #endif
 #ifdef AUDIO_REVERB
     if (gl_audio_reverb_program) C89GL_glDeleteProgram(gl_audio_reverb_program);
-    {
-        int j;
-        for (j = 0; j < 2; j++) {
-            if (gl_audio_global_stats_ssbo[j]) {
-                C89GL_glDeleteBuffers(1, &gl_audio_global_stats_ssbo[j]);
-                gl_audio_global_stats_ssbo[j] = 0;
-            }
-        }
+    if (gl_audio_global_stats_ssbo) C89GL_glDeleteBuffers(1, &gl_audio_global_stats_ssbo);
+    if (gl_audio_reverb_fence) {
+        C89GL_glDeleteSync(gl_audio_reverb_fence);
+        gl_audio_reverb_fence = NULL;
     }
-    if (gl_audio_reverb_fence) C89GL_glDeleteSync(gl_audio_reverb_fence);
 #endif
 #ifdef AUDIO_PORTAL
     if (gl_audio_portal_program) C89GL_glDeleteProgram(gl_audio_portal_program);
-    {
-        int j;
-        for (j = 0; j < 2; j++) {
-            if (gl_audio_portal_candidates_ssbo[j]) {
-                C89GL_glDeleteBuffers(1, &gl_audio_portal_candidates_ssbo[j]);
-                gl_audio_portal_candidates_ssbo[j] = 0;
-            }
-        }
+    if (gl_audio_portal_candidates_ssbo) C89GL_glDeleteBuffers(1, &gl_audio_portal_candidates_ssbo);
+    if (gl_audio_portal_fence) {
+        C89GL_glDeleteSync(gl_audio_portal_fence);
+        gl_audio_portal_fence = NULL;
     }
-    if (gl_audio_portal_fence) C89GL_glDeleteSync(gl_audio_portal_fence);
 #endif
 
     if (gl_ctx.initialized) C89GL_destroy_context(&gl_ctx);
@@ -2932,9 +2866,6 @@ INLINE void render_set_camera(vec3 eye, vec3 center, vec3 up, real fov, real asp
     extract_frustum_planes();
     gl_near = 0.05f;
     gl_far = 1000.0f;
-    /* The VBAO UBO carries the projection matrix and its four derived
-     * scalars; both have just changed, so request a re-upload on the next
-     * dispatch. */
     gl_vbao_ubo_dirty = 1;
 }
 
@@ -2952,7 +2883,7 @@ INLINE void render_clear_color(real r, real g, real b) {
     GLfloat color[4] = { r, g, b, 1.0f };
     GLfloat zero[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
     C89GL_glClearBufferfv(GL_COLOR, 0, color);
-    C89GL_glClearBufferfv(GL_COLOR, 1, zero);   /* normal + posterize mask */
+    C89GL_glClearBufferfv(GL_COLOR, 1, zero);
     C89GL_glClear(GL_DEPTH_BUFFER_BIT);
 }
 INLINE const u32* render_get_fb(void) { return NULL; }
@@ -2970,7 +2901,6 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     gl_render_width = rw; gl_render_height = rh;
     gl_ao_width  = (gl_render_width  + 1) / 2;
     gl_ao_height = (gl_render_height + 1) / 2;
-    /* The half-res AO size is baked into both UBOs; force a re-upload. */
     gl_vbao_ubo_dirty      = 1;
     gl_vbao_blur_ubo_dirty = 1;
 
@@ -2999,7 +2929,6 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
 
-    /* WBOIT targets resize */
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_accum_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
@@ -3012,13 +2941,11 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                                  GL_TEXTURE_2D, gl_depth_tex, 0);
 
-    /* VBAO raw target resize (half-res) */
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
                        gl_ao_width, gl_ao_height, 0,
                        GL_RED, GL_UNSIGNED_BYTE, NULL);
 
-    /* VBAO blurred target resize (half-res) */
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_blurred_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
                        gl_ao_width, gl_ao_height, 0,
@@ -3042,10 +2969,7 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
 INLINE i32 render_get_render_width(void) { return gl_render_width; }
 INLINE i32 render_get_render_height(void) { return gl_render_height; }
 
-/* ---- Batch comparator ----
- * Order: opaque -> transmissive -> transparent.
- * Within each group: by material pointer.
- */
+/* ---- Batch comparator ---- */
 static int batch_compare_mode(const void* a, const void* b) {
     const batch_t* ba = (const batch_t*)a;
     const batch_t* bb = (const batch_t*)b;
@@ -3063,8 +2987,6 @@ static int batch_compare_mode(const void* a, const void* b) {
 static void render_particle_system_draw_internal(void);
 static void render_particle_system_draw_wboit(alpha_pass_side side);
 
-/* Composite the WBOIT accumulation targets over the currently-bound FBO
- * (expected to be gl_fbo) using standard alpha blending. */
 static void oit_composite_into_current_fbo(void) {
     if (!gl_oit_composite_program) return;
 
@@ -3090,12 +3012,6 @@ static void oit_composite_into_current_fbo(void) {
 
     C89GL_glUseProgram(0);
 
-    // Restore single-target blend func on the draw FBO. Per-attachment
-    // state (glBlendFunci) persists per-FBO in GL 4.3+, but the global
-    // glBlendFunc() call above does not touch the per-attachment entries
-    // set on gl_oit_fbo, so re-install them explicitly next time we bind
-    // gl_oit_fbo. Doing it here documents the dependency and keeps the
-    // two alpha passes symmetric.
     C89GL_glBlendFunci(0, GL_ONE, GL_ONE);
     C89GL_glBlendFunci(1, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -3103,7 +3019,6 @@ static void oit_composite_into_current_fbo(void) {
     C89GL_glDepthMask(GL_TRUE);
 }
 
-/* ---- render_finish (fourteen-pass pipeline with VBAO + WBOIT + post) ---- */
 INLINE void render_finish(void) {
     GLuint current_program = 0;
     int current_cull = 1;
@@ -3126,22 +3041,6 @@ INLINE void render_finish(void) {
         C89GL_glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx_bytes, NULL, GL_STREAM_DRAW);
         C89GL_glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idx_bytes, gl_index_pool);
 
-        /* ============================================================
-           Pass 1: Opaque depth pre-pass
-
-           Self-contained state setup. Depth test is enabled explicitly
-           here rather than assumed, because Pass 11 (post-process) disables
-           it at the end of the previous frame and restores it — but this
-           pass must not depend on that restore having happened. If depth
-           test is not enabled here, the pre-pass writes garbage depth
-           (last-fragment-wins instead of closest-fragment-wins) and the
-           following color pass renders with depth testing off, producing
-           the wrong draw order.
-
-           GL_BLEND is disabled because the pre-pass writes no color and
-           leaving blend state from a previous pass would only matter if
-           blending were somehow enabled here, which it should never be.
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glBindVertexArray(gl_vao);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
@@ -3167,20 +3066,12 @@ INLINE void render_finish(void) {
         }
         if (current_program) C89GL_glUseProgram(0);
 
-        /* ============================================================
-           Pass 2: Cluster build
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
         dispatch_cluster_build();
 
         C89GL_glDepthFunc(GL_LEQUAL);
 
-        /* ============================================================
-           Pass 3: Opaque color pass
-           Writes linear HDR color to gl_color_tex and view-space normal
-           to gl_normal_tex.rgb, plus the posterize mask in gl_normal_tex.a.
-           ============================================================ */
         {
             GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
             C89GL_glDrawBuffers(2, bufs);
@@ -3214,13 +3105,6 @@ INLINE void render_finish(void) {
         }
         if (current_program) C89GL_glUseProgram(0);
 
-        /* ============================================================
-           Pass 3.5 + 3.6: VBAO and VBAO bilateral blur (half-res)
-           Both passes share the same disabled-depth / disabled-blend /
-           full-color-mask / no-depth-write state. The two dispatches
-           each bind their own FBO, viewport, textures and program, and
-           the common state is restored once here afterwards.
-           ============================================================ */
         C89GL_glDisable(GL_DEPTH_TEST);
         C89GL_glDisable(GL_BLEND);
         C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -3234,24 +3118,15 @@ INLINE void render_finish(void) {
         C89GL_glEnable(GL_DEPTH_TEST);
         C89GL_glBindVertexArray(gl_vao);
 
-        /* Restore single-attachment draw buffer for downstream passes that
-         * bind gl_fbo. The transmissive color pass (Pass 7) and the
-         * transparent depth-only pass (Pass 9) both target gl_fbo with a
-         * single color attachment. */
         {
             GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
             C89GL_glDrawBuffers(1, bufs);
         }
 
-        /* ============================================================
-           Pass 4: Transmissive depth pass
-           ============================================================ */
         int have_transmissive = 0;
         for (i = 0; i < gl_batch_count; i++)
             if (gl_batches[i].is_refractive) { have_transmissive = 1; break; }
 
-        /* Always clear the transmissive depth color to 1.0 so the
-         * alpha-behind shader can trust "1.0 means no transmissive here". */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
         {
@@ -3293,9 +3168,6 @@ INLINE void render_finish(void) {
             C89GL_glActiveTexture(GL_TEXTURE0);
         }
 
-        /* ============================================================
-           Pass 5: ALPHA_PASS_BEHIND — WBOIT accumulate + composite
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
         C89GL_glBindVertexArray(gl_vao);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
@@ -3343,18 +3215,12 @@ INLINE void render_finish(void) {
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
         oit_composite_into_current_fbo();
 
-        /* ============================================================
-           Pass 6: Copy gl_color_tex -> gl_refraction_src (HDR)
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
         C89GL_glActiveTexture(GL_TEXTURE0);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
         C89GL_glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, gl_render_width, gl_render_height);
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
 
-        /* ============================================================
-           Pass 7: Transmissive color pass
-           ============================================================ */
         if (have_transmissive) {
             C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
             C89GL_glBindVertexArray(gl_vao);
@@ -3390,9 +3256,6 @@ INLINE void render_finish(void) {
             if (current_program) C89GL_glUseProgram(0);
         }
 
-        /* ============================================================
-           Pass 8: ALPHA_PASS_FRONT — WBOIT accumulate + composite
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
         C89GL_glBindVertexArray(gl_vao);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
@@ -3442,9 +3305,6 @@ INLINE void render_finish(void) {
 
         C89GL_glBindVertexArray(gl_vao);
 
-        /* ============================================================
-           Pass 9: Transparent depth-only pass
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
         C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -3475,9 +3335,6 @@ INLINE void render_finish(void) {
         if (current_program) C89GL_glUseProgram(0);
         C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-        /* ============================================================
-           Pass 10: Blit combined depth to low-res FBO for audio
-           ============================================================ */
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
         C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_fbo_low);
         C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
@@ -3488,26 +3345,6 @@ INLINE void render_finish(void) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
     }
 
-    /* ============================================================
-       Pass 11: Post-process to default FBO
-       ============================================================
-       Reads the composited linear HDR scene from gl_color_tex, tone maps,
-       color grades, encodes to sRGB, applies the user gamma, applies the
-       per-material posterize mask from gl_normal_tex.a, and dithers.
-
-       This is the only pass in the entire pipeline that produces
-       display-referred values. Every upstream pass operates on linear
-       HDR so that the nonlinear tone curve is applied exactly once,
-       after all linear blending has already happened.
-
-       State restoration: this pass disables depth test and depth write
-       so that the full-screen triangle is not rejected by the depth
-       buffer left over from earlier passes. Both must be restored at
-       the end because Pass 1 of the next frame does not enable depth
-       test itself — it assumes the state is already correct from
-       render_init and the previous frame's cleanup. See the top-of-file
-       GL STATE HYGIENE note.
-       ============================================================ */
     if (gl_post_process_program) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
         C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
@@ -3518,8 +3355,6 @@ INLINE void render_finish(void) {
 
         C89GL_glUseProgram(gl_post_process_program);
 
-        /* Both samplers use layout(binding = N), so they are fixed-unit
-         * and have no addressable uniform location. Bind unconditionally. */
         C89GL_glActiveTexture(GL_TEXTURE0);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
 
@@ -3539,20 +3374,11 @@ INLINE void render_finish(void) {
         C89GL_glUseProgram(0);
         C89GL_glActiveTexture(GL_TEXTURE0);
 
-        /* Restore pipeline state perturbed by this pass. The depth test
-         * and depth write in particular MUST be restored: Pass 1 of the
-         * next frame (opaque depth pre-pass) does not enable depth test
-         * itself, so if we leave it disabled the pre-pass writes garbage
-         * depth and the following opaque color pass renders without
-         * depth testing, producing the wrong draw order. */
         C89GL_glEnable(GL_DEPTH_TEST);
         C89GL_glDepthMask(GL_TRUE);
         C89GL_glEnable(GL_BLEND);
         C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
-        /* Fallback: raw blit, no post-process. Only useful for debugging
-         * when the post-process program failed to compile — the output
-         * will look wrong (linear HDR values interpreted as display). */
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
         C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
         C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
@@ -3772,14 +3598,6 @@ INLINE void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_ri
     g_particle_cam_valid = 1;
 }
 
-/* -------------------------------------------------------------------------
- * Particle solid (non-WBOIT) draw
- *
- * Retained for interface stability. In the current pipeline particles are
- * drawn via render_particle_system_draw_wboit() inside the WBOIT passes, so
- * this function has no callers. It remains useful as a fallback for any
- * future non-WBOIT path or for isolating particle behaviour during debugging.
- * ------------------------------------------------------------------------- */
 static void render_particle_system_draw_internal(void) {
     if (g_particle_count == 0 || !g_particle_program[ALPHA_PASS_FRONT]) return;
 
@@ -3820,16 +3638,6 @@ static void render_particle_system_draw_internal(void) {
     C89GL_glEnable(GL_DEPTH_TEST);
 }
 
-/* -------------------------------------------------------------------------
- * Particle WBOIT draw
- *
- * Draws the particle instances into the currently-bound WBOIT FBO with the
- * WBOIT variant of the fragment shader. Assumes the caller has already set
- * up the OIT FBO, cleared its attachments, and installed the per-attachment
- * blend state (ONE, ONE / ZERO, ONE_MINUS_SRC_ALPHA). Inherits GL_LEQUAL
- * against the opaque depth buffer and does not write depth, matching the
- * transparent material pass.
- * ------------------------------------------------------------------------- */
 static void render_particle_system_draw_wboit(alpha_pass_side side) {
     if (g_particle_count == 0) return;
     if (!g_particle_program[side]) return;
