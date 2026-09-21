@@ -48,8 +48,8 @@
 #define HRTF_SMOOTH_ALPHA       0.2f
 #define NOTCH_MOD_SMOOTH_ALPHA  0.3f
 #define POS_SMOOTH_ALPHA        0.0024f
+#define AUDIO_SMOOTHING_MS      50.0f
 #define RELEASE_DECAY           0.01f
-#define REVERB_SMOOTH_ALPHA     0.05f
 #define HEAD_SMOOTH_ALPHA       0.15f
 
 /* ---- Directional Exciters ---- */
@@ -86,8 +86,6 @@
 #define REVERB_WET_MIN           0.01f
 #define REVERB_WET_MAX           0.25f
 #define REVERB_WET_POWER         2.0f
-#define REVERB_WET_SMOOTH_ALPHA  1.0f
-#define REVERB_WET_START_ALPHA   1.0f
 
 static effect_mixer_ctx_t* g_mixer_ctx = NULL;
 
@@ -248,8 +246,8 @@ static void compute_peak_coeffs(float freq, float sr, float Q, float gain_db,
 }
 
 /* ---- Occlusion (unchanged) ---- */
-static float apply_occlusion_mono(float sample, float occlusion, float *lp_state, float *smooth_state) {
-    float alpha = 0.2f;
+static float apply_occlusion_mono(float sample, float occlusion, float alpha,
+                                  float *lp_state, float *smooth_state) {
     *smooth_state += alpha * (occlusion - *smooth_state);
     float occ = *smooth_state;
     if (occ <= 0.005f) {
@@ -509,11 +507,17 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
     g_mixer_ctx = ctx;
     memset(buffer, 0, (size_t)frames * out_channels * sizeof(float));
 
-    /* Reverb smoothing (unchanged) */
+    float smoothing_seconds = AUDIO_SMOOTHING_MS * 0.001f;
+    if (smoothing_seconds < 0.0001f) smoothing_seconds = 0.0001f;
+
+    /* Reverb parameters update once per callback, so account for all frames. */
+    float reverb_alpha = 1.0f - expf(-(float)frames /
+        (sample_rate * smoothing_seconds));
     if (ctx->reverb.target_decay > 0.01f) {
-        float alpha = REVERB_SMOOTH_ALPHA;
-        ctx->reverb.smooth_decay += alpha * (ctx->reverb.target_decay - ctx->reverb.smooth_decay);
-        ctx->reverb.smooth_damping += alpha * (ctx->reverb.target_damping - ctx->reverb.smooth_damping);
+        ctx->reverb.smooth_decay += reverb_alpha
+            * (ctx->reverb.target_decay - ctx->reverb.smooth_decay);
+        ctx->reverb.smooth_damping += reverb_alpha
+            * (ctx->reverb.target_damping - ctx->reverb.smooth_damping);
         if (ctx->reverb.smooth_damping < 0.1f) ctx->reverb.smooth_damping = 0.1f;
         ctx->reverb.decay = ctx->reverb.smooth_decay;
         ctx->reverb.damping = ctx->reverb.smooth_damping;
@@ -551,6 +555,11 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
     else { right_x = 1.0f; right_y = 0.0f; right_z = 0.0f; }
 
     float pos_alpha = POS_SMOOTH_ALPHA;
+    float sample_smoothing_alpha = 1.0f - expf(-1.0f /
+        (sample_rate * smoothing_seconds));
+    float occlusion_alpha = sample_smoothing_alpha;
+    float portal_pos_alpha = sample_smoothing_alpha;
+    float portal_active_alpha = sample_smoothing_alpha;
 
     for (i = 0; i < frames; i++) {
         for (v = 0; v < ctx->count; v++) {
@@ -650,15 +659,10 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
             float distance_scale = 1.0f - atten * 0.5f;
             occ *= distance_scale;
             occ = fminf(fmaxf(occ, 0.0f), 1.0f);
-            float occluded_mono = mono_sample;
-            if (occ > 0.005f) {
-                occluded_mono = apply_occlusion_mono(mono_sample, occ,
-                                                     &vo->hrtf_main.occlusion_lp_state[0],
-                                                     &vo->hrtf_main.occlusion_smooth);
-            } else {
-                vo->hrtf_main.occlusion_lp_state[0] = mono_sample;
-                vo->hrtf_main.occlusion_smooth = 0.0f;
-            }
+            float occluded_mono = apply_occlusion_mono(
+                mono_sample, occ, occlusion_alpha,
+                &vo->hrtf_main.occlusion_lp_state[0],
+                &vo->hrtf_main.occlusion_smooth);
 
             /* Process main voice through HRTF path */
             float main_left, main_right;
@@ -687,18 +691,25 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
             /* ---- Portal secondary voice (if active) ---- */
             if (vo->portal_active) {
                 /* ---- Smooth portal position and activation ---- */
-                float pos_alpha_portal = 0.15f;  /* adjust for desired smoothing speed */
-                vo->portal_smooth_x += pos_alpha_portal * (vo->portal_pos_x - vo->portal_smooth_x);
-                vo->portal_smooth_y += pos_alpha_portal * (vo->portal_pos_y - vo->portal_smooth_y);
-                vo->portal_smooth_z += pos_alpha_portal * (vo->portal_pos_z - vo->portal_smooth_z);
+                if (vo->portal_smooth_active < 0.001f) {
+                    vo->portal_smooth_x = vo->portal_pos_x;
+                    vo->portal_smooth_y = vo->portal_pos_y;
+                    vo->portal_smooth_z = vo->portal_pos_z;
+                    vo->portal_smooth_dist = vo->portal_total_dist;
+                }
+                vo->portal_smooth_x += portal_pos_alpha * (vo->portal_pos_x - vo->portal_smooth_x);
+                vo->portal_smooth_y += portal_pos_alpha * (vo->portal_pos_y - vo->portal_smooth_y);
+                vo->portal_smooth_z += portal_pos_alpha * (vo->portal_pos_z - vo->portal_smooth_z);
+                vo->portal_smooth_dist += portal_pos_alpha
+                                        * (vo->portal_total_dist - vo->portal_smooth_dist);
 
-                float act_alpha = 0.1f;
-                vo->portal_smooth_active += act_alpha * (1.0f - vo->portal_smooth_active);
+                vo->portal_smooth_active += portal_active_alpha
+                                          * (1.0f - vo->portal_smooth_active);
                 if (vo->portal_smooth_active > 0.999f) vo->portal_smooth_active = 1.0f;
             } else {
                 /* Fade out portal */
-                float act_alpha = 0.1f;
-                vo->portal_smooth_active += act_alpha * (0.0f - vo->portal_smooth_active);
+                vo->portal_smooth_active += portal_active_alpha
+                                          * (0.0f - vo->portal_smooth_active);
                 if (vo->portal_smooth_active < 0.001f) {
                     vo->portal_smooth_active = 0.0f;
                     /* Optionally reset portal HRTF state to avoid stale filters */
@@ -714,7 +725,7 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
                 float pdz = vo->portal_smooth_z - ctx->listener.pos_z;
 
                 /* ----- FIX: use total path distance from shader ----- */
-                float p_atten = distance_attenuation(vo->portal_total_dist, vo->rolloff);
+                float p_atten = distance_attenuation(vo->portal_smooth_dist, vo->rolloff);
                 float p_vol = vo->volume * p_atten * gain;
 
                 /* Portal dampening as a simple low-pass */
@@ -758,10 +769,10 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
         vo = ctx->voices[v];
         if (vo->active && vo->volume > 0.0f) {
             float dx, dy, dz;
-            if (vo->portal_active) {
-                dx = vo->portal_pos_x - ctx->listener.pos_x;
-                dy = vo->portal_pos_y - ctx->listener.pos_y;
-                dz = vo->portal_pos_z - ctx->listener.pos_z;
+            if (vo->portal_smooth_active > 0.5f) {
+                dx = vo->portal_smooth_x - ctx->listener.pos_x;
+                dy = vo->portal_smooth_y - ctx->listener.pos_y;
+                dz = vo->portal_smooth_z - ctx->listener.pos_z;
             } else {
                 dx = vo->smooth_x - ctx->listener.pos_x;
                 dy = vo->smooth_y - ctx->listener.pos_y;
@@ -787,12 +798,14 @@ void effect_mixer(float *buffer, int frames, int out_channels, void *userdata) {
         float target_wet = REVERB_WET_MIN + (REVERB_WET_MAX - REVERB_WET_MIN) * wet_base * dist_scale;
         if (target_wet > REVERB_WET_MAX) target_wet = REVERB_WET_MAX;
         if (target_wet < REVERB_WET_MIN) target_wet = REVERB_WET_MIN;
-        float alpha = REVERB_WET_SMOOTH_ALPHA;
-        if (smooth_wet < 0.01f) alpha = REVERB_WET_START_ALPHA;
-        smooth_wet += alpha * (target_wet - smooth_wet);
+        if (smooth_wet < 0.01f) {
+            smooth_wet = target_wet;
+        } else {
+            smooth_wet += reverb_alpha * (target_wet - smooth_wet);
+        }
         ctx->reverb.wet = smooth_wet;
     } else {
-        smooth_wet *= 0.99f;
+        smooth_wet *= 1.0f - reverb_alpha;
         ctx->reverb.wet = smooth_wet;
     }
     reverb_process(&ctx->reverb, buffer, frames, out_channels);

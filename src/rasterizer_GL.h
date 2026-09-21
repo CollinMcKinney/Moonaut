@@ -326,6 +326,10 @@ int  render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, i
 /* ---- Audio analysis constants ---- */
 #ifdef AUDIO_OCCLUSION
 #define MAX_AUDIO_VOICES_GPU    8
+typedef struct audio_voice_input {
+    vec3 world_pos;
+    float _pad;
+} audio_voice_input_t;
 #endif
 
 #ifdef AUDIO_REVERB
@@ -770,6 +774,7 @@ static GLint occ_u_listener_pos = -1;
 static GLint occ_u_num_voices = -1;
 static GLuint gl_audio_voice_input_ssbo = 0;
 static int   g_audio_voice_count_gpu = 0;
+static audio_voice_input_t gl_audio_voice_inputs[MAX_AUDIO_VOICES_GPU];
 
 /* Single propagation buffer with backpressure. A dispatch is skipped while
  * the previous one is still in flight; the poll returns data as soon as
@@ -1851,7 +1856,8 @@ static void init_audio_resources(void) {
 
         C89GL_glGenBuffers(1, &gl_audio_voice_input_ssbo);
         C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_voice_input_ssbo);
-        C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(vec3) * MAX_AUDIO_VOICES_GPU, NULL, GL_STREAM_DRAW);
+        C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER,
+                   sizeof(gl_audio_voice_inputs), NULL, GL_STREAM_DRAW);
 
         C89GL_glGenBuffers(1, &gl_audio_propagation_ssbo);
         C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_propagation_ssbo);
@@ -2015,9 +2021,10 @@ static void dispatch_audio_compute(void) {
 /* ---- Public: feed audio voice positions ---- */
 #ifdef AUDIO_OCCLUSION
 INLINE void render_set_audio_voice_data(const vec3 *positions, int count) {
-    g_audio_voice_count_gpu = count;
-    if (count <= 0 || !gl_audio_voice_input_ssbo) return;
+    if (count < 0) count = 0;
     if (count > MAX_AUDIO_VOICES_GPU) count = MAX_AUDIO_VOICES_GPU;
+    g_audio_voice_count_gpu = count;
+    if (count == 0 || !gl_audio_voice_input_ssbo) return;
 
     /* Skip the upload entirely when nothing has changed. This is common for
      * static test scenes and saves a per-frame buffer round-trip. */
@@ -2028,8 +2035,15 @@ INLINE void render_set_audio_voice_data(const vec3 *positions, int count) {
     memcpy(gl_audio_last_voice_positions, positions, sizeof(vec3) * count);
     gl_audio_last_voice_count = count;
 
+    for (int i = 0; i < count; i++) {
+        gl_audio_voice_inputs[i].world_pos = positions[i];
+        gl_audio_voice_inputs[i]._pad = 0.0f;
+    }
+
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_audio_voice_input_ssbo);
-    C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vec3) * count, positions);
+    C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                          sizeof(audio_voice_input_t) * count,
+                          gl_audio_voice_inputs);
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
@@ -2147,7 +2161,7 @@ INLINE void render_trigger_portal_search(void) {
 
     C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, gl_audio_portal_candidates_ssbo);
 
-    GLuint groups = (g_audio_voice_count_gpu + 7) / 8;
+    GLuint groups = (g_audio_voice_count_gpu + 63) / 64;
     if (groups == 0) groups = 1;
     C89GL_glDispatchCompute(groups, 1, 1);
 
