@@ -3141,7 +3141,7 @@ INLINE void render_finish(void) {
             C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
 
             C89GL_glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
-            C89GL_glDepthMask(GL_FALSE);
+            C89GL_glDepthMask(GL_TRUE);
             C89GL_glDepthFunc(GL_LESS);
             C89GL_glEnable(GL_DEPTH_TEST);
             C89GL_glDisable(GL_BLEND);
@@ -3216,6 +3216,7 @@ INLINE void render_finish(void) {
         oit_composite_into_current_fbo();
 
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
+        C89GL_glReadBuffer(GL_COLOR_ATTACHMENT0);
         C89GL_glActiveTexture(GL_TEXTURE0);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
         C89GL_glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, gl_render_width, gl_render_height);

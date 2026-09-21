@@ -3,7 +3,7 @@
 // Weighted-blended OIT composite pass.
 //
 // Reads the two accumulation targets written by the transparent WBOIT pass,
-// resolves them into a single premultiplied-ish colour with an effective
+// resolves them into a single premultiplied-ish color with an effective
 // alpha, and blends that over the existing opaque scene using standard
 // alpha blending (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA).
 //
@@ -14,7 +14,7 @@
 //   finalAlpha   = 1 - revealage
 //   composited   = (averageColor, finalAlpha)
 //
-// The caller renders this to the main colour FBO with standard alpha
+// The caller renders this to the main color FBO with standard alpha
 // blending, which performs the mix with the opaque background.
 
 uniform sampler2D uAccumTexture;

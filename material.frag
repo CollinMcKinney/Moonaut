@@ -120,7 +120,7 @@ uniform mat4  uView;
 
 layout(binding = 2) uniform sampler2D uRefractionSrc;
 
-#ifdef ALPHA_PASS_BEHIND
+#if defined(ALPHA_PASS_BEHIND) || defined(ALPHA_PASS_FRONT)
 layout(binding = 3) uniform sampler2D uTransmissiveDepthTex;
 #endif
 
@@ -1606,14 +1606,10 @@ layout(location = 1) out vec4 outNormal;
 #endif
 
 void main() {
-#ifdef ALPHA_PASS_BEHIND
+#ifdef ALPHA_PASS_FRONT
     float transmissive_z = texelFetch(uTransmissiveDepthTex,
                                       ivec2(gl_FragCoord.xy), 0).r;
-    if (transmissive_z >= 1.0) discard;
-    if (gl_FragCoord.z < transmissive_z) discard;
-#endif
-
-#ifdef ALPHA_PASS_FRONT
+    if (transmissive_z < 1.0 && gl_FragCoord.z >= transmissive_z) discard;
 #endif
 
     vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
