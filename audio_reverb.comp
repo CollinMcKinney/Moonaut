@@ -2,9 +2,8 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-uniform sampler2D uDepthTex;
-uniform mat4 uInvViewProj;
-uniform vec3 uListenerPos;
+uniform samplerCube uProbeDepthCube;
+uniform vec2        uProbeNearFar;
 
 struct GroupAccum {
     float sum;
@@ -23,18 +22,35 @@ shared uint  sh_count[64];
 shared uint  sh_min_bits[64];
 shared uint  sh_max_bits[64];
 
-vec3 world_from_uv_depth(vec2 uv, float depth) {
-    vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-    vec4 world = uInvViewProj * clip;
-    return world.xyz / world.w;
+float probe_linearize(float z01, float near, float far) {
+    float z = z01 * 2.0 - 1.0;
+    return (2.0 * near * far) / (far + near - z * (far - near));
+}
+
+float probe_distance(vec3 dir) {
+    float d = texture(uProbeDepthCube, dir).r;
+    if (d >= 0.9999) return 1e10;
+    float perp = probe_linearize(d, uProbeNearFar.x, uProbeNearFar.y);
+    vec3 a = abs(dir);
+    float dominant = max(a.x, max(a.y, a.z));
+    return perp / max(dominant, 1e-4);
+}
+
+/* Fibonacci sphere: even distribution of 64 directions on the unit
+ * sphere. Index i in [0, 64). */
+vec3 fib_dir(uint i) {
+    const uint  N  = 64u;
+    const float GA = 3.14159265358979 * (3.0 - sqrt(5.0)); /* ~2.4 rad */
+    float y = 1.0 - (float(i) + 0.5) / float(N) * 2.0;
+    float r = sqrt(max(1.0 - y * y, 0.0));
+    float phi = float(i) * GA;
+    return vec3(cos(phi) * r, y, sin(phi) * r);
 }
 
 void main() {
-    ivec2 tex_size = textureSize(uDepthTex, 0);
-    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
-    uint idx = gl_LocalInvocationIndex;
+    uint idx = gl_LocalInvocationIndex;   /* 0..63 */
+    uint tid = idx;
 
-    // Initialize shared arrays
     sh_sum[idx] = 0.0;
     sh_sumsq[idx] = 0.0;
     sh_count[idx] = 0;
@@ -42,26 +58,25 @@ void main() {
     sh_max_bits[idx] = floatBitsToUint(0.0);
     barrier();
 
-    if (pix.x < tex_size.x && pix.y < tex_size.y) {
-        float d = texelFetch(uDepthTex, pix, 0).r;
-        if (d > 0.001 && d < 0.999) {
-            vec2 uv = (vec2(pix) + 0.5) / vec2(tex_size);
-            vec3 world_pos = world_from_uv_depth(uv, d);
-            float dist = length(world_pos - uListenerPos);
-            sh_sum[idx] = dist;
-            sh_sumsq[idx] = dist * dist;
-            sh_count[idx] = 1;
-            uint dbits = floatBitsToUint(dist);
-            sh_min_bits[idx] = dbits;
-            sh_max_bits[idx] = dbits;
-        }
+    /* Each of the 64 threads samples one direction on the sphere. */
+    vec3 dir = fib_dir(tid);
+    float dist = probe_distance(dir);
+
+    /* Ignore directions that see sky — they carry no room information. */
+    if (dist < 1e9) {
+        sh_sum[idx]   = dist;
+        sh_sumsq[idx] = dist * dist;
+        sh_count[idx] = 1;
+        uint dbits = floatBitsToUint(dist);
+        sh_min_bits[idx] = dbits;
+        sh_max_bits[idx] = dbits;
     }
     barrier();
 
-    // Reduction
+    /* Reduction within the 64-element shared array. */
     for (uint stride = 32; stride > 0; stride >>= 1) {
         if (idx < stride) {
-            sh_sum[idx] += sh_sum[idx + stride];
+            sh_sum[idx]   += sh_sum[idx + stride];
             sh_sumsq[idx] += sh_sumsq[idx + stride];
             sh_count[idx] += sh_count[idx + stride];
             sh_min_bits[idx] = min(sh_min_bits[idx], sh_min_bits[idx + stride]);
@@ -70,12 +85,11 @@ void main() {
         barrier();
     }
 
-    // Thread 0 writes group accumulation
     if (idx == 0) {
         uint group_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-        accum.groups[group_id].sum = sh_sum[0];
-        accum.groups[group_id].sumsq = sh_sumsq[0];
-        accum.groups[group_id].count = sh_count[0];
+        accum.groups[group_id].sum      = sh_sum[0];
+        accum.groups[group_id].sumsq    = sh_sumsq[0];
+        accum.groups[group_id].count    = sh_count[0];
         accum.groups[group_id].min_bits = sh_min_bits[0];
         accum.groups[group_id].max_bits = sh_max_bits[0];
     }

@@ -1,12 +1,11 @@
 #version 430 core
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-uniform sampler2D uDepthTex;
-uniform mat4 uViewProj;
-uniform mat4 uInvViewProj;
-uniform vec3 uListenerPos;
-uniform int  uNumVoices;
+uniform samplerCube uProbeDepthCube;
+uniform vec2        uProbeNearFar;
+uniform vec3        uListenerPos;
+uniform int         uNumVoices;
 
 struct VoiceInput {
     vec3 worldPos;
@@ -26,77 +25,130 @@ layout(std430, binding = 3) buffer PortalCandidates {
     PortalCandidate candidates[];
 };
 
-vec3 world_from_uv_depth(vec2 uv, float depth) {
-    float clip_z = depth * 2.0 - 1.0;
-    vec4 clip = vec4(uv * 2.0 - 1.0, clip_z, 1.0);
-    vec4 world = uInvViewProj * clip;
-    return world.xyz / world.w;
+float probe_linearize(float z01, float near, float far) {
+    float z = z01 * 2.0 - 1.0;
+    return (2.0 * near * far) / (far + near - z * (far - near));
 }
 
+float sample_surface_dist(vec3 dir) {
+    float d = texture(uProbeDepthCube, dir).r;
+    if (d >= 0.9999) return 1e10;
+    float perp = probe_linearize(d, uProbeNearFar.x, uProbeNearFar.y);
+    vec3 a = abs(dir);
+    float dom = max(a.x, max(a.y, a.z));
+    return perp / max(dom, 1e-4);
+}
+
+void face_basis(int face, out vec3 F, out vec3 R, out vec3 U) {
+    if      (face == 0) { F = vec3( 1.0, 0.0, 0.0); U = vec3(0.0,-1.0, 0.0); R = vec3(0.0, 0.0,-1.0); }
+    else if (face == 1) { F = vec3(-1.0, 0.0, 0.0); U = vec3(0.0,-1.0, 0.0); R = vec3(0.0, 0.0, 1.0); }
+    else if (face == 2) { F = vec3( 0.0, 1.0, 0.0); U = vec3(0.0, 0.0, 1.0); R = vec3(1.0, 0.0, 0.0); }
+    else if (face == 3) { F = vec3( 0.0,-1.0, 0.0); U = vec3(0.0, 0.0,-1.0); R = vec3(1.0, 0.0, 0.0); }
+    else if (face == 4) { F = vec3( 0.0, 0.0, 1.0); U = vec3(0.0,-1.0, 0.0); R = vec3(1.0, 0.0, 0.0); }
+    else                { F = vec3( 0.0, 0.0,-1.0); U = vec3(0.0,-1.0, 0.0); R = vec3(-1.0,0.0, 0.0); }
+}
+
+/* 256 threads per voice, 6 * 65536 = 393216 texels to cover.
+ * Each thread scans 1536 texels, then we reduce. */
+#define TEXELS_PER_FACE 65536
+#define TEXELS_TOTAL    (6u * TEXELS_PER_FACE)   /* 393216 */
+#define THREADS         256u
+#define ITERS_PER_THREAD (TEXELS_TOTAL / THREADS) /* 1536 */
+
+shared float sh_best_dot[THREADS];
+shared vec3  sh_best_dir[THREADS];
+
 void main() {
-    uint voice_idx = gl_GlobalInvocationID.x;
-    if (voice_idx >= uint(uNumVoices)) {
+    uint voice = gl_WorkGroupID.x;
+    if (voice >= uint(uNumVoices)) return;
+
+    uint tid = gl_LocalInvocationID.x;
+
+    vec3 source_world = voices[voice].worldPos;
+    vec3 to_source = source_world - uListenerPos;
+    float source_dist = length(to_source);
+
+    if (source_dist < 0.05) {
+        if (tid == 0) candidates[voice].dist = 1e10;
         return;
     }
 
-    vec3 source_world = voices[voice_idx].worldPos;
+    vec3 d_src = to_source / source_dist;
 
-    vec4 clip = uViewProj * vec4(source_world, 1.0);
-    vec2 uv = clip.xy / clip.w;
-    uv = uv * 0.5 + 0.5;
-    float source_depth_01 = clip.z / clip.w * 0.5 + 0.5;
-
-    if (clip.w <= 0.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        candidates[voice_idx].dist = length(source_world - uListenerPos);
-        candidates[voice_idx].pos_x = source_world.x;
-        candidates[voice_idx].pos_y = source_world.y;
-        candidates[voice_idx].pos_z = source_world.z;
+    /* Direct path check. If the ray in the source direction already
+     * clears the source distance, no portal search is needed. This is
+     * the common case and skips the whole exhaustive scan. */
+    if (sample_surface_dist(d_src) >= source_dist - 0.05) {
+        if (tid == 0) candidates[voice].dist = 1e10;
         return;
     }
 
-    ivec2 tex_size = textureSize(uDepthTex, 0);
-    ivec2 center_pix = ivec2(uv * vec2(tex_size));
-    float depth_at_center = texelFetch(uDepthTex, center_pix, 0).r;
+    sh_best_dot[tid] = -2.0;
+    sh_best_dir[tid] = d_src;
+    barrier();
 
-    if (depth_at_center >= source_depth_01 - 0.001) {
-        candidates[voice_idx].dist = 1e10;
-        return;
-    }
+    /* Exhaustive scan: every texel of every face. A texel is viable if
+     * the ray in its direction clears the source distance, meaning
+     * sound travelling that way would not hit the occluder blocking
+     * the direct path. */
+    float local_dot = -2.0;
+    vec3  local_dir = d_src;
 
-    // ---- Brute‑force all pixels, keep closest (by squared distance) ----
-    float best_sq_dist = 1e10;
-    vec2 best_uv = uv;
+    for (uint k = 0u; k < ITERS_PER_THREAD; k++) {
+        uint idx = tid + k * THREADS;
+        uint face = idx / TEXELS_PER_FACE;
+        uint sub  = idx - face * TEXELS_PER_FACE;
+        uint py   = sub >> 8;   /* sub / 256 */
+        uint px   = sub & 255u; /* sub % 256 */
 
-    for (int py = 0; py < tex_size.y; py++) {
-        for (int px = 0; px < tex_size.x; px++) {
-            vec2 sample_uv = vec2(px, py) / vec2(tex_size);
-            float sample_depth = texelFetch(uDepthTex, ivec2(px, py), 0).r;
+        vec3 F, R, U;
+        face_basis(int(face), F, R, U);
 
-            if (sample_depth > source_depth_01 + 0.001) {
-                vec2 delta = sample_uv - uv;
-                float sq_dist = delta.x * delta.x + delta.y * delta.y;
-                if (sq_dist < best_sq_dist) {
-                    best_sq_dist = sq_dist;
-                    best_uv = sample_uv;
-                }
-            }
+        vec2 ndc = (vec2(px, py) + 0.5) * (2.0 / 256.0) - 1.0;
+        vec3 dir = normalize(F + ndc.x * R + ndc.y * U);
+
+        float surf = sample_surface_dist(dir);
+        if (surf < source_dist * 0.95) continue;
+
+        float c = dot(dir, d_src);
+        if (c > local_dot) {
+            local_dot = c;
+            local_dir = dir;
         }
     }
 
-    if (best_sq_dist < 1e9) {
-        float best_depth = texelFetch(uDepthTex, ivec2(best_uv * vec2(tex_size)), 0).r;
-        vec3 portal_world = world_from_uv_depth(best_uv, best_depth);
-        float total_path = length(source_world - portal_world) + length(portal_world - uListenerPos);
-        candidates[voice_idx].dist = total_path;
-        candidates[voice_idx].pos_x = portal_world.x;
-        candidates[voice_idx].pos_y = portal_world.y;
-        candidates[voice_idx].pos_z = portal_world.z;
+    sh_best_dot[tid] = local_dot;
+    sh_best_dir[tid] = local_dir;
+    barrier();
+
+    /* Parallel reduction: 256 -> 1. */
+    for (uint s = THREADS / 2u; s > 0u; s >>= 1) {
+        if (tid < s && sh_best_dot[tid + s] > sh_best_dot[tid]) {
+            sh_best_dot[tid] = sh_best_dot[tid + s];
+            sh_best_dir[tid] = sh_best_dir[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid != 0) return;
+
+    if (sh_best_dot[0] < -1.5) {
+        /* Source is fully sealed off — no direction on the entire
+         * sphere sees past the occluder. Report no path. */
+        candidates[voice].dist = 1e10;
         return;
     }
 
-    // ---- Fallback ----
-    candidates[voice_idx].dist = length(source_world - uListenerPos);
-    candidates[voice_idx].pos_x = source_world.x;
-    candidates[voice_idx].pos_y = source_world.y;
-    candidates[voice_idx].pos_z = source_world.z;
+    /* Portal placed at the direct-path occluder's distance along the
+     * best direction. We don't know the exact doorway location, but
+     * this puts the "portal point" at the right distance class — the
+     * wall the sound has to get through. Total path = distance to that
+     * point plus distance from there to the source. */
+    vec3 portal_world = uListenerPos + sh_best_dir[0] * source_dist;
+    float total_path = length(source_world - portal_world) + source_dist;
+
+    candidates[voice].dist  = total_path;
+    candidates[voice].pos_x = portal_world.x;
+    candidates[voice].pos_y = portal_world.y;
+    candidates[voice].pos_z = portal_world.z;
 }

@@ -19,7 +19,7 @@ static collision_bsp_definition* cbsp_build_from_model(model_definition *model)
     collision_bsp_definition *cbsp;
     model_primitive *prim;
     model_vertex *verts;
-    u16 *idx;
+    u32 *idx;
     u32 i;
     bsp_triangle *t;
 
@@ -60,7 +60,7 @@ static collision_bsp_definition* cbsp_build_from_model(model_definition *model)
         prim = TAG_BLOCK_GET_ELEMENT(&model->primitives, p, model_primitive);
         if (!prim || !prim->vertices.address || !prim->indices.address) continue;
         verts = (model_vertex*)prim->vertices.address;
-        idx = (u16*)prim->indices.address;
+        idx = (u32*)prim->indices.address;
 
         for (i = 0; i + 2 < prim->indices.count; i += 3) {
             t = TAG_BLOCK_GET_ELEMENT(&cbsp->triangles, tri_idx, bsp_triangle);

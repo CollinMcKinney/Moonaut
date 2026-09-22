@@ -79,7 +79,7 @@ typedef ptrdiff_t GLsizeiptr;
 #endif
 
 /* ========================================================================
-   OPENGL 3.3 + 4.3 ENUMS (missing definitions added)
+   OPENGL 3.3 + 4.3 ENUMS
    ======================================================================== */
 #define GL_FALSE                                    0
 #define GL_TRUE                                     1
@@ -149,24 +149,48 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_DEPTH_COMPONENT                          0x1902
 #define GL_DEPTH_COMPONENT16                        0x81A5
 #define GL_DEPTH_COMPONENT24                        0x81A6
+#define GL_DEPTH_COMPONENT32F                       0x8CAC
 #define GL_TEXTURE_2D                               0x0DE1
 #define GL_TEXTURE_CUBE_MAP                         0x8513
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_X              0x8515
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X              0x8516
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y              0x8517
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y              0x8518
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z              0x8519
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z              0x851A
+#define GL_LINEAR_MIPMAP_LINEAR                     0x2703
+#define GL_LINEAR_MIPMAP_NEAREST                    0x2701
+#define GL_NEAREST_MIPMAP_LINEAR                    0x2702
+#define GL_NEAREST_MIPMAP_NEAREST                   0x2700
 #define GL_TEXTURE_MIN_FILTER                       0x2801
 #define GL_TEXTURE_MAG_FILTER                       0x2800
+#define GL_TEXTURE_MAX_LEVEL                        0x813D
+#define GL_TEXTURE_BASE_LEVEL                       0x813C
 #define GL_NEAREST                                  0x2600
 #define GL_LINEAR                                   0x2601
 #define GL_TEXTURE_WRAP_S                           0x2802
 #define GL_TEXTURE_WRAP_T                           0x2803
 #define GL_TEXTURE_WRAP_R                           0x8072
 #define GL_CLAMP_TO_EDGE                            0x812F
+#define GL_CLAMP_TO_BORDER                          0x812D
 #define GL_REPEAT                                   0x2901
 #define GL_MIRRORED_REPEAT                          0x8370
+#define GL_TEXTURE_CUBE_MAP_SEAMLESS                0x884F
+#define GL_TEXTURE_COMPARE_MODE                     0x884C
+#define GL_TEXTURE_COMPARE_FUNC                     0x884D
+#define GL_COMPARE_REF_TO_TEXTURE                   0x884E
 #define GL_RGBA                                     0x1908
 #define GL_RGB                                      0x1907
 #define GL_RED                                      0x1903
+#define GL_RG                                       0x8227
 #define GL_R8                                       0x8229
-#define GL_R32F                                     0x822E
+#define GL_RG8                                      0x822B
+#define GL_R16F                                     0x822D
+#define GL_RG16F                                    0x822F
 #define GL_RGBA16F                                  0x881A
+#define GL_RGBA32F                                  0x8814
+#define GL_R11F_G11F_B10F                           0x8C3A
+#define GL_R32F                                     0x822E
 #define GL_HALF_FLOAT                               0x140B
 #define GL_TEXTURE0                                 0x84C0
 #define GL_TEXTURE1                                 0x84C1
@@ -303,6 +327,8 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_SYNC_FLUSH_COMMANDS_BIT        0x00000001
 #define GL_ALREADY_SIGNALED               0x911A
 #define GL_CONDITION_SATISFIED            0x911C
+#define GL_TIMEOUT_EXPIRED                0x911B
+#define GL_WAIT_FAILED                    0x911D
 #define GL_SYNC_GPU_COMMANDS_COMPLETE     0x9117
 #define GL_TIMEOUT_IGNORED                0xFFFFFFFFFFFFFFFFull
 
@@ -409,12 +435,12 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glGetProgramiv)(unsigned int program, un
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetShaderInfoLog)(unsigned int shader, int bufSize, int* length, char* infoLog);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGetProgramInfoLog)(unsigned int program, int bufSize, int* length, char* infoLog);
 typedef int (C89GL_APIENTRY *C89GL_PFN_glGetUniformLocation)(unsigned int program, const char* name);
+
+/* ---- Scalar uniform setters ---- */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1f)(int location, float v0);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2f)(int location, float v0, float v1);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3f)(int location, float v0, float v1, float v2);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4f)(int location, float v0, float v1, float v2, float v3);
-typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3fv)(int location, int count, const float* value);
-typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4fv)(int location, int count, const float* value);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1i)(int location, int v0);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2i)(int location, int v0, int v1);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3i)(int location, int v0, int v1, int v2);
@@ -423,12 +449,38 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1ui)(int location, unsigned int
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2ui)(int location, unsigned int v0, unsigned int v1);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3ui)(int location, unsigned int v0, unsigned int v1, unsigned int v2);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4ui)(int location, unsigned int v0, unsigned int v1, unsigned int v2, unsigned int v3);
+
+/* ---- Vector uniform setters ---- */
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1fv)(int location, int count, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2fv)(int location, int count, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3fv)(int location, int count, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4fv)(int location, int count, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1iv)(int location, int count, const int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2iv)(int location, int count, const int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3iv)(int location, int count, const int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4iv)(int location, int count, const int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform1uiv)(int location, int count, const unsigned int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform2uiv)(int location, int count, const unsigned int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform3uiv)(int location, int count, const unsigned int* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniform4uiv)(int location, int count, const unsigned int* value);
+
+/* ---- Matrix uniform setters ---- */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix2fv)(int location, int count, unsigned char transpose, const float* value);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix3fv)(int location, int count, unsigned char transpose, const float* value);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix4fv)(int location, int count, unsigned char transpose, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix2x3fv)(int location, int count, unsigned char transpose, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix3x2fv)(int location, int count, unsigned char transpose, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix2x4fv)(int location, int count, unsigned char transpose, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix4x2fv)(int location, int count, unsigned char transpose, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix3x4fv)(int location, int count, unsigned char transpose, const float* value);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glUniformMatrix4x3fv)(int location, int count, unsigned char transpose, const float* value);
+
 typedef void (C89GL_APIENTRY *C89GL_PFN_glVertexAttribPointer)(unsigned int index, int size, unsigned int type, unsigned char normalized, int stride, const void* pointer);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glEnableVertexAttribArray)(unsigned int index);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDisableVertexAttribArray)(unsigned int index);
+
+/* ---- Generic vertex attribute constants (GL 2.0) ---- */
+typedef void (C89GL_APIENTRY *C89GL_PFN_glVertexAttrib1f)(unsigned int index, float v0);
 
 /* 3.0 Vertex Arrays, Framebuffers, Draw */
 typedef void (C89GL_APIENTRY *C89GL_PFN_glGenVertexArrays)(int n, unsigned int* arrays);
@@ -529,6 +581,7 @@ typedef void (C89GL_APIENTRY *C89GL_PFN_glMemoryBarrier)(unsigned int barriers);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glDispatchCompute)(unsigned int num_groups_x, unsigned int num_groups_y, unsigned int num_groups_z);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glBindImageTexture)(unsigned int unit, unsigned int texture, int level, unsigned char layered, int layer, unsigned int access, unsigned int format);
 typedef void (C89GL_APIENTRY *C89GL_PFN_glClearBufferSubData)(GLenum target, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format, GLenum type, const void *data);
+typedef void (C89GL_APIENTRY *C89GL_PFN_glClearBufferData)(GLenum target, GLenum internalformat, GLenum format, GLenum type, const void *data);
 
 /* ========================================================================
    GLOBAL FUNCTION POINTERS
@@ -598,12 +651,12 @@ extern C89GL_PFN_glGetProgramiv C89GL_glGetProgramiv;
 extern C89GL_PFN_glGetShaderInfoLog C89GL_glGetShaderInfoLog;
 extern C89GL_PFN_glGetProgramInfoLog C89GL_glGetProgramInfoLog;
 extern C89GL_PFN_glGetUniformLocation C89GL_glGetUniformLocation;
+
+/* ---- Scalar uniform setters ---- */
 extern C89GL_PFN_glUniform1f C89GL_glUniform1f;
 extern C89GL_PFN_glUniform2f C89GL_glUniform2f;
 extern C89GL_PFN_glUniform3f C89GL_glUniform3f;
 extern C89GL_PFN_glUniform4f C89GL_glUniform4f;
-extern C89GL_PFN_glUniform3fv C89GL_glUniform3fv;
-extern C89GL_PFN_glUniform4fv C89GL_glUniform4fv;
 extern C89GL_PFN_glUniform1i C89GL_glUniform1i;
 extern C89GL_PFN_glUniform2i C89GL_glUniform2i;
 extern C89GL_PFN_glUniform3i C89GL_glUniform3i;
@@ -612,12 +665,36 @@ extern C89GL_PFN_glUniform1ui C89GL_glUniform1ui;
 extern C89GL_PFN_glUniform2ui C89GL_glUniform2ui;
 extern C89GL_PFN_glUniform3ui C89GL_glUniform3ui;
 extern C89GL_PFN_glUniform4ui C89GL_glUniform4ui;
+
+/* ---- Vector uniform setters ---- */
+extern C89GL_PFN_glUniform1fv C89GL_glUniform1fv;
+extern C89GL_PFN_glUniform2fv C89GL_glUniform2fv;
+extern C89GL_PFN_glUniform3fv C89GL_glUniform3fv;
+extern C89GL_PFN_glUniform4fv C89GL_glUniform4fv;
+extern C89GL_PFN_glUniform1iv C89GL_glUniform1iv;
+extern C89GL_PFN_glUniform2iv C89GL_glUniform2iv;
+extern C89GL_PFN_glUniform3iv C89GL_glUniform3iv;
+extern C89GL_PFN_glUniform4iv C89GL_glUniform4iv;
+extern C89GL_PFN_glUniform1uiv C89GL_glUniform1uiv;
+extern C89GL_PFN_glUniform2uiv C89GL_glUniform2uiv;
+extern C89GL_PFN_glUniform3uiv C89GL_glUniform3uiv;
+extern C89GL_PFN_glUniform4uiv C89GL_glUniform4uiv;
+
+/* ---- Matrix uniform setters ---- */
 extern C89GL_PFN_glUniformMatrix2fv C89GL_glUniformMatrix2fv;
 extern C89GL_PFN_glUniformMatrix3fv C89GL_glUniformMatrix3fv;
 extern C89GL_PFN_glUniformMatrix4fv C89GL_glUniformMatrix4fv;
+extern C89GL_PFN_glUniformMatrix2x3fv C89GL_glUniformMatrix2x3fv;
+extern C89GL_PFN_glUniformMatrix3x2fv C89GL_glUniformMatrix3x2fv;
+extern C89GL_PFN_glUniformMatrix2x4fv C89GL_glUniformMatrix2x4fv;
+extern C89GL_PFN_glUniformMatrix4x2fv C89GL_glUniformMatrix4x2fv;
+extern C89GL_PFN_glUniformMatrix3x4fv C89GL_glUniformMatrix3x4fv;
+extern C89GL_PFN_glUniformMatrix4x3fv C89GL_glUniformMatrix4x3fv;
+
 extern C89GL_PFN_glVertexAttribPointer C89GL_glVertexAttribPointer;
 extern C89GL_PFN_glEnableVertexAttribArray C89GL_glEnableVertexAttribArray;
 extern C89GL_PFN_glDisableVertexAttribArray C89GL_glDisableVertexAttribArray;
+extern C89GL_PFN_glVertexAttrib1f C89GL_glVertexAttrib1f;
 
 /* 3.0 */
 extern C89GL_PFN_glGenVertexArrays C89GL_glGenVertexArrays;
@@ -706,6 +783,7 @@ extern C89GL_PFN_glMemoryBarrier C89GL_glMemoryBarrier;
 extern C89GL_PFN_glDispatchCompute C89GL_glDispatchCompute;
 extern C89GL_PFN_glBindImageTexture C89GL_glBindImageTexture;
 extern C89GL_PFN_glClearBufferSubData C89GL_glClearBufferSubData;
+extern C89GL_PFN_glClearBufferData C89GL_glClearBufferData;
 
 /* ========================================================================
    CONTEXT STRUCTURE
@@ -852,12 +930,12 @@ C89GL_PFN_glGetProgramiv C89GL_glGetProgramiv = NULL;
 C89GL_PFN_glGetShaderInfoLog C89GL_glGetShaderInfoLog = NULL;
 C89GL_PFN_glGetProgramInfoLog C89GL_glGetProgramInfoLog = NULL;
 C89GL_PFN_glGetUniformLocation C89GL_glGetUniformLocation = NULL;
+
+/* ---- Scalar uniform setters ---- */
 C89GL_PFN_glUniform1f C89GL_glUniform1f = NULL;
 C89GL_PFN_glUniform2f C89GL_glUniform2f = NULL;
 C89GL_PFN_glUniform3f C89GL_glUniform3f = NULL;
 C89GL_PFN_glUniform4f C89GL_glUniform4f = NULL;
-C89GL_PFN_glUniform3fv C89GL_glUniform3fv = NULL;
-C89GL_PFN_glUniform4fv C89GL_glUniform4fv = NULL;
 C89GL_PFN_glUniform1i C89GL_glUniform1i = NULL;
 C89GL_PFN_glUniform2i C89GL_glUniform2i = NULL;
 C89GL_PFN_glUniform3i C89GL_glUniform3i = NULL;
@@ -866,12 +944,36 @@ C89GL_PFN_glUniform1ui C89GL_glUniform1ui = NULL;
 C89GL_PFN_glUniform2ui C89GL_glUniform2ui = NULL;
 C89GL_PFN_glUniform3ui C89GL_glUniform3ui = NULL;
 C89GL_PFN_glUniform4ui C89GL_glUniform4ui = NULL;
+
+/* ---- Vector uniform setters ---- */
+C89GL_PFN_glUniform1fv C89GL_glUniform1fv = NULL;
+C89GL_PFN_glUniform2fv C89GL_glUniform2fv = NULL;
+C89GL_PFN_glUniform3fv C89GL_glUniform3fv = NULL;
+C89GL_PFN_glUniform4fv C89GL_glUniform4fv = NULL;
+C89GL_PFN_glUniform1iv C89GL_glUniform1iv = NULL;
+C89GL_PFN_glUniform2iv C89GL_glUniform2iv = NULL;
+C89GL_PFN_glUniform3iv C89GL_glUniform3iv = NULL;
+C89GL_PFN_glUniform4iv C89GL_glUniform4iv = NULL;
+C89GL_PFN_glUniform1uiv C89GL_glUniform1uiv = NULL;
+C89GL_PFN_glUniform2uiv C89GL_glUniform2uiv = NULL;
+C89GL_PFN_glUniform3uiv C89GL_glUniform3uiv = NULL;
+C89GL_PFN_glUniform4uiv C89GL_glUniform4uiv = NULL;
+
+/* ---- Matrix uniform setters ---- */
 C89GL_PFN_glUniformMatrix2fv C89GL_glUniformMatrix2fv = NULL;
 C89GL_PFN_glUniformMatrix3fv C89GL_glUniformMatrix3fv = NULL;
 C89GL_PFN_glUniformMatrix4fv C89GL_glUniformMatrix4fv = NULL;
+C89GL_PFN_glUniformMatrix2x3fv C89GL_glUniformMatrix2x3fv = NULL;
+C89GL_PFN_glUniformMatrix3x2fv C89GL_glUniformMatrix3x2fv = NULL;
+C89GL_PFN_glUniformMatrix2x4fv C89GL_glUniformMatrix2x4fv = NULL;
+C89GL_PFN_glUniformMatrix4x2fv C89GL_glUniformMatrix4x2fv = NULL;
+C89GL_PFN_glUniformMatrix3x4fv C89GL_glUniformMatrix3x4fv = NULL;
+C89GL_PFN_glUniformMatrix4x3fv C89GL_glUniformMatrix4x3fv = NULL;
+
 C89GL_PFN_glVertexAttribPointer C89GL_glVertexAttribPointer = NULL;
 C89GL_PFN_glEnableVertexAttribArray C89GL_glEnableVertexAttribArray = NULL;
 C89GL_PFN_glDisableVertexAttribArray C89GL_glDisableVertexAttribArray = NULL;
+C89GL_PFN_glVertexAttrib1f C89GL_glVertexAttrib1f = NULL;
 
 /* 3.0 */
 C89GL_PFN_glGenVertexArrays C89GL_glGenVertexArrays = NULL;
@@ -957,6 +1059,7 @@ C89GL_PFN_glMemoryBarrier C89GL_glMemoryBarrier = NULL;
 C89GL_PFN_glDispatchCompute C89GL_glDispatchCompute = NULL;
 C89GL_PFN_glBindImageTexture C89GL_glBindImageTexture = NULL;
 C89GL_PFN_glClearBufferSubData C89GL_glClearBufferSubData = NULL;
+C89GL_PFN_glClearBufferData C89GL_glClearBufferData = NULL;
 
 /* ---------- Loader Implementation ---------- */
 int C89GL_load_functions(void) {
@@ -1022,12 +1125,12 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glGetShaderInfoLog, "glGetShaderInfoLog");
     C89GL_LOAD_FUNC(C89GL_glGetProgramInfoLog, "glGetProgramInfoLog");
     C89GL_LOAD_FUNC(C89GL_glGetUniformLocation, "glGetUniformLocation");
+
+    /* ---- Scalar uniform setters ---- */
     C89GL_LOAD_FUNC(C89GL_glUniform1f, "glUniform1f");
     C89GL_LOAD_FUNC(C89GL_glUniform2f, "glUniform2f");
     C89GL_LOAD_FUNC(C89GL_glUniform3f, "glUniform3f");
     C89GL_LOAD_FUNC(C89GL_glUniform4f, "glUniform4f");
-    C89GL_LOAD_FUNC(C89GL_glUniform3fv, "glUniform3fv");
-    C89GL_LOAD_FUNC(C89GL_glUniform4fv, "glUniform4fv");
     C89GL_LOAD_FUNC(C89GL_glUniform1i, "glUniform1i");
     C89GL_LOAD_FUNC(C89GL_glUniform2i, "glUniform2i");
     C89GL_LOAD_FUNC(C89GL_glUniform3i, "glUniform3i");
@@ -1036,12 +1139,36 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glUniform2ui, "glUniform2ui");
     C89GL_LOAD_FUNC(C89GL_glUniform3ui, "glUniform3ui");
     C89GL_LOAD_FUNC(C89GL_glUniform4ui, "glUniform4ui");
+
+    /* ---- Vector uniform setters ---- */
+    C89GL_LOAD_FUNC(C89GL_glUniform1fv, "glUniform1fv");
+    C89GL_LOAD_FUNC(C89GL_glUniform2fv, "glUniform2fv");
+    C89GL_LOAD_FUNC(C89GL_glUniform3fv, "glUniform3fv");
+    C89GL_LOAD_FUNC(C89GL_glUniform4fv, "glUniform4fv");
+    C89GL_LOAD_FUNC(C89GL_glUniform1iv, "glUniform1iv");
+    C89GL_LOAD_FUNC(C89GL_glUniform2iv, "glUniform2iv");
+    C89GL_LOAD_FUNC(C89GL_glUniform3iv, "glUniform3iv");
+    C89GL_LOAD_FUNC(C89GL_glUniform4iv, "glUniform4iv");
+    C89GL_LOAD_FUNC(C89GL_glUniform1uiv, "glUniform1uiv");
+    C89GL_LOAD_FUNC(C89GL_glUniform2uiv, "glUniform2uiv");
+    C89GL_LOAD_FUNC(C89GL_glUniform3uiv, "glUniform3uiv");
+    C89GL_LOAD_FUNC(C89GL_glUniform4uiv, "glUniform4uiv");
+
+    /* ---- Matrix uniform setters ---- */
     C89GL_LOAD_FUNC(C89GL_glUniformMatrix2fv, "glUniformMatrix2fv");
     C89GL_LOAD_FUNC(C89GL_glUniformMatrix3fv, "glUniformMatrix3fv");
     C89GL_LOAD_FUNC(C89GL_glUniformMatrix4fv, "glUniformMatrix4fv");
+    C89GL_LOAD_FUNC(C89GL_glUniformMatrix2x3fv, "glUniformMatrix2x3fv");
+    C89GL_LOAD_FUNC(C89GL_glUniformMatrix3x2fv, "glUniformMatrix3x2fv");
+    C89GL_LOAD_FUNC(C89GL_glUniformMatrix2x4fv, "glUniformMatrix2x4fv");
+    C89GL_LOAD_FUNC(C89GL_glUniformMatrix4x2fv, "glUniformMatrix4x2fv");
+    C89GL_LOAD_FUNC(C89GL_glUniformMatrix3x4fv, "glUniformMatrix3x4fv");
+    C89GL_LOAD_FUNC(C89GL_glUniformMatrix4x3fv, "glUniformMatrix4x3fv");
+
     C89GL_LOAD_FUNC(C89GL_glVertexAttribPointer, "glVertexAttribPointer");
     C89GL_LOAD_FUNC(C89GL_glEnableVertexAttribArray, "glEnableVertexAttribArray");
     C89GL_LOAD_FUNC(C89GL_glDisableVertexAttribArray, "glDisableVertexAttribArray");
+    C89GL_LOAD_FUNC(C89GL_glVertexAttrib1f, "glVertexAttrib1f");
 
     /* 3.0 */
     C89GL_LOAD_FUNC(C89GL_glGenVertexArrays, "glGenVertexArrays");
@@ -1130,6 +1257,7 @@ int C89GL_load_functions(void) {
     C89GL_LOAD_FUNC(C89GL_glDispatchCompute, "glDispatchCompute");
     C89GL_LOAD_FUNC(C89GL_glBindImageTexture, "glBindImageTexture");
     C89GL_LOAD_FUNC(C89GL_glClearBufferSubData, "glClearBufferSubData");
+    C89GL_LOAD_FUNC(C89GL_glClearBufferData, "glClearBufferData");
 
     return 1;
 }
@@ -1172,7 +1300,7 @@ int C89GL_create_context(C89FW_window_t* window, C89GL_Context* ctx) {
     wglCreateContextAttribsARB = (C89GL_PFN_wglCreateContextAttribsARB)wglGetProcAddress("wglCreateContextAttribsARB");
 
     if (wglCreateContextAttribsARB) {
-        int attribs[] = {0x2091, 3, 0x2092, 3, 0x2093, 0x00000001, 0};
+        int attribs[] = {0x2091, 4, 0x2092, 3, 0x2093, 0x00000001, 0};
         glrc = wglCreateContextAttribsARB(hdc, NULL, attribs);
     }
     if (!glrc) glrc = wglCreateContext(hdc);
@@ -1240,7 +1368,7 @@ int C89GL_create_context(C89FW_window_t* window, C89GL_Context* ctx) {
         GLXFBConfig* fb_configs = glXChooseFBConfig(dpy, screen, fb_attribs, &count);
         if (fb_configs && count > 0) {
             int ctx_attribs[] = {
-                GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+                GLX_CONTEXT_MAJOR_VERSION_ARB, 4,
                 GLX_CONTEXT_MINOR_VERSION_ARB, 3,
                 GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
                 None
