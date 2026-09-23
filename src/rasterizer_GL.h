@@ -103,12 +103,21 @@
  *   #define RASTERIZER_GL_IMPLEMENTATION
  *   #include "rasterizer_GL.h"
  *   render_init(win_w, win_h);
- *   render_set_render_resolution(512, 288);
+ *   render_set_resolution_scale(0.75f);              // optional, default 75%
  *   render_set_sky(zenith, horizon, ground, 2.0f);      // optional
  *   render_set_clouds(cloud_color, 0.55f);              // optional
  *   render_set_sky_ambient_scale(0.5f);                 // optional
  *   ... draw ...
  *   render_finish();
+ *
+ * Resolution handling:
+ *   The internal render resolution is derived from the window size multiplied
+ *   by gl_resolution_scale (default 0.75f). render_resize() recomputes the
+ *   render resolution from the new window size and the current scale.
+ *   render_set_render_resolution() overrides the internal resolution
+ *   directly. render_set_resolution_scale() changes the scale and recomputes
+ *   from the window size. The final post-process blit upscales from the
+ *   internal resolution to the window resolution.
  */
 
 #define AUDIO_OCCLUSION
@@ -167,6 +176,7 @@ void render_finish(void);
 const u32* render_get_fb(void);
 int render_resize(i32 new_w, i32 new_h);
 void render_set_render_resolution(i32 render_width, i32 render_height);
+void render_set_resolution_scale(float scale);  /* 0..1, default 0.75 */
 i32 render_get_render_width(void);
 i32 render_get_render_height(void);
 static INLINE u8 color_to_u8(real x);
@@ -295,6 +305,7 @@ static i32 gl_win_width  = 0;
 static i32 gl_win_height = 0;
 static i32 gl_render_width  = 0;
 static i32 gl_render_height = 0;
+static float gl_resolution_scale = 0.75f;
 
 static i32 gl_ao_width  = 0;
 static i32 gl_ao_height = 0;
@@ -495,6 +506,13 @@ static GLint  pp_u_screen_size = -1;
 static GLint  pp_u_exposure    = -1;
 static GLint  pp_u_gamma       = -1;
 static GLint  pp_u_time        = -1;
+
+/* ---- Anti-aliasing (FXAA pass after post-process) ---- */
+static GLuint gl_fxaa_program    = 0;
+static GLuint gl_post_fxaa_fbo    = 0;
+static GLuint gl_post_fxaa_tex    = 0;
+static GLint  aa_u_screen_texture = -1;
+static GLint  aa_u_resolution      = -1;
 
 /* ---- Environment cube (IBL source) ---- */
 static GLuint gl_sky_cube     = 0;
@@ -1713,6 +1731,40 @@ static void init_post_process_resources(void) {
     printf("Post-process initialised (HDR resolve -> sRGB).\n");
 }
 
+static void init_fxaa_resources(void) {
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
+                                            "fxaa.frag",
+                                            "#version 430 core\n");
+    if (!gl_fullscreen_vs || !fs) {
+        if (fs) C89GL_glDeleteShader(fs);
+        fprintf(stderr, "ERROR: Failed to compile anti_aliasing program\n");
+        return;
+    }
+    gl_fxaa_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(gl_fxaa_program, gl_fullscreen_vs);
+    C89GL_glAttachShader(gl_fxaa_program, fs);
+    C89GL_glLinkProgram(gl_fxaa_program);
+    C89GL_glDeleteShader(fs);
+
+    {
+        GLint status;
+        C89GL_glGetProgramiv(gl_fxaa_program, GL_LINK_STATUS, &status);
+        if (!status) {
+            char log[512];
+            C89GL_glGetProgramInfoLog(gl_fxaa_program, sizeof(log), NULL, log);
+            printf("AA program link error:\n%s\n", log);
+            C89GL_glDeleteProgram(gl_fxaa_program);
+            gl_fxaa_program = 0;
+            return;
+        }
+    }
+
+    aa_u_screen_texture = C89GL_glGetUniformLocation(gl_fxaa_program, "screenTexture");
+    aa_u_resolution      = C89GL_glGetUniformLocation(gl_fxaa_program, "resolution");
+
+    printf("Anti-aliasing (FXAA) initialised.\n");
+}
+
 static void init_audio_resources(void) {
 #ifdef AUDIO_OCCLUSION
     {
@@ -2531,8 +2583,8 @@ INLINE int render_init(i32 window_width, i32 window_height) {
 
     gl_win_width = window_width;
     gl_win_height = window_height;
-    gl_render_width = window_width;
-    gl_render_height = window_height;
+    gl_render_width  = (i32)(window_width  * gl_resolution_scale);
+    gl_render_height = (i32)(window_height * gl_resolution_scale);
     gl_ao_width  = (gl_render_width  + 1) / 2;
     gl_ao_height = (gl_render_height + 1) / 2;
     gl_pool_used_floats = 0;
@@ -2729,6 +2781,27 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    /* ---- FXAA intermediate FBO (window-resolution, for post-process -> AA chain) ---- */
+    C89GL_glGenFramebuffers(1, &gl_post_fxaa_fbo);
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
+    C89GL_glGenTextures(1, &gl_post_fxaa_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_win_width, gl_win_height, 0, GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_post_fxaa_tex, 0);
+    {
+        GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
+        C89GL_glDrawBuffers(1, bufs);
+    }
+    {
+        GLenum s = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (s != GL_FRAMEBUFFER_COMPLETE)
+            printf("AA FBO incomplete! status=0x%x\n", s);
+    }
+
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
 
     {
@@ -2762,6 +2835,7 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     init_vbao_resources();
     init_vbao_blur_resources();
     init_post_process_resources();
+    init_fxaa_resources();
 
     printf("render_init returning 1 (success)\n");
     return 1;
@@ -2802,6 +2876,10 @@ INLINE void render_shutdown(void) {
     if (gl_oit_fbo)         { C89GL_glDeleteFramebuffers(1, &gl_oit_fbo); gl_oit_fbo = 0; }
 
     if (gl_post_process_program) { C89GL_glDeleteProgram(gl_post_process_program); gl_post_process_program = 0; }
+
+    if (gl_fxaa_program) { C89GL_glDeleteProgram(gl_fxaa_program); gl_fxaa_program = 0; }
+    if (gl_post_fxaa_fbo) { C89GL_glDeleteFramebuffers(1, &gl_post_fxaa_fbo); gl_post_fxaa_fbo = 0; }
+    if (gl_post_fxaa_tex) { C89GL_glDeleteTextures(1, &gl_post_fxaa_tex); gl_post_fxaa_tex = 0; }
 
     if (gl_transmissive_depth_program) { C89GL_glDeleteProgram(gl_transmissive_depth_program); gl_transmissive_depth_program = 0; }
     if (gl_transmissive_fbo) { C89GL_glDeleteFramebuffers(1, &gl_transmissive_fbo); gl_transmissive_fbo = 0; }
@@ -2954,17 +3032,7 @@ INLINE void render_clear_color(real r, real g, real b) {
 }
 INLINE const u32* render_get_fb(void) { return NULL; }
 
-INLINE int render_resize(i32 new_w, i32 new_h) {
-    if (gl_win_width == new_w && gl_win_height == new_h) return 0;
-    gl_win_width = new_w;
-    gl_win_height = new_h;
-    return 0;
-}
-
-INLINE void render_set_render_resolution(i32 rw, i32 rh) {
-    if (rw <= 0 || rh <= 0) return;
-    if (gl_render_width == rw && gl_render_height == rh) return;
-    gl_render_width = rw; gl_render_height = rh;
+static void resize_render_targets(void) {
     gl_ao_width  = (gl_render_width  + 1) / 2;
     gl_ao_height = (gl_render_height + 1) / 2;
     gl_vbao_ubo_dirty      = 1;
@@ -2994,6 +3062,20 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
 
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
+
+    /* Rescale AA intermediate texture to window resolution */
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_win_width, gl_win_height, 0, GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_post_fxaa_tex, 0);
+    {
+        GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
+        C89GL_glDrawBuffers(1, bufs);
+    }
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_accum_tex);
@@ -3036,6 +3118,39 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
                                 GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
     }
     C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+INLINE int render_resize(i32 new_w, i32 new_h) {
+    if (gl_win_width == new_w && gl_win_height == new_h) return 0;
+    gl_win_width  = new_w;
+    gl_win_height = new_h;
+
+    gl_render_width  = (i32)(new_w * gl_resolution_scale);
+    gl_render_height = (i32)(new_h * gl_resolution_scale);
+    if (gl_render_width <= 0 || gl_render_height <= 0) return 0;
+
+    resize_render_targets();
+    return 0;
+}
+
+INLINE void render_set_render_resolution(i32 rw, i32 rh) {
+    if (rw <= 0 || rh <= 0) return;
+    if (gl_render_width == rw && gl_render_height == rh) return;
+    gl_render_width  = rw;
+    gl_render_height = rh;
+    resize_render_targets();
+}
+
+INLINE void render_set_resolution_scale(float scale) {
+    if (scale < 0.01f) scale = 0.01f;
+    if (scale > 1.0f)  scale = 1.0f;
+    gl_resolution_scale = scale;
+
+    gl_render_width  = (i32)(gl_win_width  * gl_resolution_scale);
+    gl_render_height = (i32)(gl_win_height * gl_resolution_scale);
+    if (gl_render_width <= 0 || gl_render_height <= 0) return;
+
+    resize_render_targets();
 }
 
 INLINE i32 render_get_render_width(void) { return gl_render_width; }
@@ -3660,7 +3775,7 @@ INLINE void render_finish(void) {
     }
 
     if (gl_post_process_program) {
-        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
         C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
 
         C89GL_glDisable(GL_DEPTH_TEST);
@@ -3673,7 +3788,7 @@ INLINE void render_finish(void) {
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
 
         if (pp_u_screen_size != -1)
-            C89GL_glUniform2f(pp_u_screen_size, (float)gl_render_width, (float)gl_render_height);
+            C89GL_glUniform2f(pp_u_screen_size, (float)gl_win_width, (float)gl_win_height);
         if (pp_u_exposure != -1)
             C89GL_glUniform1f(pp_u_exposure, gl_post_exposure);
         if (pp_u_gamma != -1)
@@ -3694,11 +3809,38 @@ INLINE void render_finish(void) {
         C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
-        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
+        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_post_fxaa_fbo);
         C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
                                 0, 0, gl_win_width, gl_win_height,
                                 GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
+    }
+
+    /* ---- Anti-aliasing pass (FXAA) ---- */
+    if (gl_fxaa_program) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+        C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
+
+        C89GL_glDisable(GL_DEPTH_TEST);
+        C89GL_glDisable(GL_BLEND);
+        C89GL_glDepthMask(GL_FALSE);
+
+        C89GL_glUseProgram(gl_fxaa_program);
+
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
+
+        if (aa_u_screen_texture != -1)
+            C89GL_glUniform1i(aa_u_screen_texture, 0);
+        if (aa_u_resolution != -1)
+            C89GL_glUniform2f(aa_u_resolution, (float)gl_win_width, (float)gl_win_height);
+
+        C89GL_glBindVertexArray(gl_oit_vao);
+        C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+        C89GL_glBindVertexArray(0);
+
+        C89GL_glUseProgram(0);
+        C89GL_glActiveTexture(GL_TEXTURE0);
     }
 
     C89GL_swap_buffers(&gl_ctx);
