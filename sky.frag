@@ -40,11 +40,11 @@
 
 #define SKY_SUN_TINT             vec3(1.00, 0.92, 0.78)
 #define SKY_MOON_TINT            vec3(0.85, 0.85, 0.90)
-#define SKY_INTENSITY            0.25     // overall brightness multiplier
+#define SKY_INTENSITY            0.5     // overall brightness multiplier
 #define SKY_SUN_ANGULAR_RADIUS   0.00465  // radians, ~0.266 deg (real sun)
 
 // Gradient colors and shaping
-#define SKY_ZENITH               vec3(0.04, 0.12, 0.42)
+#define SKY_ZENITH               vec3(0.08, 0.24, 0.84)
 #define SKY_HORIZON              vec3(0.9, 0.7, 0.6)
 #define SKY_GROUND               vec3(0.05, 0.5, 0.03)
 #define SKY_EXPONENT             0.4

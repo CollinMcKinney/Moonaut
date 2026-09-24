@@ -15,7 +15,7 @@ uniform float uFogStart;
 uniform float uFogEnd;
 
 layout(std140) uniform MaterialUniforms {
-    vec3  uMatColor;
+    vec3  uMatAlbedo;
     vec3  uMatTint;
     float uMatAlpha;
     vec3  uMatEmissiveColor;
@@ -37,13 +37,13 @@ layout(std140) uniform MaterialUniforms {
     float uMatDiffuseRoughness;
     float uMatTransmissionRoughness;
     float uMatSaturation;
-    float uMatIridescenceStrength;
+    float uMatThinFilmStrength;
     vec3  uMatBackGlowColor;
     float uMatBumpWaveAmplitude;
     float uMatBumpWaveFrequency;
     float uMatBumpWaveSpeed;
     float uMatBumpNoise;
-    float uMatFringeIntensity;
+    float uMatDiffractionIntensity;
     int   uMatCelBands;
     float uMatGlitchIntensity;
     int   uMatPosterizeLevels;
@@ -60,6 +60,7 @@ layout(std140) uniform MaterialUniforms {
     vec3  uMatTransmissionTint;
     vec3  uMatF82Tint;
     vec3  uMatSubsurfaceColor;
+    float uMatThinFilmIOR;
 };
 
 layout(std140, row_major) uniform ModelMatrices {

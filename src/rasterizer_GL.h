@@ -316,7 +316,7 @@ static i32 gl_ao_height = 0;
 #define VBAO_BLUR_UBO_BINDING  3
 
 typedef struct {
-    float uMatColor[3];             float _pad0;
+    float uMatAlbedo[3];             float _pad0;
     float uMatTint[3];              float uMatAlpha;
     float uMatEmissiveColor[3];     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency; float uMatEmissivePulsePhase;
@@ -330,10 +330,10 @@ typedef struct {
     float uMatGoochCool[3];         float _pad2;
     float uMatGoochWarm[3];         float uMatAmbientLightFactor;
     float uMatDiffuseRoughness;     float uMatTransmissionRoughness;
-    float uMatSaturation;           float uMatIridescenceStrength;
+    float uMatSaturation;           float uMatThinFilmStrength;
     float uMatBackGlowColor[3];     float uMatBumpWaveAmplitude;
     float uMatBumpWaveFrequency;    float uMatBumpWaveSpeed;
-    float uMatBumpNoise;            float uMatFringeIntensity;
+    float uMatBumpNoise;            float uMatDiffractionIntensity;
     int   uMatCelBands;             float uMatGlitchIntensity;
     int   uMatPosterizeLevels;      float _pad3;
     float uMatStrobeColor[3];       float uMatStrobeFrequency;
@@ -343,10 +343,10 @@ typedef struct {
     float uSheenColor[3];           float uSheenRoughness;
     float uSheenStrength;
     float uMatAnisotropic;
-    float _pa6[2];
+    float _pad6[2];
     float uMatTransmissionTint[3];  float _pad7;
     float uMatF82Tint[3];           float _pad8;
-    float uMatSubsurfaceColor[3];   float _pad9;
+    float uMatSubsurfaceColor[3];   float uMatThinFilmIOR;
 } material_ubo_t;
 STATIC_ASSERT(sizeof(material_ubo_t) == 352, material_ubo_t__size__wrong);
 
@@ -841,10 +841,10 @@ static void generate_defines(render_method key, int is_depth, alpha_pass_side si
     if (key & EFFECT_EMISSIVE_PULSE)  { n = snprintf(p, remaining, "#define EFFECT_EMISSIVE_PULSE\n"); p += n; remaining -= n; }
     if (key & EFFECT_STROBE)          { n = snprintf(p, remaining, "#define EFFECT_STROBE\n"); p += n; remaining -= n; }
     if (key & EFFECT_SATURATION)      { n = snprintf(p, remaining, "#define EFFECT_SATURATION\n"); p += n; remaining -= n; }
-    if (key & EFFECT_IRIDESCENCE)     { n = snprintf(p, remaining, "#define EFFECT_IRIDESCENCE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_THIN_FILM)       { n = snprintf(p, remaining, "#define EFFECT_THIN_FILM\n"); p += n; remaining -= n; }
     if (key & EFFECT_GLITCH)          { n = snprintf(p, remaining, "#define EFFECT_GLITCH\n"); p += n; remaining -= n; }
     if (key & EFFECT_BUMP_NOISE)      { n = snprintf(p, remaining, "#define EFFECT_BUMP_NOISE\n"); p += n; remaining -= n; }
-    if (key & EFFECT_FRINGE)          { n = snprintf(p, remaining, "#define EFFECT_FRINGE\n"); p += n; remaining -= n; }
+    if (key & EFFECT_DIFFRACTION)     { n = snprintf(p, remaining, "#define EFFECT_DIFFRACTION\n"); p += n; remaining -= n; }
     if (key & EFFECT_POSTERIZE)       { n = snprintf(p, remaining, "#define EFFECT_POSTERIZE\n"); p += n; remaining -= n; }
     if (key & EFFECT_FOG)             { n = snprintf(p, remaining, "#define EFFECT_FOG\n"); p += n; remaining -= n; }
     if (key & EFFECT_ALPHA) {
@@ -1018,9 +1018,9 @@ static void update_material_ubo(const material_definition *mat) {
     material_ubo_t ubo;
     memset(&ubo, 0, sizeof(ubo));
 
-    ubo.uMatColor[0] = mat->color.color.r;
-    ubo.uMatColor[1] = mat->color.color.g;
-    ubo.uMatColor[2] = mat->color.color.b;
+    ubo.uMatAlbedo[0] = mat->albedo.color.r;
+    ubo.uMatAlbedo[1] = mat->albedo.color.g;
+    ubo.uMatAlbedo[2] = mat->albedo.color.b;
     ubo.uMatTint[0] = mat->tint.color.r;
     ubo.uMatTint[1] = mat->tint.color.g;
     ubo.uMatTint[2] = mat->tint.color.b;
@@ -1054,7 +1054,8 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatDiffuseRoughness     = mat->diffuse_roughness;
     ubo.uMatTransmissionRoughness = mat->transmission_roughness;
     ubo.uMatSaturation         = mat->saturation;
-    ubo.uMatIridescenceStrength = mat->iridescence_strength;
+    ubo.uMatThinFilmStrength = mat->thin_film_strength;
+    ubo.uMatThinFilmIOR = mat->thin_film_ior;
     ubo.uMatBackGlowColor[0] = mat->back_glow_color.color.r;
     ubo.uMatBackGlowColor[1] = mat->back_glow_color.color.g;
     ubo.uMatBackGlowColor[2] = mat->back_glow_color.color.b;
@@ -1062,7 +1063,7 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatBumpWaveFrequency = mat->bump_wave_frequency;
     ubo.uMatBumpWaveSpeed     = mat->bump_wave_speed;
     ubo.uMatBumpNoise     = mat->bump_noise;
-    ubo.uMatFringeIntensity = mat->fringe_intensity;
+    ubo.uMatDiffractionIntensity = mat->diffraction_intensity;
     ubo.uMatCelBands      = mat->cel_bands;
     ubo.uMatGlitchIntensity = mat->glitch_intensity;
     ubo.uMatPosterizeLevels = mat->posterize_levels;

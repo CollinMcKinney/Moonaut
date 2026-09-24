@@ -23,10 +23,10 @@ typedef enum render_method {
     EFFECT_EMISSIVE_PULSE  = (1 << 8),
     EFFECT_STROBE          = (1 << 9),
     EFFECT_SATURATION      = (1 << 10),
-    EFFECT_IRIDESCENCE     = (1 << 11),
+    EFFECT_THIN_FILM       = (1 << 11),
     EFFECT_GLITCH          = (1 << 12),
     EFFECT_BUMP_NOISE      = (1 << 13),
-    EFFECT_FRINGE          = (1 << 14),
+    EFFECT_DIFFRACTION     = (1 << 14),
     EFFECT_POSTERIZE       = (1 << 15),
     EFFECT_FOG             = (1 << 16),
     EFFECT_ALPHA           = (1 << 17),
@@ -59,10 +59,10 @@ TAG_BITFIELD32_BEGIN(render_method, 0)
     TAG_BITFIELD32_ENTRY(EFFECT_EMISSIVE_PULSE,  "Emissive Pulse")
     TAG_BITFIELD32_ENTRY(EFFECT_STROBE,          "Strobe")
     TAG_BITFIELD32_ENTRY(EFFECT_SATURATION,      "Saturation")
-    TAG_BITFIELD32_ENTRY(EFFECT_IRIDESCENCE,     "Iridescence")
+    TAG_BITFIELD32_ENTRY(EFFECT_THIN_FILM,       "Thin Film")
     TAG_BITFIELD32_ENTRY(EFFECT_GLITCH,          "Glitch")
     TAG_BITFIELD32_ENTRY(EFFECT_BUMP_NOISE,      "Bump Noise")
-    TAG_BITFIELD32_ENTRY(EFFECT_FRINGE,          "Fringe")
+    TAG_BITFIELD32_ENTRY(EFFECT_DIFFRACTION,     "Diffraction")
     TAG_BITFIELD32_ENTRY(EFFECT_POSTERIZE,       "Posterize")
     TAG_BITFIELD32_ENTRY(EFFECT_FOG,             "Fog")
     TAG_BITFIELD32_ENTRY(EFFECT_ALPHA,           "Alpha")
@@ -78,7 +78,7 @@ TAG_BITFIELD32_END(render_method)
  * ========================================================================= */
 typedef struct material_definition {
     u32  render_method;
-    vec3 color;
+    vec3 albedo;
     real ambient_light_factor;
     real alpha;
     real saturation;
@@ -107,9 +107,10 @@ typedef struct material_definition {
     real strobe_frequency;
     real strobe_phase;
     bool skip_fog;
-    real iridescence_strength;
+    real thin_film_strength;
+    real thin_film_ior;
     real glitch_intensity;
-    real fringe_intensity;
+    real diffraction_intensity;
     i32  posterize_levels;
     bool double_sided;
     real bump_noise;              
@@ -133,7 +134,7 @@ typedef struct material_definition {
  * ========================================================================= */
 TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definition))
     FIELD_BITFIELD32("render_method", render_method_bitfield, render_method_ENUM_BITS),
-    FIELD_VEC3("color"),
+    FIELD_VEC3("albedo"),
     FIELD_REAL("ambient_light_factor"),
     FIELD_REAL("alpha"),
     FIELD_REAL("saturation"),
@@ -162,9 +163,10 @@ TAG_GROUP_BEGIN(material, TAG_MAGIC_PACK(mtrl), sizeof(struct material_definitio
     FIELD_REAL("strobe_frequency"),
     FIELD_REAL("strobe_phase"),
     FIELD_BOOL("skip_fog"),
-    FIELD_REAL("iridescence_strength"),
+    FIELD_REAL("thin_film_strength"),
+    FIELD_REAL("thin_film_ior"),
     FIELD_REAL("glitch_intensity"),
-    FIELD_REAL("fringe_intensity"),
+    FIELD_REAL("diffraction_intensity"),
     FIELD_I32("posterize_levels"),
     FIELD_BOOL("double_sided"),
     FIELD_REAL("roughness"),
@@ -193,7 +195,7 @@ TAG_GROUP_END(material, sizeof(struct material_definition))
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WATER = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_TRANSMISSION | EFFECT_FOG,
-    .color                  = {0.05, 0.30, 0.55},
+    .albedo                 = {0.05, 0.30, 0.55},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -222,9 +224,10 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -247,7 +250,7 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
 const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SHEEN | EFFECT_SUBSURFACE | EFFECT_ANISOTROPIC | 
                               EFFECT_FOG,
-    .color                  = {0.2, 0.5, 0.1},
+    .albedo                 = {0.2, 0.5, 0.1},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -276,9 +279,10 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -303,7 +307,7 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
 const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SHEEN | EFFECT_SUBSURFACE |
                               EFFECT_ANISOTROPIC | EFFECT_FOG,
-    .color                  = {0.7, 0.25, 0.35},
+    .albedo                 = {0.7, 0.25, 0.35},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -332,9 +336,10 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -359,7 +364,7 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
 const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_CLEARCOAT | EFFECT_ANISOTROPIC | 
                               EFFECT_BUMP_WAVE| EFFECT_FOG,
-    .color                  = {0.55, 0.3, 0.12},
+    .albedo                 = {0.55, 0.3, 0.12},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -388,9 +393,10 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.3f,
@@ -412,7 +418,7 @@ const struct material_definition DEFAULT_MATERIAL_WOOD = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .render_method          = EFFECT_ALPHA,
-    .color                  = {0.85f, 0.95f, 1.0f},
+    .albedo                 = {0.85f, 0.95f, 1.0f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.2f,
     .saturation             = 1.0f,
@@ -441,9 +447,10 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -465,7 +472,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .render_method          = EFFECT_SHEEN | EFFECT_SUBSURFACE | EFFECT_CLEARCOAT,
-    .color                  = {0.9, 0.75, 0.65},
+    .albedo                 = {0.9, 0.75, 0.65},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -494,9 +501,10 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -520,7 +528,7 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_FOG,
-    .color                  = {0.15, 0.15, 0.15},
+    .albedo                 = {0.15, 0.15, 0.15},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -549,9 +557,10 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -573,7 +582,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBBER = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_ICE = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
-    .color                  = {0.75, 0.88, 1.00},
+    .albedo                 = {0.75, 0.88, 1.00},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.5f,
     .saturation             = 1.0f,
@@ -602,9 +611,10 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -628,7 +638,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_STONE = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_BUMP_NOISE | EFFECT_FOG,
-    .color                  = {0.55, 0.5, 0.45},
+    .albedo                 = {0.55, 0.5, 0.45},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -657,9 +667,10 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.7f,
@@ -683,8 +694,8 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_DIFFUSE_WRAP |
                               EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_EMISSIVE |
                               EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_GLITCH |
-                              EFFECT_FRINGE,
-    .color                  = {0.15f, 0.05f, 0.00f},
+                               EFFECT_DIFFRACTION,
+    .albedo                 = {0.15f, 0.05f, 0.00f},
     .ambient_light_factor   = 0.15f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -713,9 +724,10 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .strobe_frequency       = 0.47140452079f,
     .strobe_phase           = 2.10f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.05f,
-    .fringe_intensity       = 0.3f,
+    .diffraction_intensity    = 0.3f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -737,7 +749,7 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_TOON = {
     .render_method          = EFFECT_GOOCH | EFFECT_RIM | EFFECT_CEL_SHADING,
-    .color                  = {0.90f, 0.70f, 0.40f},
+    .albedo                 = {0.90f, 0.70f, 0.40f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -766,9 +778,10 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -791,9 +804,9 @@ const struct material_definition DEFAULT_MATERIAL_TOON = {
 const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .render_method          = EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE |
-                              EFFECT_IRIDESCENCE | EFFECT_GLITCH | EFFECT_FRINGE |
+                              EFFECT_THIN_FILM | EFFECT_GLITCH | EFFECT_DIFFRACTION |
                               EFFECT_ANISOTROPIC | EFFECT_ALPHA,
-    .color                  = {0.20f, 0.60f, 0.80f},
+    .albedo                 = {0.20f, 0.60f, 0.80f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.55f,
     .saturation             = 1.0f,
@@ -822,9 +835,10 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
     .strobe_frequency       = 1.0f,
     .strobe_phase           = 0.5f,
     .skip_fog               = true,
-    .iridescence_strength   = 0.30f,
+    .thin_film_strength     = 0.30f,
+    .thin_film_ior          = 1.5,
     .glitch_intensity       = 0.7f,
-    .fringe_intensity       = 0.25f,
+    .diffraction_intensity  = 0.25f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -847,9 +861,9 @@ const struct material_definition DEFAULT_MATERIAL_HOLOGRAM = {
 const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .render_method          = EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_RIM |
                               EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE | EFFECT_STROBE |
-                              EFFECT_IRIDESCENCE | EFFECT_FRINGE | EFFECT_SATURATION |
+                              EFFECT_THIN_FILM | EFFECT_DIFFRACTION | EFFECT_SATURATION |
                               EFFECT_ANISOTROPIC | EFFECT_ALPHA,
-    .color                  = {1.0f, 1.0f, 1.0f},
+    .albedo                 = {1.0f, 1.0f, 1.0f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.9f,
     .saturation             = 1.5f,
@@ -878,9 +892,10 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
     .strobe_frequency       = 1.0f,
     .strobe_phase           = 1.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.90f,
+    .thin_film_strength     = 0.90f,
+    .thin_film_ior          = 1.5,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.20f,
+    .diffraction_intensity  = 0.20f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -902,7 +917,7 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_CLEARCOAT,
-    .color                  = {0.20f, 0.50f, 0.80f},
+    .albedo                 = {0.20f, 0.50f, 0.80f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -931,9 +946,10 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -955,7 +971,7 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_BUMP_WAVE,
-    .color                  = {0.7, 0.35, 0.3},
+    .albedo                 = {0.7, 0.35, 0.3},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -984,9 +1000,10 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.75f,
@@ -1008,7 +1025,7 @@ const struct material_definition DEFAULT_MATERIAL_BRICK = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_BUMP_NOISE | EFFECT_CLEARCOAT | EFFECT_SHEEN,
-    .color                  = {0.45, 0.25, 0.12},
+    .albedo                 = {0.45, 0.25, 0.12},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1037,9 +1054,10 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.15f,
@@ -1064,8 +1082,8 @@ const struct material_definition DEFAULT_MATERIAL_LEATHER = {
  * using https://github.com/portsmouth/F82-tint-generator
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GOLD = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.998, 0.786, 0.324},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.998, 0.786, 0.324},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1094,9 +1112,10 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.03f,
@@ -1118,7 +1137,7 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_SHEEN | EFFECT_SUBSURFACE | EFFECT_BUMP_WAVE,
-    .color                  = {0.95f, 0.95f, 1.00f},
+    .albedo                 = {0.95f, 0.95f, 1.00f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1147,9 +1166,10 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.1f,
@@ -1173,7 +1193,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_BUMP_WAVE| EFFECT_FOG,
-    .color                  = {0.5, 0.35, 0.2},
+    .albedo                 = {0.5, 0.35, 0.2},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1202,9 +1222,10 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.55f,
@@ -1227,9 +1248,9 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
 const struct material_definition DEFAULT_MATERIAL_NEON = {
     .render_method          = EFFECT_GOOCH | EFFECT_BACK_GLOW |
                               EFFECT_RIM | EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE |
-                              EFFECT_STROBE | EFFECT_IRIDESCENCE | EFFECT_GLITCH |
-                              EFFECT_FRINGE | EFFECT_ANISOTROPIC,
-    .color                  = {0.00f, 1.00f, 1.00f},
+                              EFFECT_STROBE | EFFECT_THIN_FILM | EFFECT_GLITCH |
+                              EFFECT_DIFFRACTION | EFFECT_ANISOTROPIC,
+    .albedo                 = {0.00f, 1.00f, 1.00f},
     .ambient_light_factor   = 0.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1258,9 +1279,10 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
     .strobe_frequency       = 8.0f,
     .strobe_phase           = 0.25f,
     .skip_fog               = true,
-    .iridescence_strength   = 0.1f,
+    .thin_film_strength     = 0.1f,
+    .thin_film_ior          = 1.5,
     .glitch_intensity       = 0.3f,
-    .fringe_intensity       = 0.1f,
+    .diffraction_intensity  = 0.1f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1282,7 +1304,7 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .render_method          = EFFECT_SHEEN | EFFECT_BUMP_NOISE | EFFECT_ANISOTROPIC,
-    .color                  = {0.55, 0.1, 0.15},
+    .albedo                 = {0.55, 0.1, 0.15},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1311,9 +1333,10 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.20f,
@@ -1335,7 +1358,7 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
-    .color                  = {0.85f, 0.82f, 0.78f},
+    .albedo                 = {0.85f, 0.82f, 0.78f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1364,9 +1387,10 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1390,7 +1414,7 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WAX = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
-    .color                  = {0.9, 0.8, 0.6},
+    .albedo                 = {0.9, 0.8, 0.6},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.87f,
     .saturation             = 1.0f,
@@ -1419,9 +1443,10 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -1444,8 +1469,8 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
  * 25. PEARL
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PEARL = {
-    .render_method          = EFFECT_IRIDESCENCE | EFFECT_SUBSURFACE | EFFECT_CLEARCOAT,
-    .color                  = {0.95f, 0.90f, 0.85f},
+    .render_method          = EFFECT_THIN_FILM | EFFECT_SUBSURFACE | EFFECT_CLEARCOAT,
+    .albedo                 = {0.95f, 0.90f, 0.85f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1474,14 +1499,15 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.6f,
+    .thin_film_strength     = 0.6f,
+    .thin_film_ior          = 1.34f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
     .metallic               = 0.0f,
-    .ior                    = 1.5f,
+    .ior                    = 1.61f,
     .subsurface_strength    = 0.8f,
     .clearcoat_color        = {1.0f, 0.98f, 0.95f},
     .clearcoat_roughness    = 0.05f,
@@ -1500,7 +1526,7 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .render_method          = EFFECT_CLEARCOAT | EFFECT_BUMP_WAVE | EFFECT_FOG,
-    .color                  = {0.95,0.93,0.9},
+    .albedo                 = {0.95,0.93,0.9},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1529,9 +1555,10 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1553,7 +1580,7 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_FOG,
-    .color                  = {0.80f, 0.80f, 0.85f},
+    .albedo                 = {0.80f, 0.80f, 0.85f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1582,9 +1609,10 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.45f,
@@ -1606,7 +1634,7 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .render_method          = EFFECT_POSTERIZE | EFFECT_SATURATION,
-    .color                  = {1.0, 0.6, 0.2},
+    .albedo                 = {1.0, 0.6, 0.2},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 2.0f,
@@ -1635,9 +1663,10 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 8,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1660,7 +1689,7 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
 const struct material_definition DEFAULT_MATERIAL_FROST = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_BUMP_NOISE |
                               EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
-    .color                  = {0.85,0.9,1.0},
+    .albedo                 = {0.85,0.9,1.0},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.65f,
     .saturation             = 1.0f,
@@ -1689,9 +1718,10 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.50f,
@@ -1715,7 +1745,7 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUST = {
     .render_method          = EFFECT_BUMP_WAVE| EFFECT_BUMP_NOISE | EFFECT_SHEEN | EFFECT_FOG,
-    .color                  = {0.60f, 0.20f, 0.05f},
+    .albedo                 = {0.60f, 0.20f, 0.05f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1744,9 +1774,10 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.50f,
@@ -1768,7 +1799,7 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_ANISOTROPIC,
-    .color                  = {0.10f, 0.10f, 0.11f},
+    .albedo                 = {0.10f, 0.10f, 0.11f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1797,9 +1828,10 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1822,7 +1854,7 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .render_method          = EFFECT_FOG,
-    .color                  = {0.654, 0.685, 0.701},
+    .albedo                 = {0.654, 0.685, 0.701},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1851,9 +1883,10 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1875,7 +1908,7 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .render_method          = EFFECT_SUBSURFACE | EFFECT_TRANSMISSION |  EFFECT_BUMP_WAVE | EFFECT_FOG,
-    .color                  = {0.08, 0.65, 0.35},
+    .albedo                 = {0.08, 0.65, 0.35},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.95f,
     .saturation             = 1.0f,
@@ -1904,9 +1937,10 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
@@ -1929,8 +1963,8 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
  * 34. OIL SLICK
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
-    .render_method          = EFFECT_IRIDESCENCE | EFFECT_ALPHA,
-    .color                  = {0.1, 0.1, 0.15},
+    .render_method          = EFFECT_THIN_FILM | EFFECT_ALPHA,
+    .albedo                 = {0.1, 0.1, 0.15},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 0.80f,
     .saturation             = 1.0f,
@@ -1959,9 +1993,10 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 1.0f,
+    .thin_film_strength     = 1.0f,
+    .thin_film_ior          = 1.5,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.0f,
@@ -1983,8 +2018,8 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SILVER = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.991, 0.985, 0.974},   /* F0 (linear)      */
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.991, 0.985, 0.974},   /* F0 (linear)      */
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2013,9 +2048,10 @@ const struct material_definition DEFAULT_MATERIAL_SILVER = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.02f,
@@ -2038,8 +2074,8 @@ const struct material_definition DEFAULT_MATERIAL_SILVER = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_ALUMINUM = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.916, 0.923, 0.924},   /* F0 (linear)      */
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.916, 0.923, 0.924},   /* F0 (linear)      */
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2068,9 +2104,10 @@ const struct material_definition DEFAULT_MATERIAL_ALUMINUM = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.05f,
@@ -2093,8 +2130,8 @@ const struct material_definition DEFAULT_MATERIAL_ALUMINUM = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_COPPER = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.932, 0.623, 0.522},   /* F0 (linear)      */
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.932, 0.623, 0.522},   /* F0 (linear)      */
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2123,9 +2160,10 @@ const struct material_definition DEFAULT_MATERIAL_COPPER = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.03f,
@@ -2148,8 +2186,8 @@ const struct material_definition DEFAULT_MATERIAL_COPPER = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_NICKEL = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.697, 0.641, 0.563},   /* F0 (linear)      */
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.697, 0.641, 0.563},   /* F0 (linear)      */
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2178,9 +2216,10 @@ const struct material_definition DEFAULT_MATERIAL_NICKEL = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.05f,
@@ -2203,8 +2242,8 @@ const struct material_definition DEFAULT_MATERIAL_NICKEL = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PLATINUM = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.765, 0.73, 0.676},   /* F0 (linear)      */
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.765, 0.73, 0.676},   /* F0 (linear)      */
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2233,9 +2272,10 @@ const struct material_definition DEFAULT_MATERIAL_PLATINUM = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.03f,
@@ -2258,8 +2298,8 @@ const struct material_definition DEFAULT_MATERIAL_PLATINUM = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_IRON = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.53, 0.513, 0.494},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.53, 0.513, 0.494},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2288,9 +2328,10 @@ const struct material_definition DEFAULT_MATERIAL_IRON = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.15f,
@@ -2313,8 +2354,8 @@ const struct material_definition DEFAULT_MATERIAL_IRON = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_TITANIUM = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.441, 0.4, 0.361},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.441, 0.4, 0.361},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2343,9 +2384,10 @@ const struct material_definition DEFAULT_MATERIAL_TITANIUM = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.05f,
@@ -2368,8 +2410,8 @@ const struct material_definition DEFAULT_MATERIAL_TITANIUM = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_TUNGSTEN = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.537, 0.536, 0.519},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.537, 0.536, 0.519},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2398,9 +2440,10 @@ const struct material_definition DEFAULT_MATERIAL_TUNGSTEN = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.03f,
@@ -2423,8 +2466,8 @@ const struct material_definition DEFAULT_MATERIAL_TUNGSTEN = {
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_BRASS = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.962f, 0.713f, 0.464f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.962f, 0.713f, 0.464f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2453,9 +2496,10 @@ const struct material_definition DEFAULT_MATERIAL_BRASS = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.05f,
@@ -2483,8 +2527,8 @@ const struct material_definition DEFAULT_MATERIAL_BRASS = {
  * would use ~0.05 and heavily weathered steel ~0.5.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_STEEL = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.669f, 0.639f, 0.598f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.669f, 0.639f, 0.598f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2513,9 +2557,10 @@ const struct material_definition DEFAULT_MATERIAL_STEEL = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.08f,
@@ -2542,8 +2587,8 @@ const struct material_definition DEFAULT_MATERIAL_STEEL = {
  * increase roughness to ~0.6 and pull the F0 toward {0.55, 0.55, 0.58}.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_LEAD = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.626f, 0.640f, 0.693f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.626f, 0.640f, 0.693f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2572,9 +2617,10 @@ const struct material_definition DEFAULT_MATERIAL_LEAD = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.10f,
@@ -2596,8 +2642,8 @@ const struct material_definition DEFAULT_MATERIAL_LEAD = {
  * 45. BRONZE (Cu-Sn alloy)
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_BRONZE = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.714f, 0.428f, 0.181f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.714f, 0.428f, 0.181f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2626,9 +2672,10 @@ const struct material_definition DEFAULT_MATERIAL_BRONZE = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.08f,
@@ -2656,8 +2703,8 @@ const struct material_definition DEFAULT_MATERIAL_BRONZE = {
  * is energy-safe.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CAESIUM = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.702f, 0.555f, 0.256f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.702f, 0.555f, 0.256f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2686,9 +2733,10 @@ const struct material_definition DEFAULT_MATERIAL_CAESIUM = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.05f,
@@ -2715,8 +2763,8 @@ const struct material_definition DEFAULT_MATERIAL_CAESIUM = {
  * and darker, useful for retro-tech / early-solid-state props.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_GERMANIUM = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.500f, 0.517f, 0.465f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.500f, 0.517f, 0.465f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2745,9 +2793,10 @@ const struct material_definition DEFAULT_MATERIAL_GERMANIUM = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.03f,
@@ -2775,8 +2824,8 @@ const struct material_definition DEFAULT_MATERIAL_GERMANIUM = {
  * surfaces, and high-tech industrial materials.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SILICON = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.345f, 0.369f, 0.426f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.345f, 0.369f, 0.426f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2805,9 +2854,10 @@ const struct material_definition DEFAULT_MATERIAL_SILICON = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.02f,
@@ -2836,8 +2886,8 @@ const struct material_definition DEFAULT_MATERIAL_SILICON = {
  * at silhouettes — no other material in the palette does this.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_ZINC = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.808f, 0.844f, 0.865f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.808f, 0.844f, 0.865f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2866,9 +2916,10 @@ const struct material_definition DEFAULT_MATERIAL_ZINC = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.10f,
@@ -2895,8 +2946,8 @@ const struct material_definition DEFAULT_MATERIAL_ZINC = {
  * warm grazing response. The clamp handles this.
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUBIDIUM = {
-    .render_method          = EFFECT_ANISOTROPIC | EFFECT_BUMP_NOISE,
-    .color                  = {0.919f, 0.859f, 0.747f},
+    .render_method          = EFFECT_BUMP_NOISE,
+    .albedo                 = {0.919f, 0.859f, 0.747f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2925,9 +2976,10 @@ const struct material_definition DEFAULT_MATERIAL_RUBIDIUM = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.03f,
@@ -2952,7 +3004,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBIDIUM = {
  *
  * Mercury is the only metal that is liquid at room temperature. To sell
  * that, this material uses the same bump-wave surface animation as
- * DEFAULT_MATERIAL_WATER, but with slower motion and lower amplitude to
+ * default material water, but with slower motion and lower amplitude to
  * communicate mercury's high density and surface tension. The waves are
  * gentler and more sluggish than water — a heavy, viscous-looking ripple
  * rather than a lively one.
@@ -2967,7 +3019,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBIDIUM = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_MERCURY = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_FOG,
-    .color                  = {0.781f, 0.780f, 0.778f},
+    .albedo                 = {0.781f, 0.780f, 0.778f},
     .ambient_light_factor   = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -2996,9 +3048,10 @@ const struct material_definition DEFAULT_MATERIAL_MERCURY = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .iridescence_strength   = 0.0f,
+    .thin_film_strength     = 0.0f,
+    .thin_film_ior          = 1.5f,
     .glitch_intensity       = 0.0f,
-    .fringe_intensity       = 0.0f,
+    .diffraction_intensity  = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = true,
     .bump_noise             = 0.0f,
