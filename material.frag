@@ -56,52 +56,47 @@ uniform float uEnvCubeMaxMip;
 uniform float uSkyAmbientScale;
 
 layout(std140) uniform MaterialUniforms {
-    vec3  uMatAlbedo;
-    vec3  uMatTint;
-    float uMatAlpha;
-    vec3  uMatEmissiveColor;
-    float uMatEmissivePulseAmplitude;
-    float uMatEmissivePulseFrequency;
-    float uMatEmissivePulsePhase;
-    float uMatTransmission;
-    vec3  uMatSpecularTint;
-    float uMatSpecularRoughness;
-    vec3  uMatRimColor;
-    float uMatRimExponent;
-    float uMatMetallic;
-    float uMatIOR;
-    float uMatSubsurface;
-    float uMatClearcoatIOR;
-    vec3  uMatGoochCool;
-    vec3  uMatGoochWarm;
-    float uMatAmbient;
+    vec3  uMatAlbedo;               float uMatAlpha;                    // 16 bytes
+    vec3  uMatTint;                 float uMatSpecularRoughness;        // 16 bytes
+    vec3  uMatSpecularTint;         float uMatMetallic;                 // 16 bytes
+    vec3  uMatF82Tint;              float uMatIOR;                      // 16 bytes
+
+    vec3  uMatClearcoatColor;       float uMatClearcoat;                // 16 bytes
+    vec3  uMatTransmissionTint;     float uMatTransmission;             // 16 bytes
+    vec3  uMatSubsurfaceColor;      float uMatSubsurface;               // 16 bytes
+    vec3  uMatSheenColor;           float uMatSheen;                    // 16 bytes
+
+    float uMatSheenRoughness;
     float uMatDiffuseRoughness;
     float uMatTransmissionRoughness;
-    float uMatSaturation;
+    float uMatClearcoatRoughness;                                       // 16 bytes
+
+    float uMatAmbient;
+    float uMatClearcoatIOR;
     float uMatThinFilm;
-    vec3  uMatBackGlowColor;
-    float uMatBumpWaveAmplitude;
+    float uMatThinFilmIOR;                                              // 16 bytes
+
+    float uMatAnisotropic;
+    float uMatDiffraction;
+    float uMatEmissivePulseFrequency;
+    float uMatEmissivePulsePhase;                                       // 16 bytes
+
+    vec3  uMatEmissiveColor;        float uMatEmissivePulseAmplitude;   // 16 bytes
+    vec3  uMatRimColor;             float uMatRimExponent;              // 16 bytes
+    vec3  uMatBackGlowColor;        float uMatStrobeFrequency;          // 16 bytes
+    vec3  uMatStrobeColor;          float uMatStrobePhase;              // 16 bytes
+    vec3  uMatGoochCool;            float uMatSaturation;               // 16 bytes
+    vec3  uMatGoochWarm;            float uMatBumpWaveAmplitude;        // 16 bytes
+
     float uMatBumpWaveFrequency;
     float uMatBumpWaveSpeed;
     float uMatBumpNoise;
-    float uMatDiffraction;
+    float uMatGlitch;                                                   // 16 bytes
+
     int   uMatCelBands;
-    float uMatGlitch;
     int   uMatPosterizeLevels;
-    vec3  uMatStrobeColor;
-    float uMatStrobeFrequency;
-    float uMatStrobePhase;
-    vec3  uClearcoatColor;
-    float uClearcoatRoughness;
-    float uClearcoat;
-    vec3  uSheenColor;
-    float uSheenRoughness;
-    float uSheen;
-    float uMatAnisotropic;
-    vec3  uMatTransmissionTint;
-    vec3  uMatF82Tint;
-    vec3  uMatSubsurfaceColor;
-    float uMatThinFilmIOR;
+    float _pad296;
+    float _pad300;                                                      // 16 bytes
 };
 
 #define CLUSTER_TILE_SIZE     16
@@ -592,12 +587,12 @@ float sheen_directional_albedo(float NdotV, float r) {
 }
 
 float sheen_base_transmittance(float NdotV) {
-    float E = sheen_directional_albedo(NdotV, uSheenRoughness);
-    vec3 Fav = clamp(uSheenColor, 0.0, 0.99);
+    float E = sheen_directional_albedo(NdotV, uMatSheenRoughness);
+    vec3 Fav = clamp(uMatSheenColor, 0.0, 0.99);
     float Fl = dot(Fav, LUMA_REC709);
     float num = (1.0 - E) * (1.0 - E) * Fl * Fl * E;
     float den = max(PI * (1.0 - E) * (1.0 - Fl * (1.0 - E)), 1e-4);
-    float op = saturate(num / den) * dot(uSheenColor, LUMA_REC709) * uSheen;
+    float op = saturate(num / den) * dot(uMatSheenColor, LUMA_REC709) * uMatSheen;
     return saturate(1.0 - op);
 }
 
@@ -799,9 +794,9 @@ vec3 lobe_clearcoat(vec3 N, vec3 V, vec3 L, vec3 H, vec3 lc,
                     float cs, vec3 cf0) {
     if (cs <= 0.0 || NdotL <= 0.0 || NdotV <= 0.0) return vec3(0.0);
     vec3 cf = F_Schlick(cf0, VdotH);
-    float cr = clamp(uClearcoatRoughness, 0.0, 1.0);
+    float cr = clamp(uMatClearcoatRoughness, 0.0, 1.0);
     vec3 c = clearcoat_disney(NdotL, NdotV, NdotH, cr, cf, cf0);
-    return c * lc * uClearcoatColor * cs * NdotL;
+    return c * lc * uMatClearcoatColor * cs * NdotL;
 }
 
 vec3 lobe_sheen(vec3 N, vec3 V, vec3 L, vec3 H, vec3 lc, vec3 T, vec3 B,
@@ -809,12 +804,12 @@ vec3 lobe_sheen(vec3 N, vec3 V, vec3 L, vec3 H, vec3 lc, vec3 T, vec3 B,
     if (NdotL <= 0.0 || NdotV <= 0.0) return vec3(0.0);
     vec3 c;
 #ifdef EFFECT_ANISOTROPIC
-    c = sheen_charlie_aniso(uMatAlbedo, uSheenColor, NdotL, NdotV, NdotH,
+    c = sheen_charlie_aniso(uMatAlbedo, uMatSheenColor, NdotL, NdotV, NdotH,
                             dot(H, T), dot(H, B), VdotH,
-                            uSheenRoughness, uSheen, uMatAnisotropic);
+                            uMatSheenRoughness, uMatSheen, uMatAnisotropic);
 #else
-    c = sheen_charlie(uMatAlbedo, uSheenColor, NdotL, NdotV, NdotH,
-                      VdotH, uSheenRoughness, uSheen);
+    c = sheen_charlie(uMatAlbedo, uMatSheenColor, NdotL, NdotV, NdotH,
+                      VdotH, uMatSheenRoughness, uMatSheen);
 #endif
     return c * lc * NdotL;
 }
@@ -831,7 +826,7 @@ void apply_layer_attenuation(inout vec3 dc, inout vec3 sc,
     float dk = mix(1.0, cd, cs);
     vec3 ct = vec3(dk) * (vec3(1.0) - cfl * cs);
 
-    vec3 absorption = compute_clearcoat_absorption(NdotV, uClearcoatColor, cs, uMatClearcoatIOR);
+    vec3 absorption = compute_clearcoat_absorption(NdotV, uMatClearcoatColor, cs, uMatClearcoatIOR);
     ct *= absorption;
 
     dc *= ct; sc *= ct;
@@ -853,7 +848,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lc,
                       float NdotV, float baseRough, vec3 cf0) {
     float NdotL_raw = dot(N, L);
     float NdotL = max(NdotL_raw, 0.0);
-    float cs = clamp(uClearcoat, 0.0, 1.0);
+    float cs = clamp(uMatClearcoat, 0.0, 1.0);
 
     vec3 V_sub = V;
     vec3 L_sub = L;
@@ -1013,16 +1008,16 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
         F0, F_avg, ambientRough, NdotV);
 
 #ifdef EFFECT_CLEARCOAT
-    float cc = clamp(uClearcoat, 0.0, 1.0);
+    float cc = clamp(uMatClearcoat, 0.0, 1.0);
     if (cc > 0.0) {
         vec3 ca = coatF0 + (1.0 - coatF0) / 21.0;
-        float cr = clamp(uClearcoatRoughness, 0.0, 1.0);
+        float cr = clamp(uMatClearcoatRoughness, 0.0, 1.0);
         vec3 Fc = mix(F_Schlick(coatF0, NdotV), ca, cr);
         vec3 ec = sample_env_map(R, cr);
-        vec3 absorption = compute_clearcoat_absorption(NdotV, uClearcoatColor, cc, uMatClearcoatIOR);
+        vec3 absorption = compute_clearcoat_absorption(NdotV, uMatClearcoatColor, cc, uMatClearcoatIOR);
         float ccSpecOcc = specular_occlusion(NdotV, vbao_ao, cr);
         ambientClearcoat = specular_multiscatter_comp(
-            ec * uClearcoatColor * Fc * cc * ccSpecOcc * uMatAmbient * absorption,
+            ec * uMatClearcoatColor * Fc * cc * ccSpecOcc * uMatAmbient * absorption,
             coatF0, ca, cr, NdotV);
     }
 #endif
@@ -1030,11 +1025,11 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     const float ST = 0.3;
     float lb = dot(uMatAlbedo, LUMA_REC709);
     vec3 sc = mix(vec3(1.0), uMatAlbedo / max(lb, 1e-4), ST);
-    sc *= uSheenColor;
+    sc *= uMatSheenColor;
     sc = clamp(sc, 0.0, 1.0);
-    float Es = sheen_directional_albedo(NdotV, uSheenRoughness);
+    float Es = sheen_directional_albedo(NdotV, uMatSheenRoughness);
     vec3 sheenF = F_Schlick(vec3(0.04), NdotV);
-    vec3 sheenBase = irradiance * sc * Es * uSheen * uMatAmbient * sheenF;
+    vec3 sheenBase = irradiance * sc * Es * uMatSheen * uMatAmbient * sheenF;
     vec3 sheenFms = sc * (1.0 / max(Es, 1e-4) - 1.0);
     ambientSheen = sheenBase * (vec3(1.0) + sheenFms);
 #endif

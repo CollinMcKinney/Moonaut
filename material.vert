@@ -15,52 +15,47 @@ uniform float uFogStart;
 uniform float uFogEnd;
 
 layout(std140) uniform MaterialUniforms {
-    vec3  uMatAlbedo;
-    vec3  uMatTint;
-    float uMatAlpha;
-    vec3  uMatEmissiveColor;
-    float uMatEmissivePulseAmplitude;
-    float uMatEmissivePulseFrequency;
-    float uMatEmissivePulsePhase;
-    float uMatTransmission;
-    vec3  uMatSpecularTint;
-    float uMatSpecularRoughness;
-    vec3  uMatRimColor;
-    float uMatRimExponent;
-    float uMatMetallic;
-    float uMatIOR;
-    float uMatSubsurface;
-    float uMatClearcoatIOR;
-    vec3  uMatGoochCool;
-    vec3  uMatGoochWarm;
-    float uMatAmbient;
+    vec3  uMatAlbedo;               float uMatAlpha;                    // 16 bytes
+    vec3  uMatTint;                 float uMatSpecularRoughness;        // 16 bytes
+    vec3  uMatSpecularTint;         float uMatMetallic;                 // 16 bytes
+    vec3  uMatF82Tint;              float uMatIOR;                      // 16 bytes
+
+    vec3  uMatClearcoatColor;       float uMatClearcoat;                // 16 bytes
+    vec3  uMatTransmissionTint;     float uMatTransmission;             // 16 bytes
+    vec3  uMatSubsurfaceColor;      float uMatSubsurface;               // 16 bytes
+    vec3  uMatSheenColor;           float uMatSheen;                    // 16 bytes
+
+    float uMatSheenRoughness;
     float uMatDiffuseRoughness;
     float uMatTransmissionRoughness;
-    float uMatSaturation;
+    float uMatClearcoatRoughness;                                       // 16 bytes
+
+    float uMatAmbient;
+    float uMatClearcoatIOR;
     float uMatThinFilm;
-    vec3  uMatBackGlowColor;
-    float uMatBumpWaveAmplitude;
+    float uMatThinFilmIOR;                                              // 16 bytes
+
+    float uMatAnisotropic;
+    float uMatDiffraction;
+    float uMatEmissivePulseFrequency;
+    float uMatEmissivePulsePhase;                                       // 16 bytes
+
+    vec3  uMatEmissiveColor;        float uMatEmissivePulseAmplitude;   // 16 bytes
+    vec3  uMatRimColor;             float uMatRimExponent;              // 16 bytes
+    vec3  uMatBackGlowColor;        float uMatStrobeFrequency;          // 16 bytes
+    vec3  uMatStrobeColor;          float uMatStrobePhase;              // 16 bytes
+    vec3  uMatGoochCool;            float uMatSaturation;               // 16 bytes
+    vec3  uMatGoochWarm;            float uMatBumpWaveAmplitude;        // 16 bytes
+
     float uMatBumpWaveFrequency;
     float uMatBumpWaveSpeed;
     float uMatBumpNoise;
-    float uMatDiffraction;
+    float uMatGlitch;                                                   // 16 bytes
+
     int   uMatCelBands;
-    float uMatGlitch;
     int   uMatPosterizeLevels;
-    vec3  uMatStrobeColor;
-    float uMatStrobeFrequency;
-    float uMatStrobePhase;
-    vec3  uClearcoatColor;
-    float uClearcoatRoughness;
-    float uClearcoat;
-    vec3  uSheenColor;
-    float uSheenRoughness;
-    float uSheen;
-    float uMatAnisotropic;
-    vec3  uMatTransmissionTint;
-    vec3  uMatF82Tint;
-    vec3  uMatSubsurfaceColor;
-    float uMatThinFilmIOR;
+    float _pad296;
+    float _pad300;                                                      // 16 bytes
 };
 
 layout(std140, row_major) uniform ModelMatrices {

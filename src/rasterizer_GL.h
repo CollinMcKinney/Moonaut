@@ -316,39 +316,49 @@ static i32 gl_ao_height = 0;
 #define VBAO_BLUR_UBO_BINDING  3
 
 typedef struct {
-    float uMatAlbedo[3];             float _pad0;
-    float uMatTint[3];              float uMatAlpha;
-    float uMatEmissiveColor[3];     float uMatEmissivePulseAmplitude;
-    float uMatEmissivePulseFrequency; float uMatEmissivePulsePhase;
-    float uMatTransmission; float _pad1;
-    float uMatSpecularTint[3];      float uMatSpecularRoughness;
-    float uMatRimColor[3];          float uMatRimExponent;
-    float uMatMetallic;
-    float uMatIOR;
-    float uMatSubsurface;
+    float  uMatAlbedo[3];               float uMatAlpha;                    // 16 bytes
+    float  uMatTint[3];                 float uMatSpecularRoughness;        // 16 bytes
+    float  uMatSpecularTint[3];         float uMatMetallic;                 // 16 bytes
+    float  uMatF82Tint[3];              float uMatIOR;                      // 16 bytes
+
+    float  uMatClearcoatColor[3];       float uMatClearcoat;                // 16 bytes
+    float  uMatTransmissionTint[3];     float uMatTransmission;             // 16 bytes
+    float  uMatSubsurfaceColor[3];      float uMatSubsurface;               // 16 bytes
+    float  uMatSheenColor[3];           float uMatSheen;                    // 16 bytes
+
+    float uMatSheenRoughness;
+    float uMatDiffuseRoughness;
+    float uMatTransmissionRoughness;
+    float uMatClearcoatRoughness;                                          // 16 bytes
+
+    float uMatAmbient;
     float uMatClearcoatIOR;
-    float uMatGoochCool[3];         float _pad2;
-    float uMatGoochWarm[3];         float uMatAmbient;
-    float uMatDiffuseRoughness;     float uMatTransmissionRoughness;
-    float uMatSaturation;           float uMatThinFilm;
-    float uMatBackGlowColor[3];     float uMatBumpWaveAmplitude;
-    float uMatBumpWaveFrequency;    float uMatBumpWaveSpeed;
-    float uMatBumpNoise;            float uMatDiffraction;
-    int   uMatCelBands;             float uMatGlitch;
-    int   uMatPosterizeLevels;      float _pad3;
-    float uMatStrobeColor[3];       float uMatStrobeFrequency;
-    float uMatStrobePhase;          float _pad4[3];
-    float uClearcoatColor[3];       float uClearcoatRoughness;
-    float uClearcoat;       float _pad5[3];
-    float uSheenColor[3];           float uSheenRoughness;
-    float uSheen;
+    float uMatThinFilm;
+    float uMatThinFilmIOR;                                                  // 16 bytes
+
     float uMatAnisotropic;
-    float _pad6[2];
-    float uMatTransmissionTint[3];  float _pad7;
-    float uMatF82Tint[3];           float _pad8;
-    float uMatSubsurfaceColor[3];   float uMatThinFilmIOR;
+    float uMatDiffraction;
+    float uMatEmissivePulseFrequency;
+    float uMatEmissivePulsePhase;                                           // 16 bytes
+
+    float  uMatEmissiveColor[3];        float uMatEmissivePulseAmplitude;   // 16 bytes
+    float  uMatRimColor[3];             float uMatRimExponent;              // 16 bytes
+    float  uMatBackGlowColor[3];        float uMatStrobeFrequency;          // 16 bytes
+    float  uMatStrobeColor[3];          float uMatStrobePhase;              // 16 bytes
+    float  uMatGoochCool[3];            float uMatSaturation;               // 16 bytes
+    float  uMatGoochWarm[3];            float uMatBumpWaveAmplitude;        // 16 bytes
+
+    float uMatBumpWaveFrequency;
+    float uMatBumpWaveSpeed;
+    float uMatBumpNoise;
+    float uMatGlitch;                                                       // 16 bytes
+
+    int   uMatCelBands;
+    int   uMatPosterizeLevels;
+    float _pad296;
+    float _pad300;                                                          // 16 bytes
 } material_ubo_t;
-STATIC_ASSERT(sizeof(material_ubo_t) == 352, material_ubo_t__size__wrong);
+STATIC_ASSERT(sizeof(material_ubo_t) == 304, material_ubo_t__size__wrong);
 
 #define MAX_MODEL_MATRICES 1024
 
@@ -1072,16 +1082,16 @@ static void update_material_ubo(const material_definition *mat) {
     ubo.uMatStrobeColor[2] = mat->strobe_color.color.b;
     ubo.uMatStrobeFrequency = mat->strobe_frequency;
     ubo.uMatStrobePhase     = mat->strobe_phase;
-    ubo.uClearcoatColor[0] = mat->clearcoat_color.color.r;
-    ubo.uClearcoatColor[1] = mat->clearcoat_color.color.g;
-    ubo.uClearcoatColor[2] = mat->clearcoat_color.color.b;
-    ubo.uClearcoatRoughness = mat->clearcoat_roughness;
-    ubo.uClearcoat = mat->clearcoat;
-    ubo.uSheenColor[0] = mat->sheen_color.color.r;
-    ubo.uSheenColor[1] = mat->sheen_color.color.g;
-    ubo.uSheenColor[2] = mat->sheen_color.color.b;
-    ubo.uSheenRoughness = mat->sheen_roughness;
-    ubo.uSheen = mat->sheen;
+    ubo.uMatClearcoatColor[0] = mat->clearcoat_color.color.r;
+    ubo.uMatClearcoatColor[1] = mat->clearcoat_color.color.g;
+    ubo.uMatClearcoatColor[2] = mat->clearcoat_color.color.b;
+    ubo.uMatClearcoatRoughness = mat->clearcoat_roughness;
+    ubo.uMatClearcoat = mat->clearcoat;
+    ubo.uMatSheenColor[0] = mat->sheen_color.color.r;
+    ubo.uMatSheenColor[1] = mat->sheen_color.color.g;
+    ubo.uMatSheenColor[2] = mat->sheen_color.color.b;
+    ubo.uMatSheenRoughness = mat->sheen_roughness;
+    ubo.uMatSheen = mat->sheen;
     ubo.uMatAnisotropic = mat->anisotropic;
     ubo.uMatTransmissionTint[0] = mat->transmission_tint.color.r;
     ubo.uMatTransmissionTint[1] = mat->transmission_tint.color.g;
