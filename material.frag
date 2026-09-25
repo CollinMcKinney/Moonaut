@@ -499,17 +499,14 @@ vec3 diffuse_eon_oren_nayar(vec3 N, vec3 V, vec3 L, vec3 baseColor, float r) {
     return f_ss + f_ms;
 }
 
-vec3 sss_burley_diffuse(vec3 diffuseColor, vec3 sssColor, float sssStrength, float NdotL, float NdotV, float LdotH) {
-    float fl = pow(saturate(1.0 - NdotL), 5.0);
-    float fv = pow(saturate(1.0 - NdotV), 5.0);
-    float rr = 2.0 * uMatDiffuseRoughness * LdotH * LdotH;
-
-    vec3 d = max(sssColor * sssStrength, vec3(1e-3));
-    vec3 S = vec3(1.0) / d;
-    vec3 profile = (exp(-S) + exp(-S / 3.0)) / (8.0 * PI);
-
-    float retro = (rr - 1.0) * (fl + fv + fl * fv * (rr - 1.0));
-    return diffuseColor * (1.0 / PI) * (1.0 + retro) * profile;
+vec3 subsurface_chromatic_modulation(vec3 c, float NdotV, float strength) {
+    float m = max(c.r, max(c.g, c.b));
+    m = max(m, 1e-4);
+    vec3 albedo = c / m;
+    float mean = (albedo.r + albedo.g + albedo.b) / 3.0;
+    vec3 d = albedo - mean;
+    float g = pow(1.0 - NdotV, 2.0);
+    return max(vec3(1.0) + d * g * strength, vec3(0.0));
 }
 
 // =============================================================================
@@ -720,12 +717,9 @@ vec3 lobe_diffuse(vec3 N, vec3 V, vec3 L, vec3 lc, vec3 F_avg,
 #ifdef EFFECT_SUBSURFACE
     float s = clamp(uMatSubsurface, 0.0, 2.0);
     float nv = max(dot(N, V), 1e-4);
-    vec3 H = normalize(V + L);
-    float LdotH = saturate(dot(L, H));
-    brdf = sss_burley_diffuse(dc, uMatSubsurfaceColor, s, NdotL, nv, LdotH);
-#else
-    brdf = diffuse_eon_oren_nayar(N, V, L, dc, uMatDiffuseRoughness);
+    dc *= min(subsurface_chromatic_modulation(uMatSubsurfaceColor, nv, s), 1.0);
 #endif
+    brdf = diffuse_eon_oren_nayar(N, V, L, dc, uMatDiffuseRoughness);
 
 #ifdef EFFECT_DIFFUSE_WRAP
     float wf = NdotL * NdotL * (3.0 - 2.0 * NdotL);
