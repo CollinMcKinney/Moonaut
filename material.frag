@@ -63,40 +63,40 @@ layout(std140) uniform MaterialUniforms {
     float uMatEmissivePulseAmplitude;
     float uMatEmissivePulseFrequency;
     float uMatEmissivePulsePhase;
-    float uMatTransmissionStrength;
+    float uMatTransmission;
     vec3  uMatSpecularTint;
     float uMatSpecularRoughness;
     vec3  uMatRimColor;
     float uMatRimExponent;
     float uMatMetallic;
     float uMatIOR;
-    float uMatSubsurfaceStrength;
+    float uMatSubsurface;
     float uMatClearcoatIOR;
     vec3  uMatGoochCool;
     vec3  uMatGoochWarm;
-    float uMatAmbientLightFactor;
+    float uMatAmbient;
     float uMatDiffuseRoughness;
     float uMatTransmissionRoughness;
     float uMatSaturation;
-    float uMatThinFilmStrength;
+    float uMatThinFilm;
     vec3  uMatBackGlowColor;
     float uMatBumpWaveAmplitude;
     float uMatBumpWaveFrequency;
     float uMatBumpWaveSpeed;
     float uMatBumpNoise;
-    float uMatDiffractionIntensity;
+    float uMatDiffraction;
     int   uMatCelBands;
-    float uMatGlitchIntensity;
+    float uMatGlitch;
     int   uMatPosterizeLevels;
     vec3  uMatStrobeColor;
     float uMatStrobeFrequency;
     float uMatStrobePhase;
     vec3  uClearcoatColor;
     float uClearcoatRoughness;
-    float uClearcoatStrength;
+    float uClearcoat;
     vec3  uSheenColor;
     float uSheenRoughness;
-    float uSheenStrength;
+    float uSheen;
     float uMatAnisotropic;
     vec3  uMatTransmissionTint;
     vec3  uMatF82Tint;
@@ -400,7 +400,9 @@ vec3 F_ThinFilm_Airy(float cosTheta, float strength, float filmIOR, vec3 baseF0)
     const vec3 WAVELENGTHS = vec3(650.0, 550.0, 450.0);
     vec3 phase = (2.0 * PI * opd) / WAVELENGTHS;
 
-    vec3 R12 = F_Schlick(vec3(pow((n2 - 1.0) / (n2 + 1.0), 2.0)), cosTheta);
+    float Rs = (cosTheta - n2 * cosThetaT) / (cosTheta + n2 * cosThetaT);
+    float Rp = (n2 * cosTheta - cosThetaT) / (n2 * cosTheta + cosThetaT);
+    vec3 R12 = vec3((Rs * Rs + Rp * Rp) * 0.5);
     vec3 R23 = baseF0;
     vec3 interference = clamp(R12 + R23 + 2.0 * sqrt(R12 * R23) * cos(phase), 0.0, 1.0);
 
@@ -541,7 +543,7 @@ vec3 compute_clearcoat_absorption(float NdotV, vec3 coatColor, float coatStrengt
 
 vec3 sheen_charlie_aniso(vec3 baseColor, vec3 sheenTint,
                          float NdotL, float NdotV, float NdotH,
-                         float HdotT, float HdotB,
+                         float HdotT, float HdotB, float VdotH,
                          float r, float strength, float aniso) {
     const float SHEEN_TINT = 0.3;
     float luma = dot(baseColor, LUMA_REC709);
@@ -555,12 +557,13 @@ vec3 sheen_charlie_aniso(vec3 baseColor, vec3 sheenTint,
 
     float D = D_Charlie_Aniso(HdotT, HdotB, NdotH, ax, ay);
     float V = 1.0 / max(4.0 * (NdotL + NdotV - NdotL * NdotV), 1e-4);
-    return c * D * V * strength;
+    vec3 F = F_Schlick(vec3(0.04), VdotH);
+    return c * D * V * strength * F;
 }
 
 vec3 sheen_charlie(vec3 baseColor, vec3 sheenTint,
                    float NdotL, float NdotV, float NdotH,
-                   float r, float strength) {
+                   float VdotH, float r, float strength) {
     const float SHEEN_TINT = 0.3;
     float luma = dot(baseColor, LUMA_REC709);
     vec3 c = mix(vec3(1.0), baseColor / max(luma, 1e-4), SHEEN_TINT);
@@ -568,7 +571,8 @@ vec3 sheen_charlie(vec3 baseColor, vec3 sheenTint,
 
     float D = D_Charlie(NdotH, r);
     float V = 1.0 / max(4.0 * (NdotL + NdotV - NdotL * NdotV), 1e-4);
-    return c * D * V * strength;
+    vec3 F = F_Schlick(vec3(0.04), VdotH);
+    return c * D * V * strength * F;
 }
 
 float compute_coat_darkening(vec3 coatF0, vec3 baseColor, float NdotV, float baseRough) {
@@ -593,7 +597,7 @@ float sheen_base_transmittance(float NdotV) {
     float Fl = dot(Fav, LUMA_REC709);
     float num = (1.0 - E) * (1.0 - E) * Fl * Fl * E;
     float den = max(PI * (1.0 - E) * (1.0 - Fl * (1.0 - E)), 1e-4);
-    float op = saturate(num / den) * dot(uSheenColor, LUMA_REC709) * uSheenStrength;
+    float op = saturate(num / den) * dot(uSheenColor, LUMA_REC709) * uSheen;
     return saturate(1.0 - op);
 }
 
@@ -640,7 +644,7 @@ vec3 transmission_ggx(vec3 N, vec3 V, vec3 L_trans, float NdotL_trans, float Ndo
     float tr = clamp(r, 0.01, 1.0);
     float D = D_GGX(NdotHt, tr);
     float vis = V_SmithGGXCorrelated(NdotV, NdotL_trans, tr);
-    vec3 F = F_Schlick(F0, VdotHt);
+    vec3 F = F_Schlick_F82(F0, uMatF82Tint, VdotHt);
 
     float factor = 4.0 * abs(LdotHt) * abs(VdotHt);
     float jacobian = (etaT * etaT * factor) / (sqrtDenom * sqrtDenom);
@@ -719,7 +723,7 @@ vec3 lobe_diffuse(vec3 N, vec3 V, vec3 L, vec3 lc, vec3 F_avg,
     vec3 brdf;
 
 #ifdef EFFECT_SUBSURFACE
-    float s = clamp(uMatSubsurfaceStrength, 0.0, 2.0);
+    float s = clamp(uMatSubsurface, 0.0, 2.0);
     float nv = max(dot(N, V), 1e-4);
     vec3 H = normalize(V + L);
     float LdotH = saturate(dot(L, H));
@@ -775,7 +779,7 @@ vec3 lobe_specular(vec3 N, vec3 V, vec3 L, vec3 H, vec3 F0, vec3 F_avg, vec3 lc,
 }
 
 vec3 lobe_transmission(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 lc, float NdotL_raw, float NdotV) {
-    float ts = clamp(uMatTransmissionStrength, 0.0, 1.0);
+    float ts = clamp(uMatTransmission, 0.0, 1.0);
     float NdotL_trans = max(-NdotL_raw, 0.0);
     if (ts <= 0.001 || NdotL_trans <= 0.0 || NdotV <= 0.0) return vec3(0.0);
 
@@ -801,15 +805,16 @@ vec3 lobe_clearcoat(vec3 N, vec3 V, vec3 L, vec3 H, vec3 lc,
 }
 
 vec3 lobe_sheen(vec3 N, vec3 V, vec3 L, vec3 H, vec3 lc, vec3 T, vec3 B,
-                float NdotL, float NdotV, float NdotH) {
+                float NdotL, float NdotV, float NdotH, float VdotH) {
     if (NdotL <= 0.0 || NdotV <= 0.0) return vec3(0.0);
     vec3 c;
 #ifdef EFFECT_ANISOTROPIC
     c = sheen_charlie_aniso(uMatAlbedo, uSheenColor, NdotL, NdotV, NdotH,
-                            dot(H, T), dot(H, B), uSheenRoughness, uSheenStrength, uMatAnisotropic);
+                            dot(H, T), dot(H, B), VdotH,
+                            uSheenRoughness, uSheen, uMatAnisotropic);
 #else
     c = sheen_charlie(uMatAlbedo, uSheenColor, NdotL, NdotV, NdotH,
-                      uSheenRoughness, uSheenStrength);
+                      VdotH, uSheenRoughness, uSheen);
 #endif
     return c * lc * NdotL;
 }
@@ -832,7 +837,7 @@ void apply_layer_attenuation(inout vec3 dc, inout vec3 sc,
     dc *= ct; sc *= ct;
 #endif
 #ifdef EFFECT_TRANSMISSION
-    dc *= vec3(1.0) - F_avg * clamp(uMatTransmissionStrength, 0.0, 1.0);
+    dc *= vec3(1.0) - F_avg * clamp(uMatTransmission, 0.0, 1.0);
 #endif
 #ifdef EFFECT_SHEEN
     float st = sheen_base_transmittance(NdotV);
@@ -848,7 +853,7 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lc,
                       float NdotV, float baseRough, vec3 cf0) {
     float NdotL_raw = dot(N, L);
     float NdotL = max(NdotL_raw, 0.0);
-    float cs = clamp(uClearcoatStrength, 0.0, 1.0);
+    float cs = clamp(uClearcoat, 0.0, 1.0);
 
     vec3 V_sub = V;
     vec3 L_sub = L;
@@ -891,10 +896,10 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lc,
     ccc = lobe_clearcoat(N, V, L, H_cc, lc, NdotL, NdotV, NdotH_cc, VdotH_cc, cs, cf0);
 #endif
 #ifdef EFFECT_SHEEN
-    shc = lobe_sheen(N, V, L, H_cc, lc, T, B, NdotL, NdotV, NdotH_cc);
+    shc = lobe_sheen(N, V, L, H_cc, lc, T, B, NdotL, NdotV, NdotH_cc, VdotH_cc);
 #endif
 #ifdef EFFECT_DIFFRACTION
-    ric += lobe_micro_diffraction(N, V, L, T, uMatDiffractionIntensity) * lc;
+    ric += lobe_micro_diffraction(N, V, L, T, uMatDiffraction) * lc;
 #endif
 #ifdef EFFECT_BACK_GLOW
     bgc = back_glow_lobe(N, L, NdotV) * lc;
@@ -997,23 +1002,28 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     vec3 irradiance = sample_env_map(N_geom, uEnvCubeMaxMip);
     ambientDiffuse = irradiance * diffuseColor * kD_env
-                        * uMatAmbientLightFactor * uSkyAmbientScale;
+                        * uMatAmbient * uSkyAmbientScale;
 
     vec3 envSpec = sample_env_map(R, ambientRough);
     vec3 biasTint = mix(vec3(1.0), uMatAlbedo, metallic);
     vec3 F_env = F0 * envBRDF.x + envBRDF.y * biasTint;
 
-    ambientSpec = envSpec * F_env * uMatSpecularTint * specOcc * uMatAmbientLightFactor;
+    ambientSpec = specular_multiscatter_comp(
+        envSpec * F_env * uMatSpecularTint * specOcc * uMatAmbient,
+        F0, F_avg, ambientRough, NdotV);
 
 #ifdef EFFECT_CLEARCOAT
-    float cc = clamp(uClearcoatStrength, 0.0, 1.0);
+    float cc = clamp(uClearcoat, 0.0, 1.0);
     if (cc > 0.0) {
         vec3 ca = coatF0 + (1.0 - coatF0) / 21.0;
         float cr = clamp(uClearcoatRoughness, 0.0, 1.0);
         vec3 Fc = mix(F_Schlick(coatF0, NdotV), ca, cr);
         vec3 ec = sample_env_map(R, cr);
         vec3 absorption = compute_clearcoat_absorption(NdotV, uClearcoatColor, cc, uMatClearcoatIOR);
-        ambientClearcoat = ec * uClearcoatColor * Fc * cc * specOcc * uMatAmbientLightFactor * absorption;
+        float ccSpecOcc = specular_occlusion(NdotV, vbao_ao, cr);
+        ambientClearcoat = specular_multiscatter_comp(
+            ec * uClearcoatColor * Fc * cc * ccSpecOcc * uMatAmbient * absorption,
+            coatF0, ca, cr, NdotV);
     }
 #endif
 #ifdef EFFECT_SHEEN
@@ -1023,7 +1033,10 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     sc *= uSheenColor;
     sc = clamp(sc, 0.0, 1.0);
     float Es = sheen_directional_albedo(NdotV, uSheenRoughness);
-    ambientSheen = irradiance * sc * Es * uSheenStrength * uMatAmbientLightFactor;
+    vec3 sheenF = F_Schlick(vec3(0.04), NdotV);
+    vec3 sheenBase = irradiance * sc * Es * uSheen * uMatAmbient * sheenF;
+    vec3 sheenFms = sc * (1.0 / max(Es, 1e-4) - 1.0);
+    ambientSheen = sheenBase * (vec3(1.0) + sheenFms);
 #endif
 #ifdef EFFECT_GOOCH
     if (avgW > 0.001) {
@@ -1046,14 +1059,14 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 surfaceReflection = ambientSpec + ambientClearcoat + ambientSheen
                             + ts + tcc + tsh + tri + tbg;
 #ifdef EFFECT_THIN_FILM
-    vec3 iridColor = F_ThinFilm_Airy(NdotV, uMatThinFilmStrength, uMatThinFilmIOR, F0);
-    surfaceReflection = mix(surfaceReflection, surfaceReflection + iridColor, uMatThinFilmStrength);
+    vec3 iridColor = F_ThinFilm_Airy(NdotV, uMatThinFilm, uMatThinFilmIOR, F0);
+    surfaceReflection = mix(surfaceReflection, surfaceReflection + iridColor, uMatThinFilm);
 #endif
     vec3 surfaceTransmission = tt;
 
 #ifdef EFFECT_TRANSMISSION
     {
-        float s = clamp(uMatTransmissionStrength, 0.0, 1.0);
+        float s = clamp(uMatTransmission, 0.0, 1.0);
 
         if (s > 0.0) {
             float etaI = gl_FrontFacing ? 1.0 : max(uMatIOR, 1.001);
@@ -1114,7 +1127,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 #ifdef EFFECT_GLITCH
     {
         vec3 q = floor(worldPos * 4096.0 + uTime * 60.0);
-        float offset = (hash_float(q) - 0.5) * uMatGlitchIntensity;
+        float offset = (hash_float(q) - 0.5) * uMatGlitch;
         colorHDR.r += offset;
         colorHDR.g += offset * 0.7;
         colorHDR.b -= offset;
