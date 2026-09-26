@@ -125,7 +125,7 @@ static void tag_register_default_all(void){
     /* Default dielectric material definitions. */
     tag_register_default("default_material_water",      TAG_material, &DEFAULT_MATERIAL_WATER);
     tag_register_default("default_material_grass",      TAG_material, &DEFAULT_MATERIAL_GRASS);
-    tag_register_default("default_material_cloth",      TAG_material, &DEFAULT_MATERIAL_CLOTH);
+    tag_register_default("default_material_denim",      TAG_material, &DEFAULT_MATERIAL_DENIM);
     tag_register_default("default_material_wood",       TAG_material, &DEFAULT_MATERIAL_WOOD);
     tag_register_default("default_material_glass",      TAG_material, &DEFAULT_MATERIAL_GLASS);
     tag_register_default("default_material_skin",       TAG_material, &DEFAULT_MATERIAL_SKIN);

@@ -304,20 +304,20 @@ const struct material_definition DEFAULT_MATERIAL_GRASS = {
 /* ------------------------------------------------------------------------
  * 3. CLOTH
  * ------------------------------------------------------------------------ */
-const struct material_definition DEFAULT_MATERIAL_CLOTH = {
+const struct material_definition DEFAULT_MATERIAL_DENIM = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SHEEN | EFFECT_SUBSURFACE |
                               EFFECT_ANISOTROPIC | EFFECT_FOG,
-    .albedo                 = {0.7, 0.25, 0.35},
+    .albedo                 = {0.075f, 0.105f, 0.225f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
     .tint                   = {1.0f, 1.0f, 1.0f},
     .cel_bands              = 0,
     .diffuse_wrap           = 1,
-    .diffuse_roughness      = 0.80f,
+    .diffuse_roughness      = 0.90f,
     .transmission_roughness = 0.0f,
-    .bump_wave_amplitude    = 0.03f,
-    .bump_wave_frequency    = 60.0f,
+    .bump_wave_amplitude    = 1.5f,
+    .bump_wave_frequency    = 120.0f,
     .bump_wave_speed        = 0.0f,
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
     .gooch_warm             = {0.0f, 0.0f, 0.0f},
@@ -326,7 +326,7 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .rim_exponent           = 1.0f,
     .clearcoat_ior          = 1.6f,
     .transmission  = 0.0f,
-    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_tint          = {0.4f, 0.4f, 0.4f},
     .specular_roughness     = 0.70f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 0.0f,
@@ -345,17 +345,17 @@ const struct material_definition DEFAULT_MATERIAL_CLOTH = {
     .bump_noise             = 0.0f,
     .metallic               = 0.0f,
     .ior                    = 1.5f,
-    .subsurface    = 0.2f,
+    .subsurface    = 0.05f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_roughness    = 0.0f,
     .clearcoat     = 0.0f,
-    .sheen_color            = {1.0, 0.9, 0.9},
-    .sheen_roughness        = 0.35f,
-    .sheen         = 1.3f,
-    .anisotropic            = -0.3f,
+    .sheen_color            = {0.85, 0.85, 0.85},
+    .sheen_roughness        = 0.65f,
+    .sheen         = 0.5f,
+    .anisotropic            = -0.55f,
     .transmission_tint      = {0.0, 0.0, 0.0},
     .f82_tint               = {1.0, 1.0, 1.0},
-    .subsurface_color       = {0.7f, 0.25f, 0.35f}
+    .subsurface_color       = {0.075f, 0.105f, 0.225f}
 };
 
 /* ------------------------------------------------------------------------
@@ -472,7 +472,7 @@ const struct material_definition DEFAULT_MATERIAL_GLASS = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .render_method          = EFFECT_SHEEN | EFFECT_SUBSURFACE | EFFECT_CLEARCOAT,
-    .albedo                 = {0.9, 0.75, 0.65},
+    .albedo                 = {0.64f, 0.375f, 0.235f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -520,7 +520,7 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
     .anisotropic            = 0.0f,
     .transmission_tint      = {0.0, 0.0, 0.0},
     .f82_tint               = {1.0, 1.0, 1.0},
-    .subsurface_color       = {0.60f, 0.15f, 0.12f}
+    .subsurface_color       = {0.55f, 0.25f, 0.15f}
 };
 
 /* ------------------------------------------------------------------------
@@ -528,14 +528,14 @@ const struct material_definition DEFAULT_MATERIAL_SKIN = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUBBER = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_FOG,
-    .albedo                 = {0.15, 0.15, 0.15},
+    .albedo                 = {0.011f, 0.010f, 0.0095f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
     .tint                   = {1.0f, 1.0f, 1.0f},
     .cel_bands              = 0,
     .diffuse_wrap           = 1,
-    .diffuse_roughness      = 0.90f,
+    .diffuse_roughness      = 0.60f,
     .transmission_roughness = 0.0f,
     .bump_wave_amplitude    = 0.10f,
     .bump_wave_frequency    = 32.0f,
@@ -638,7 +638,7 @@ const struct material_definition DEFAULT_MATERIAL_ICE = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_STONE = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_BUMP_NOISE | EFFECT_FOG,
-    .albedo                 = {0.55, 0.5, 0.45},
+    .albedo                 = {0.325f, 0.345f, 0.375f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -692,10 +692,9 @@ const struct material_definition DEFAULT_MATERIAL_STONE = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_DIFFUSE_WRAP |
-                              EFFECT_GOOCH | EFFECT_BACK_GLOW | EFFECT_EMISSIVE |
-                              EFFECT_EMISSIVE_PULSE | EFFECT_STROBE | EFFECT_GLITCH |
-                               EFFECT_DIFFRACTION,
-    .albedo                 = {0.15f, 0.05f, 0.00f},
+                              EFFECT_EMISSIVE | EFFECT_EMISSIVE_PULSE |
+                              EFFECT_STROBE | EFFECT_DIFFRACTION,
+    .albedo                 = {0.45f, 0.0f, 0.0f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -708,25 +707,25 @@ const struct material_definition DEFAULT_MATERIAL_LAVA = {
     .bump_wave_frequency    = 24.0f,
     .bump_wave_speed        = 4.0f,
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
-    .gooch_warm             = {1.0f, 0.0f, 0.0f},
-    .back_glow_color        = {0.8, 0.4, 0.0},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 1.5f,
     .clearcoat_ior          = 1.6f,
     .transmission  = 0.0f,
-    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_tint          = {0.4f, 0.06f, 0.04f},
     .specular_roughness     = 0.40f,
-    .emissive_color         = {0.50f, 0.25f, 0.0f},
+    .emissive_color         = {0.05f, 0.0f, 0.0f},
     .emissive_pulse_frequency = 1.0471975512f,
     .emissive_pulse_phase   = 1.57f,
     .emissive_pulse_amplitude = 0.3f,
-    .strobe_color           = {0.10f, 0.04f, 0.0f},
+    .strobe_color           = {0.02f, 0.0f, 0.0f},
     .strobe_frequency       = 0.47140452079f,
     .strobe_phase           = 2.10f,
     .skip_fog               = false,
     .thin_film     = 0.0f,
     .thin_film_ior          = 1.5f,
-    .glitch       = 0.05f,
+    .glitch       = 0.0f,
     .diffraction    = 0.3f,
     .posterize_levels       = 0,
     .double_sided           = false,
@@ -1746,7 +1745,7 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUST = {
     .render_method          = EFFECT_BUMP_WAVE| EFFECT_BUMP_NOISE | EFFECT_SHEEN | EFFECT_FOG,
-    .albedo                 = {0.60f, 0.20f, 0.05f},
+    .albedo                 = {0.7f, 0.0393f, 0.00525f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1787,9 +1786,9 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_roughness    = 0.0f,
     .clearcoat     = 0.0f,
-    .sheen_color            = {0.5f, 0.3f, 0.2f},
+    .sheen_color            = {0.85f, 0.42f, 0.20f},
     .sheen_roughness        = 0.55f,
-    .sheen         = 0.2f,
+    .sheen         = 0.35f,
     .anisotropic            = 0.0f,
     .transmission_tint      = {0.0, 0.0, 0.0},
     .f82_tint               = {1.0, 1.0, 1.0}
@@ -1809,8 +1808,8 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .diffuse_wrap           = 0,
     .diffuse_roughness      = 0.00f,
     .transmission_roughness = 0.0f,
-    .bump_wave_amplitude    = 0.1f,
-    .bump_wave_frequency    = 128.0f,
+    .bump_wave_amplitude    = 0.8f,
+    .bump_wave_frequency    = 120.0f,
     .bump_wave_speed        = 0.0f,
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
     .gooch_warm             = {0.0f, 0.0f, 0.0f},

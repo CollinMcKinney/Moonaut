@@ -191,8 +191,29 @@ vec3 perturb_normal_wave(vec3 N, vec3 localPos) {
     float speed = uMatBumpWaveSpeed;
     float time  = uTime;
 
+    // Screen-space footprint of this pixel, measured in local space and then
+    // in wave space. A pattern well above the sampling rate cannot be
+    // resolved: point-sampling it anyway makes neighbouring pixels land on
+    // uncorrelated phases, which reads as crawling banding while the camera
+    // moves. perturb_normal_noise already fades on this measure; the wave
+    // path needs the same guard or high frequencies alias.
+    vec3 dpx = dFdx(localPos);
+    vec3 dpy = dFdy(localPos);
+    float footprint = sqrt(max(dot(dpx, dpx), dot(dpy, dpy)));
+    float footprintWave = footprint * freq;
+
+    // Roll the perturbation off as a pixel approaches half a period. The wave
+    // repeats every 2*PI in wave space, so PI is the Nyquist limit.
+    const float NYQUIST = 3.14159265;
+    float fade = saturate(1.0 - footprintWave / NYQUIST);
+    fade = fade * fade * (3.0 - 2.0 * fade);
+    if (fade < 1e-4) return N;
+
     vec3 p = localPos * freq;
-    float eps = 0.01;
+    // Widen the differencing step to at least one pixel so the gradient is
+    // averaged across the footprint instead of point-sampled. The fade above
+    // bounds this below half a period, so the difference never wraps around.
+    float eps = max(0.01, footprintWave);
 
     vec3 px = p + vec3(eps, 0.0, 0.0);
     vec3 py = p + vec3(0.0, eps, 0.0);
@@ -204,7 +225,7 @@ vec3 perturb_normal_wave(vec3 N, vec3 localPos) {
     float hz = bump_height(pz, time, speed, value_noise(pz * 0.1));
 
     vec3 gradient = vec3(hx - h0, hy - h0, hz - h0) / eps;
-    gradient *= uMatBumpWaveAmplitude;
+    gradient *= uMatBumpWaveAmplitude * fade;
     return normalize(N - gradient);
 }
 
