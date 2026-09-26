@@ -225,10 +225,14 @@ vec3 perturb_normal_noise(vec3 N, vec3 worldPos, vec3 localPos) {
     float hx_rough = value_noise(p_rough + vec3(eps_rough, 0.0, 0.0));
     float hy_rough = value_noise(p_rough + vec3(0.0, eps_rough, 0.0));
     float hz_rough = value_noise(p_rough + vec3(0.0, 0.0, eps_rough));
-    vec3 gradient = vec3(hx_rough - h0, hy_rough - h0, hz_rough - h0) / eps_rough;
+    vec3 gradient = vec3(hx_rough - h0, hy_rough - h0, hz_rough - h0);
     gradient -= N * dot(gradient, N);
 
-    float strength = uMatBumpNoise * 0.5;
+    float gradLen = length(gradient);
+    if (gradLen < 1e-6) return N;
+    gradient /= gradLen;
+
+    float strength = uMatBumpNoise * 0.3;
     vec3 V = normalize(uCamEye - worldPos);
     float NdotV = max(dot(N, V), 0.0);
     float grazing = 1.0 - NdotV;
@@ -244,14 +248,23 @@ vec3 perturb_normal_noise(vec3 N, vec3 worldPos, vec3 localPos) {
     return normalize(N - perturb);
 }
 
-vec3 perturb_normal(vec3 N, vec3 worldPos, vec3 localPos) {
+vec3 perturb_normal(vec3 N, vec3 Ngeom, vec3 V, vec3 worldPos, vec3 localPos) {
 #ifdef EFFECT_BUMP_WAVE
     N = perturb_normal_wave(N, localPos);
 #endif
 #ifdef EFFECT_BUMP_NOISE
     N = perturb_normal_noise(N, worldPos, localPos);
 #endif
-    return normalize(N);
+    N = normalize(N);
+
+    float ndv = dot(N, V);
+    if (ndv < 0.0) {
+        const float HORIZON_WIDTH = 0.125;
+        float t = saturate(-ndv / HORIZON_WIDTH);
+        vec3 m = normalize(mix(N, Ngeom, t));
+        N = (dot(m, V) < 0.0) ? Ngeom : m;
+    }
+    return N;
 }
 
 // =============================================================================
@@ -940,7 +953,7 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (!gl_FrontFacing) N = -N;
     vec3 N_geom = normalize(N);
     vec3 V = normalize(uCamEye - worldPos);
-    N = perturb_normal(N, worldPos, localPos);
+    N = perturb_normal(N, N_geom, V, worldPos, localPos);
 
     float baseRough = clamp(uMatSpecularRoughness, MIN_PERCEPTUAL_ROUGHNESS, 1.0);
     float ambientRough = clamp(specular_aa_roughness(N, baseRough), MIN_PERCEPTUAL_ROUGHNESS, 1.0);
