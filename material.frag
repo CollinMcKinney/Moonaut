@@ -1,4 +1,5 @@
 #version 430 core
+//#define DEBUG_NORMAL_VIEW
 
 // =============================================================================
 // material.frag
@@ -218,17 +219,14 @@ vec3 perturb_normal_noise(vec3 N, vec3 worldPos, vec3 localPos) {
     float fadeSmooth = smoothstep(0.0, 0.05, fade);
     if (fadeSmooth < 1e-4) return N;
 
-    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangent = normalize(cross(up, N));
-    vec3 bitangent = cross(N, tangent);
-
     vec3 p_rough = localPos * NOISE_FREQ;
     float eps_rough = 0.01;
     float h0       = value_noise(p_rough);
     float hx_rough = value_noise(p_rough + vec3(eps_rough, 0.0, 0.0));
     float hy_rough = value_noise(p_rough + vec3(0.0, eps_rough, 0.0));
-    float grad_u = (hx_rough - h0) / eps_rough;
-    float grad_v = (hy_rough - h0) / eps_rough;
+    float hz_rough = value_noise(p_rough + vec3(0.0, 0.0, eps_rough));
+    vec3 gradient = vec3(hx_rough - h0, hy_rough - h0, hz_rough - h0) / eps_rough;
+    gradient -= N * dot(gradient, N);
 
     float strength = uMatBumpNoise * 0.5;
     vec3 V = normalize(uCamEye - worldPos);
@@ -237,7 +235,7 @@ vec3 perturb_normal_noise(vec3 N, vec3 worldPos, vec3 localPos) {
     strength *= (0.5 + 0.5 * grazing);
     strength *= fadeSmooth;
 
-    vec3 perturb = tangent * grad_u * strength + bitangent * grad_v * strength;
+    vec3 perturb = gradient * strength;
 
     const float MAX_PERTURB = 0.5;
     float pl = length(perturb);
@@ -838,15 +836,15 @@ vec3 lobe_sheen(vec3 N, vec3 V, vec3 L, vec3 H, vec3 lc, vec3 T, vec3 B,
 // Layer attenuation
 // =============================================================================
 void apply_layer_attenuation(inout vec3 dc, inout vec3 sc, inout vec3 sh,
-                             float NdotL, float NdotV,
+                             float NdotV, float NdotV_cc,
                              float cs, vec3 cf0, vec3 F_avg) {
 #ifdef EFFECT_CLEARCOAT
-    vec3 cfl = F_Schlick(cf0, NdotL);
-    float cd = compute_coat_darkening(cf0, uMatAlbedo, NdotV, uMatSpecularRoughness);
+    vec3 cfl = F_Schlick(cf0, NdotV_cc);
+    float cd = compute_coat_darkening(cf0, uMatAlbedo, NdotV_cc, uMatSpecularRoughness);
     float dk = mix(1.0, cd, cs);
     vec3 ct = vec3(dk) * (vec3(1.0) - cfl * cs);
 
-    vec3 absorption = compute_clearcoat_absorption(NdotV, uMatClearcoatColor, cs, uMatClearcoatIOR);
+    vec3 absorption = compute_clearcoat_absorption(NdotV_cc, uMatClearcoatColor, cs, uMatClearcoatIOR);
     ct *= absorption;
 
     dc *= ct; sc *= ct; sh *= ct;
@@ -860,60 +858,37 @@ void apply_layer_attenuation(inout vec3 dc, inout vec3 sc, inout vec3 sh,
 #endif
 }
 
-void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lc,
+void accumulate_light(vec3 N, vec3 Ncc, float NdotV, float NdotV_cc, vec3 V, vec3 L, vec3 lc,
                       vec3 F0, vec3 F_avg, vec3 T, vec3 B,
                       inout vec3 d, inout vec3 s,
                       inout vec3 tr, inout vec3 cc, inout vec3 sh,
                       inout vec3 ri, inout vec3 bg,
-                      float NdotV, float baseRough, vec3 cf0) {
+                      float baseRough, vec3 cf0) {
     float NdotL_raw = dot(N, L);
     float NdotL = max(NdotL_raw, 0.0);
     float cs = clamp(uMatClearcoat, 0.0, 1.0);
 
-    vec3 V_sub = V;
-    vec3 L_sub = L;
-    float NdotL_sub = NdotL;
-    float NdotV_sub = NdotV;
-
-#ifdef EFFECT_CLEARCOAT
-    if (cs > 0.0) {
-        float etaCoat = uMatClearcoatIOR > 0.0 ? uMatClearcoatIOR : 1.5;
-        vec3 V_refract = refract(-V, N, 1.0 / etaCoat);
-        if (dot(V_refract, V_refract) > 1e-6) V_sub = -V_refract;
-        if (NdotL_raw >= 0.0) {
-            vec3 L_refract = refract(-L, N, 1.0 / etaCoat);
-            if (dot(L_refract, L_refract) > 1e-6) L_sub = -L_refract;
-        }
-        NdotL_sub = max(dot(N, L_sub), 0.0);
-        NdotV_sub = max(dot(N, V_sub), 0.0);
-    }
-#endif
-
-    vec3 Hraw = L_sub + V_sub;
+    vec3 Hraw = L + V;
     float ls = dot(Hraw, Hraw);
     vec3 H = (ls > 1e-8) ? Hraw * inversesqrt(ls) : N;
-    float VdotH = min(max(dot(V_sub, H), 0.0), 1.0);
+    float VdotH = min(max(dot(V, H), 0.0), 1.0);
     float NdotH = max(dot(N, H), 0.0);
+    float NdotH_cc = max(dot(Ncc, H), 0.0);
+    float NdotL_cc = max(dot(Ncc, L), 0.0);
 
-    vec3 Hraw_cc = L + V;
-    float ls_cc = dot(Hraw_cc, Hraw_cc);
-    vec3 H_cc = (ls_cc > 1e-8) ? Hraw_cc * inversesqrt(ls_cc) : N;
-    float VdotH_cc = min(max(dot(V, H_cc), 0.0), 1.0);
-    float NdotH_cc = max(dot(N, H_cc), 0.0);
-
-    vec3 dc = lobe_diffuse(N, V_sub, L_sub, lc, F_avg, NdotL_sub, NdotL_raw);
-    vec3 sc = lobe_specular(N, V_sub, L_sub, H, F0, F_avg, lc, T, B,
-                            NdotL_sub, NdotV_sub, NdotH, VdotH, baseRough);
+    vec3 dc = lobe_diffuse(N, V, L, lc, F_avg, NdotL, NdotL_raw);
+    vec3 sc = lobe_specular(N, V, L, H, F0, F_avg, lc, T, B,
+                            NdotL, NdotV, NdotH, VdotH, baseRough);
     vec3 tc = vec3(0.0), ccc = vec3(0.0), shc = vec3(0.0), bgc = vec3(0.0), ric = vec3(0.0);
 
 #ifdef EFFECT_TRANSMISSION
     tc = lobe_transmission(N, V, L, F0, lc, NdotL_raw, NdotV);
 #endif
 #ifdef EFFECT_CLEARCOAT
-    ccc = lobe_clearcoat(N, V, L, H_cc, lc, NdotL, NdotV, NdotH_cc, VdotH_cc, cs, cf0);
+    ccc = lobe_clearcoat(Ncc, V, L, H, lc, NdotL_cc, NdotV_cc, NdotH_cc, VdotH, cs, cf0);
 #endif
 #ifdef EFFECT_SHEEN
-    shc = lobe_sheen(N, V, L, H_cc, lc, T, B, NdotL, NdotV, NdotH_cc, VdotH_cc);
+    shc = lobe_sheen(N, V, L, H, lc, T, B, NdotL, NdotV, NdotH, VdotH);
 #endif
 #ifdef EFFECT_DIFFRACTION
     ric += lobe_micro_diffraction(N, V, L, T, uMatDiffraction) * lc;
@@ -925,13 +900,13 @@ void accumulate_light(vec3 N, vec3 V, vec3 L, vec3 lc,
     ric += rim_lobe(NdotV) * lc;
 #endif
 
-    apply_layer_attenuation(dc, sc, shc, NdotL, NdotV, cs, cf0, F_avg);
+    apply_layer_attenuation(dc, sc, shc, NdotV, NdotV_cc, cs, cf0, F_avg);
     d += dc; s += sc; tr += tc; cc += ccc; sh += shc; bg += bgc; ri += ric;
 }
 
-void accumulate_direct_lighting(vec3 N, vec3 V, vec3 wp,
+void accumulate_direct_lighting(vec3 N, vec3 Ncc, float NdotV, float NdotV_cc, vec3 V, vec3 wp,
                                 vec3 F0, vec3 F_avg, vec3 T, vec3 B,
-                                float NdotV, float baseRough, vec3 cf0,
+                                float baseRough, vec3 cf0,
                                 out vec3 td, out vec3 ts, out vec3 tt,
                                 out vec3 tcc, out vec3 tsh, out vec3 tri,
                                 out vec3 tbg, out vec3 avgD, out float avgW) {
@@ -948,9 +923,9 @@ void accumulate_direct_lighting(vec3 N, vec3 V, vec3 wp,
         if (!evaluate_light(l, wp, ld, at)) continue;
         vec3 lc = l.color.xyz * at;
         inten *= at;
-        accumulate_light(N, V, ld, lc, F0, F_avg, T, B,
+        accumulate_light(N, Ncc, NdotV, NdotV_cc, V, ld, lc, F0, F_avg, T, B,
                          td, ts, tt, tcc, tsh, tri, tbg,
-                         NdotV, baseRough, cf0);
+                         baseRough, cf0);
 #ifdef EFFECT_GOOCH
         avgD += ld * inten;
         avgW += inten;
@@ -963,24 +938,14 @@ void accumulate_direct_lighting(vec3 N, vec3 V, vec3 wp,
 // =============================================================================
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (!gl_FrontFacing) N = -N;
-    vec3 N_geom = N;
+    vec3 N_geom = normalize(N);
     vec3 V = normalize(uCamEye - worldPos);
     N = perturb_normal(N, worldPos, localPos);
 
     float baseRough = clamp(uMatSpecularRoughness, MIN_PERCEPTUAL_ROUGHNESS, 1.0);
-#ifdef EFFECT_CLEARCOAT
-    {
-        float coatStrength = clamp(uMatClearcoat, 0.0, 1.0);
-        if (coatStrength > 0.0) {
-            float coatRough = clamp(uMatClearcoatRoughness, 0.0, 1.0);
-            float r_eff = sqrt(baseRough * baseRough + coatRough * coatRough);
-            baseRough = mix(baseRough, r_eff, coatStrength);
-            baseRough = clamp(baseRough, MIN_PERCEPTUAL_ROUGHNESS, 1.0);
-        }
-    }
-#endif
     float ambientRough = clamp(specular_aa_roughness(N, baseRough), MIN_PERCEPTUAL_ROUGHNESS, 1.0);
     float NdotV = max(dot(N, V), 0.0);
+    float NdotV_cc = max(dot(N_geom, V), 0.0);
     float metallic = clamp(uMatMetallic, 0.0, 1.0);
     vec3 F0 = compute_fresnel_f0(uMatAlbedo, metallic, uMatIOR);
     vec3 F_avg = compute_fresnel_avg(F0, uMatF82Tint, metallic);
@@ -1002,8 +967,8 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     vec3 td, ts, tt, tcc, tsh, tri, tbg, avgDir;
     float avgW;
-    accumulate_direct_lighting(N, V, worldPos, F0, F_avg, T, B,
-                               NdotV, baseRough, coatF0,
+    accumulate_direct_lighting(N, N_geom, NdotV, NdotV_cc, V, worldPos, F0, F_avg, T, B,
+                               baseRough, coatF0,
                                td, ts, tt, tcc, tsh, tri, tbg, avgDir, avgW);
     vec3 diffuseColor = uMatAlbedo * (1.0 - metallic);
     vec3 directDiffuse = td;
@@ -1053,13 +1018,14 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (cc > 0.0) {
         vec3 ca = coatF0 + (1.0 - coatF0) / 21.0;
         float cr = clamp(uMatClearcoatRoughness, 0.0, 1.0);
-        vec3 Fc = mix(F_Schlick(coatF0, NdotV), ca, cr);
-        vec3 ec = sample_env_map(R, cr);
-        vec3 absorption = compute_clearcoat_absorption(NdotV, uMatClearcoatColor, cc, uMatClearcoatIOR);
-        float ccSpecOcc = specular_occlusion(NdotV, vbao_ao, cr);
+        vec3 R_cc = reflect(-V, N_geom);
+        vec3 Fc = mix(F_Schlick(coatF0, NdotV_cc), ca, cr);
+        vec3 ec = sample_env_map(R_cc, cr);
+        vec3 absorption = compute_clearcoat_absorption(NdotV_cc, uMatClearcoatColor, cc, uMatClearcoatIOR);
+        float ccSpecOcc = specular_occlusion(NdotV_cc, vbao_ao, cr);
         ambientClearcoat = specular_multiscatter_comp(
             ec * uMatClearcoatColor * Fc * cc * ccSpecOcc * uMatAmbient * absorption,
-            coatF0, ca, cr, NdotV);
+            coatF0, ca, cr, NdotV_cc);
     }
 #endif
 #ifdef EFFECT_SHEEN

@@ -205,8 +205,8 @@ const struct material_definition DEFAULT_MATERIAL_WATER = {
     .diffuse_roughness      = 0.0f,
     .transmission_roughness = 0.0f,
     .bump_wave_amplitude    = 0.3f,
-    .bump_wave_frequency    = 24.0f,
-    .bump_wave_speed        = 5.0f,
+    .bump_wave_frequency    = 16.0f,
+    .bump_wave_speed        = 10.0f,
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
     .gooch_warm             = {0.0f, 0.0f, 0.0f},
     .back_glow_color        = {0.0f, 0.0f, 0.0f},
@@ -916,7 +916,7 @@ const struct material_definition DEFAULT_MATERIAL_IRIDESCENT = {
  * 15. PLASTIC
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
-    .render_method          = EFFECT_BUMP_WAVE | EFFECT_CLEARCOAT,
+    .render_method          = EFFECT_CLEARCOAT,
     .albedo                 = {0.20f, 0.50f, 0.80f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
@@ -926,8 +926,8 @@ const struct material_definition DEFAULT_MATERIAL_PLASTIC = {
     .diffuse_wrap           = 1,
     .diffuse_roughness      = 0.15f,
     .transmission_roughness = 0.0f,
-    .bump_wave_amplitude    = 0.01f,
-    .bump_wave_frequency    = 128.0f,
+    .bump_wave_amplitude    = 0.0f,
+    .bump_wave_frequency    = 0.0f,
     .bump_wave_speed        = 0.0f,
     .gooch_cool             = {0.0f, 0.0f, 0.0f},
     .gooch_warm             = {0.0f, 0.0f, 0.0f},
@@ -1136,7 +1136,8 @@ const struct material_definition DEFAULT_MATERIAL_GOLD = {
  * 19. SNOW
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SNOW = {
-    .render_method          = EFFECT_BUMP_NOISE | EFFECT_SHEEN | EFFECT_SUBSURFACE | EFFECT_BUMP_WAVE | EFFECT_CLEARCOAT | EFFECT_DIFFUSE_WRAP,
+    .render_method          = EFFECT_BUMP_NOISE | EFFECT_BUMP_WAVE | EFFECT_SHEEN | 
+                              EFFECT_SUBSURFACE | EFFECT_CLEARCOAT | EFFECT_DIFFUSE_WRAP,
     .albedo                 = {0.95f, 0.95f, 1.00f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
@@ -1177,7 +1178,7 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
     .ior                    = 1.31f,
     .subsurface             = 0.8f,
     .clearcoat_color        = {0.8f, 0.9f, 1.0f},
-    .clearcoat_roughness    = 0.05f,
+    .clearcoat_roughness    = 0.25f,
     .clearcoat              = 0.28f,
     .sheen_color            = {1.0f, 1.0f, 1.0f},
     .sheen_roughness        = 0.55f,
