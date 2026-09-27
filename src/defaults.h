@@ -123,6 +123,7 @@ static void tag_register_default_all(void){
     tag_register_default("default_particle_emitter", TAG_particle_emitter, &DEFAULT_PARTICLE_EMITTER);
 
     /* Default dielectric material definitions. */
+    tag_register_default("default_material",      TAG_material, &DEFAULT_MATERIAL);
     tag_register_default("default_material_water",      TAG_material, &DEFAULT_MATERIAL_WATER);
     tag_register_default("default_material_grass",      TAG_material, &DEFAULT_MATERIAL_GRASS);
     tag_register_default("default_material_denim",      TAG_material, &DEFAULT_MATERIAL_DENIM);
