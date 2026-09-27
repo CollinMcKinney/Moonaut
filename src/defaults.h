@@ -153,11 +153,20 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_posterized", TAG_material, &DEFAULT_MATERIAL_POSTERIZED);
     tag_register_default("default_material_frost",      TAG_material, &DEFAULT_MATERIAL_FROST);
     tag_register_default("default_material_rust",       TAG_material, &DEFAULT_MATERIAL_RUST);
+    tag_register_default("default_material_verdigris",  TAG_material, &DEFAULT_MATERIAL_VERDIGRIS);
     tag_register_default("default_material_carbon",     TAG_material, &DEFAULT_MATERIAL_CARBON);
+    tag_register_default("default_material_diamond",    TAG_material, &DEFAULT_MATERIAL_DIAMOND);
+    tag_register_default("default_material_ruby",       TAG_material, &DEFAULT_MATERIAL_RUBY);
+    tag_register_default("default_material_amber",      TAG_material, &DEFAULT_MATERIAL_AMBER);
     tag_register_default("default_material_emerald",    TAG_material, &DEFAULT_MATERIAL_EMERALD);
+    tag_register_default("default_material_sapphire",   TAG_material, &DEFAULT_MATERIAL_SAPPHIRE);
+    tag_register_default("default_material_obsidian",   TAG_material, &DEFAULT_MATERIAL_OBSIDIAN);
     tag_register_default("default_material_oilslick",   TAG_material, &DEFAULT_MATERIAL_OILSLICK);
-    
+    tag_register_default("default_material_asphalt",    TAG_material, &DEFAULT_MATERIAL_ASPHALT);
+    tag_register_default("default_material_concrete",   TAG_material, &DEFAULT_MATERIAL_CONCRETE);
+
     /* Default metallic material definitions. */
+    tag_register_default("default_material_carpaint",   TAG_material, &DEFAULT_MATERIAL_CARPAINT);
     tag_register_default("default_material_gold",       TAG_material, &DEFAULT_MATERIAL_GOLD);
     tag_register_default("default_material_chrome",     TAG_material, &DEFAULT_MATERIAL_CHROME);
     tag_register_default("default_material_silver",     TAG_material, &DEFAULT_MATERIAL_SILVER);
@@ -178,7 +187,6 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_zinc",       TAG_material, &DEFAULT_MATERIAL_ZINC);
     tag_register_default("default_material_rubidium",   TAG_material, &DEFAULT_MATERIAL_RUBIDIUM);
     tag_register_default("default_material_mercury",    TAG_material, &DEFAULT_MATERIAL_MERCURY);
-
 
     /* Default asset tags (defined in their respective tag headers) */
     tag_register_default("default_globals",   TAG_globals,   &DEFAULT_GLOBALS);
