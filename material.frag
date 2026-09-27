@@ -762,6 +762,14 @@ bool evaluate_light(Light l, vec3 wp, out vec3 ld, out float at) {
 vec3 lobe_diffuse(vec3 N, vec3 V, vec3 L, vec3 lc, vec3 F_avg,
                   float NdotL, float NdotL_raw) {
     vec3 dc = uMatAlbedo * (1.0 - uMatMetallic);
+#ifdef EFFECT_GOOCH
+    // Gooch replaces the albedo with its two-colour reflectance ramp. The ramp
+    // is driven by this light's own NdotL, so each light gets an independent
+    // cool/warm response - that per-light behaviour is the defining trait of
+    // the model, which is why it cannot be evaluated once per surface from an
+    // averaged light direction.
+    dc = mix(uMatGoochCool, uMatGoochWarm, NdotL_raw * 0.5 + 0.5);
+#endif
     vec3 brdf;
 
 #ifdef EFFECT_SUBSURFACE
@@ -1005,6 +1013,19 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
                                baseRough, coatF0,
                                td, ts, tt, tcc, tsh, tri, tbg, avgDir, avgW);
     vec3 diffuseColor = uMatAlbedo * (1.0 - metallic);
+#ifdef EFFECT_GOOCH
+    // Ambient carries no single NdotL, so mirror the ramp using the dominant
+    // light direction. This keeps direct and indirect on the same ramp instead
+    // of leaving ambient on the albedo the direct path has replaced.
+    if (avgW > 0.001) {
+        vec3 gdir = avgDir / avgW;
+        float gl = length(gdir);
+        if (gl > 0.001) {
+            diffuseColor = mix(uMatGoochCool, uMatGoochWarm,
+                               dot(N, gdir / gl) * 0.5 + 0.5);
+        }
+    }
+#endif
     vec3 directDiffuse = td;
 
     vec3 ambientDiffuse = vec3(0.0);
@@ -1074,19 +1095,6 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     vec3 sheenBase = irradiance * sc * Es * uMatSheen * uMatAmbient * sheenF * sheenSpecOcc;
     vec3 sheenFms = sc * (1.0 / max(Es, 1e-4) - 1.0);
     ambientSheen = sheenBase * (vec3(1.0) + sheenFms);
-#endif
-#ifdef EFFECT_GOOCH
-    if (avgW > 0.001) {
-        vec3 dir = avgDir / avgW;
-        float l = length(dir);
-        if (l > 0.001) {
-            dir /= l;
-            float ndl = dot(N, dir);
-            float tg = ndl * 0.5 + 0.5;
-            vec3 gf = mix(uMatGoochCool, uMatGoochWarm, tg);
-            ambientDiffuse *= gf;
-        }
-    }
 #endif
     ambientDiffuse *= vbao_ao;
     ambientClearcoat *= vbao_ao;

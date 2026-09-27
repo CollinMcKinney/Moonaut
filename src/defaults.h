@@ -141,7 +141,8 @@ static void tag_register_default_all(void){
     tag_register_default("default_material_brick",      TAG_material, &DEFAULT_MATERIAL_BRICK);
     tag_register_default("default_material_leather",    TAG_material, &DEFAULT_MATERIAL_LEATHER);
     tag_register_default("default_material_snow",       TAG_material, &DEFAULT_MATERIAL_SNOW);
-    tag_register_default("default_material_dirt",       TAG_material, &DEFAULT_MATERIAL_DIRT);
+    tag_register_default("default_material_soil",       TAG_material, &DEFAULT_MATERIAL_SOIL);
+    tag_register_default("default_material_sand",       TAG_material, &DEFAULT_MATERIAL_SAND);
     tag_register_default("default_material_neon",       TAG_material, &DEFAULT_MATERIAL_NEON);
     tag_register_default("default_material_velvet",     TAG_material, &DEFAULT_MATERIAL_VELVET);
     tag_register_default("default_material_marble",     TAG_material, &DEFAULT_MATERIAL_MARBLE);

@@ -1246,11 +1246,11 @@ const struct material_definition DEFAULT_MATERIAL_SNOW = {
 };
 
 /* ------------------------------------------------------------------------
- * 20. DIRT
+ * 20. Soil
  * ------------------------------------------------------------------------ */
-const struct material_definition DEFAULT_MATERIAL_DIRT = {
+const struct material_definition DEFAULT_MATERIAL_SOIL = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_BUMP_WAVE| EFFECT_FOG,
-    .albedo                 = {0.115f, 0.076f, 0.053f},
+    .albedo                 = {0.030f, 0.0197f, 0.0137f},
     .ambient                = 1.0f,
     .alpha                  = 1.0f,
     .saturation             = 1.0f,
@@ -1268,7 +1268,7 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .rim_color              = {0.0f, 0.0f, 0.0f},
     .rim_exponent           = 1.0f,
     .clearcoat_ior          = 1.6f,
-    .transmission  = 0.0f,
+    .transmission           = 0.0f,
     .specular_tint          = {1.0f, 1.0f, 1.0f},
     .specular_roughness     = 0.60f,
     .emissive_color         = {0.0f, 0.0f, 0.0f},
@@ -1279,10 +1279,10 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .strobe_frequency       = 0.0f,
     .strobe_phase           = 0.0f,
     .skip_fog               = false,
-    .thin_film     = 0.0f,
+    .thin_film              = 0.0f,
     .thin_film_ior          = 1.5f,
-    .glitch       = 0.0f,
-    .diffraction  = 0.0f,
+    .glitch                 = 0.0f,
+    .diffraction            = 0.0f,
     .posterize_levels       = 0,
     .double_sided           = false,
     .bump_noise             = 0.55f,
@@ -1290,17 +1290,73 @@ const struct material_definition DEFAULT_MATERIAL_DIRT = {
     .ior                    = 1.55f,
     .clearcoat_color        = {0.0f, 0.0f, 0.0f},
     .clearcoat_roughness    = 0.0f,
-    .clearcoat     = 0.0f,
+    .clearcoat              = 0.0f,
     .sheen_color            = {0.0f, 0.0f, 0.0f},
     .sheen_roughness        = 0.0f,
-    .sheen         = 0.0f,
+    .sheen                  = 0.0f,
     .anisotropic            = 0.0f,
     .transmission_tint      = {0.0, 0.0, 0.0},
     .f82_tint               = {1.0, 1.0, 1.0}
 };
 
 /* ------------------------------------------------------------------------
- * 21. NEON
+ * 21. SAND
+ * ------------------------------------------------------------------------ */
+const struct material_definition DEFAULT_MATERIAL_SAND = {
+    .render_method          = EFFECT_BUMP_NOISE | EFFECT_BUMP_WAVE | EFFECT_FOG,
+    .albedo                 = {0.42f, 0.325f, 0.19f},
+    .ambient                = 1.0f,
+    .alpha                  = 1.0f,
+    .saturation             = 1.0f,
+    .tint                   = {1.0f, 1.0f, 1.0f},
+    .cel_bands              = 0,
+    .diffuse_wrap           = 1,
+    .diffuse_roughness      = 0.75f,
+    .transmission_roughness = 0.0f,
+    .bump_wave_amplitude    = 0.08f,
+    .bump_wave_frequency    = 40.0f,
+    .bump_wave_speed        = 0.0f,
+    .gooch_cool             = {0.0f, 0.0f, 0.0f},
+    .gooch_warm             = {0.0f, 0.0f, 0.0f},
+    .back_glow_color        = {0.0f, 0.0f, 0.0f},
+    .rim_color              = {0.0f, 0.0f, 0.0f},
+    .rim_exponent           = 1.0f,
+    .clearcoat_ior          = 1.5f,
+    .transmission           = 0.0f,
+    .specular_tint          = {1.0f, 1.0f, 1.0f},
+    .specular_roughness     = 0.80f,
+    .emissive_color         = {0.0f, 0.0f, 0.0f},
+    .emissive_pulse_frequency = 0.0f,
+    .emissive_pulse_phase   = 0.0f,
+    .emissive_pulse_amplitude = 0.0f,
+    .strobe_color           = {0.0f, 0.0f, 0.0f},
+    .strobe_frequency       = 0.0f,
+    .strobe_phase           = 0.0f,
+    .skip_fog               = false,
+    .thin_film              = 0.0f,
+    .thin_film_ior          = 1.5f,
+    .glitch                 = 0.0f,
+    .diffraction            = 0.0f,
+    .posterize_levels       = 0,
+    .double_sided           = false,
+    .bump_noise             = 0.70f,
+    .metallic               = 0.0f,
+    .ior                    = 1.55f,
+    .subsurface             = 0.0f,
+    .clearcoat_color        = {0.0f, 0.0f, 0.0f},
+    .clearcoat_roughness    = 0.0f,
+    .clearcoat              = 0.0f,
+    .sheen_color            = {0.0f, 0.0f, 0.0f},
+    .sheen_roughness        = 0.0f,
+    .sheen                  = 0.0f,
+    .anisotropic            = 0.0f,
+    .transmission_tint      = {0.0, 0.0, 0.0},
+    .f82_tint               = {1.0, 1.0, 1.0},
+    .subsurface_color       = {1.0f, 1.0f, 1.0f}
+};
+
+/* ------------------------------------------------------------------------
+ * 22. NEON
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_NEON = {
     .render_method          = EFFECT_GOOCH | EFFECT_BACK_GLOW |
@@ -1357,7 +1413,7 @@ const struct material_definition DEFAULT_MATERIAL_NEON = {
 };
 
 /* ------------------------------------------------------------------------
- * 22. VELVET
+ * 23. VELVET
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_VELVET = {
     .render_method          = EFFECT_SHEEN | EFFECT_BUMP_NOISE | EFFECT_ANISOTROPIC,
@@ -1411,7 +1467,7 @@ const struct material_definition DEFAULT_MATERIAL_VELVET = {
 };
 
 /* ------------------------------------------------------------------------
- * 23. MARBLE
+ * 24. MARBLE
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_MARBLE = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
@@ -1467,7 +1523,7 @@ const struct material_definition DEFAULT_MATERIAL_MARBLE = {
 };
 
 /* ------------------------------------------------------------------------
- * 24. WAX
+ * 25. WAX
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_WAX = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_SUBSURFACE | EFFECT_TRANSMISSION | EFFECT_FOG,
@@ -1523,7 +1579,7 @@ const struct material_definition DEFAULT_MATERIAL_WAX = {
 };
 
 /* ------------------------------------------------------------------------
- * 25. PEARL
+ * 26. PEARL
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PEARL = {
     .render_method          = EFFECT_THIN_FILM | EFFECT_SUBSURFACE | EFFECT_CLEARCOAT,
@@ -1579,7 +1635,7 @@ const struct material_definition DEFAULT_MATERIAL_PEARL = {
 };
 
 /* ------------------------------------------------------------------------
- * 26. CERAMIC
+ * 27. CERAMIC
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
     .render_method          = EFFECT_CLEARCOAT | EFFECT_FOG,
@@ -1633,7 +1689,7 @@ const struct material_definition DEFAULT_MATERIAL_CERAMIC = {
 };
 
 /* ------------------------------------------------------------------------
- * 27. CHALK
+ * 28. CHALK
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHALK = {
     .render_method          = EFFECT_BUMP_NOISE | EFFECT_FOG,
@@ -1687,7 +1743,7 @@ const struct material_definition DEFAULT_MATERIAL_CHALK = {
 };
 
 /* ------------------------------------------------------------------------
- * 28. POSTERIZED
+ * 29. POSTERIZED
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
     .render_method          = EFFECT_POSTERIZE | EFFECT_SATURATION,
@@ -1741,7 +1797,7 @@ const struct material_definition DEFAULT_MATERIAL_POSTERIZED = {
 };
 
 /* ------------------------------------------------------------------------
- * 29. FROST
+ * 30. FROST
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_FROST = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_BUMP_NOISE |
@@ -1798,7 +1854,7 @@ const struct material_definition DEFAULT_MATERIAL_FROST = {
 };
 
 /* ------------------------------------------------------------------------
- * 30. RUST
+ * 31. RUST
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_RUST = {
     .render_method          = EFFECT_BUMP_WAVE| EFFECT_BUMP_NOISE | EFFECT_SHEEN | EFFECT_FOG,
@@ -1852,7 +1908,7 @@ const struct material_definition DEFAULT_MATERIAL_RUST = {
 };
 
 /* ------------------------------------------------------------------------
- * 31. CARBON
+ * 32. CARBON
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CARBON = {
     .render_method          = EFFECT_BUMP_WAVE | EFFECT_ANISOTROPIC,
@@ -1906,7 +1962,7 @@ const struct material_definition DEFAULT_MATERIAL_CARBON = {
 };
 
 /* ------------------------------------------------------------------------
- * 32. CHROME Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 33. CHROME Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_CHROME = {
@@ -1961,7 +2017,7 @@ const struct material_definition DEFAULT_MATERIAL_CHROME = {
 };
 
 /* ------------------------------------------------------------------------
- * 33. EMERALD
+ * 34. EMERALD
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_EMERALD = {
     .render_method          = EFFECT_SUBSURFACE | EFFECT_TRANSMISSION |  EFFECT_BUMP_WAVE | EFFECT_FOG,
@@ -2017,7 +2073,7 @@ const struct material_definition DEFAULT_MATERIAL_EMERALD = {
 };
 
 /* ------------------------------------------------------------------------
- * 34. OIL SLICK
+ * 35. OIL SLICK
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
     .render_method          = EFFECT_THIN_FILM | EFFECT_ALPHA,
@@ -2071,7 +2127,7 @@ const struct material_definition DEFAULT_MATERIAL_OILSLICK = {
 };
 
 /* ------------------------------------------------------------------------
- * 35. SILVER (Ag) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 36. SILVER (Ag) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_SILVER = {
@@ -2127,7 +2183,7 @@ const struct material_definition DEFAULT_MATERIAL_SILVER = {
 };
 
 /* ------------------------------------------------------------------------
- * 36. ALUMINUM (Al) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 37. ALUMINUM (Al) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_ALUMINUM = {
@@ -2183,7 +2239,7 @@ const struct material_definition DEFAULT_MATERIAL_ALUMINUM = {
 };
 
 /* ------------------------------------------------------------------------
- * 37. COPPER (Cu) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 38. COPPER (Cu) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_COPPER = {
@@ -2239,7 +2295,7 @@ const struct material_definition DEFAULT_MATERIAL_COPPER = {
 };
 
 /* ------------------------------------------------------------------------
- * 38. NICKEL (Ni) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 39. NICKEL (Ni) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_NICKEL = {
@@ -2295,7 +2351,7 @@ const struct material_definition DEFAULT_MATERIAL_NICKEL = {
 };
 
 /* ------------------------------------------------------------------------
- * 39. PLATINUM (Pt) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 40. PLATINUM (Pt) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_PLATINUM = {
@@ -2351,7 +2407,7 @@ const struct material_definition DEFAULT_MATERIAL_PLATINUM = {
 };
 
 /* ------------------------------------------------------------------------
- * 40. IRON (Fe) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 41. IRON (Fe) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_IRON = {
@@ -2407,7 +2463,7 @@ const struct material_definition DEFAULT_MATERIAL_IRON = {
 };
 
 /* ------------------------------------------------------------------------
- * 41. TITANIUM (Ti) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 42. TITANIUM (Ti) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_TITANIUM = {
@@ -2463,7 +2519,7 @@ const struct material_definition DEFAULT_MATERIAL_TITANIUM = {
 };
 
 /* ------------------------------------------------------------------------
- * 42. TUNGSTEN (W) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 43. TUNGSTEN (W) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_TUNGSTEN = {
@@ -2519,7 +2575,7 @@ const struct material_definition DEFAULT_MATERIAL_TUNGSTEN = {
 };
 
 /* ------------------------------------------------------------------------
- * 43. BRASS (Cu-Zn 70/30 alloy) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
+ * 44. BRASS (Cu-Zn 70/30 alloy) Based on Appendix D table at https://arxiv.org/html/2512.23696v1#A1
  * using the F0 (sRGB) and F82-tint (sRGB).
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_BRASS = {
@@ -2575,7 +2631,7 @@ const struct material_definition DEFAULT_MATERIAL_BRASS = {
 };
 
 /* ------------------------------------------------------------------------
- * 43. STEEL (Fe + C, generic carbon steel)
+ * 44. STEEL (Fe + C, generic carbon steel)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * Steel is not a single alloy either, but carbon steel is close enough
@@ -2636,7 +2692,7 @@ const struct material_definition DEFAULT_MATERIAL_STEEL = {
 };
 
 /* ------------------------------------------------------------------------
- * 44. LEAD (Pb)
+ * 45. LEAD (Pb)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * Lead is soft and oxidizes quickly to a dull blue-gray patina. The
@@ -2696,7 +2752,7 @@ const struct material_definition DEFAULT_MATERIAL_LEAD = {
 };
 
 /* ------------------------------------------------------------------------
- * 45. BRONZE (Cu-Sn alloy)
+ * 46. BRONZE (Cu-Sn alloy)
  * ------------------------------------------------------------------------ */
 const struct material_definition DEFAULT_MATERIAL_BRONZE = {
     .render_method          = EFFECT_BUMP_NOISE,
@@ -2751,7 +2807,7 @@ const struct material_definition DEFAULT_MATERIAL_BRONZE = {
 };
 
 /* ------------------------------------------------------------------------
- * 45. CAESIUM (Cs)
+ * 46. CAESIUM (Cs)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * Warm gold-like metal. The F82-tint is well above 1.0 (up to 1.44 in
@@ -2812,7 +2868,7 @@ const struct material_definition DEFAULT_MATERIAL_CAESIUM = {
 };
 
 /* ------------------------------------------------------------------------
- * 46. GERMANIUM (Ge)
+ * 47. GERMANIUM (Ge)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * Dark semiconductor metal with a slightly green-tinted neutral hue.
@@ -2872,7 +2928,7 @@ const struct material_definition DEFAULT_MATERIAL_GERMANIUM = {
 };
 
 /* ------------------------------------------------------------------------
- * 47. SILICON (Si)
+ * 48. SILICON (Si)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * Dark cool-gray metal. The only material in the palette that occupies
@@ -2933,7 +2989,7 @@ const struct material_definition DEFAULT_MATERIAL_SILICON = {
 };
 
 /* ------------------------------------------------------------------------
- * 48. ZINC (Zn)
+ * 49. ZINC (Zn)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * The most distinctive material in the palette: a cool blue-gray body
@@ -2995,7 +3051,7 @@ const struct material_definition DEFAULT_MATERIAL_ZINC = {
 };
 
 /* ------------------------------------------------------------------------
- * 49. RUBIDIUM (Rb)
+ * 50. RUBIDIUM (Rb)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  * Warm silver — between silver and gold in hue, but distinctly its own
@@ -3055,7 +3111,7 @@ const struct material_definition DEFAULT_MATERIAL_RUBIDIUM = {
 };
 
 /* ------------------------------------------------------------------------
- * 50. MERCURY (Hg)
+ * 51. MERCURY (Hg)
  *
  * F0 and F82-tint from OpenPBR Appendix D, sRGB column.
  *
