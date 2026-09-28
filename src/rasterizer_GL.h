@@ -112,12 +112,12 @@
  *
  * Resolution handling:
  *   The internal render resolution is derived from the window size multiplied
- *   by gl_resolution_scale (default 0.75f). render_resize() recomputes the
+ *   by gl_resolution_scale (default 1.0f). render_resize() recomputes the
  *   render resolution from the new window size and the current scale.
  *   render_set_render_resolution() overrides the internal resolution
  *   directly. render_set_resolution_scale() changes the scale and recomputes
- *   from the window size. The final post-process blit upscales from the
- *   internal resolution to the window resolution.
+ *   from the window size. Scales above 1.0 supersample: the AA pass is
+ *   skipped and the resolve downsamples to the window resolution.
  */
 
 #define AUDIO_OCCLUSION
@@ -176,7 +176,10 @@ void render_finish(void);
 const u32* render_get_fb(void);
 int render_resize(i32 new_w, i32 new_h);
 void render_set_render_resolution(i32 render_width, i32 render_height);
-void render_set_resolution_scale(float scale);  /* 0..1, default 0.75 */
+void render_set_resolution_scale(float scale);  /* 0.01..2.0, 2.0 = SSAA, default 1.0 */
+void render_set_anti_aliasing(int enabled);   /* 0 = blit, 1 = FXAA/SSAA, default 1 */
+void render_set_vbao(int enabled);             /* 0 = skip AO passes, default 1 */
+void render_set_dither(int enabled);           /* 0 = skip present dither, default 1 */
 i32 render_get_render_width(void);
 i32 render_get_render_height(void);
 static INLINE u8 color_to_u8(real x);
@@ -305,7 +308,10 @@ static i32 gl_win_width  = 0;
 static i32 gl_win_height = 0;
 static i32 gl_render_width  = 0;
 static i32 gl_render_height = 0;
-static float gl_resolution_scale = 0.75f;
+static real gl_resolution_scale = 1.0f;
+static i32  gl_anti_aliasing_enabled = 1;
+static i32  gl_vbao_enabled = 1;
+static i32  gl_dither_enabled = 1;
 
 static i32 gl_ao_width  = 0;
 static i32 gl_ao_height = 0;
@@ -501,6 +507,10 @@ static GLuint gl_ao_tex        = 0;
 static GLuint gl_ao_fbo        = 0;
 static GLuint gl_ao_blurred_tex = 0;
 static GLuint gl_ao_blur_fbo   = 0;
+/* 1x1 R8 texel of 1.0, bound to uAOTex when VBAO is off. material.frag always
+ * samples uAOTex, so "off" has to read as fully unoccluded rather than skip
+ * the sample; binding white keeps the shaders untouched and the flag free. */
+static GLuint gl_ao_white_tex  = 0;
 static GLuint gl_vbao_program      = 0;
 static GLuint gl_vbao_ubo          = 0;
 static GLuint gl_vbao_blur_program = 0;
@@ -515,14 +525,36 @@ static GLuint gl_post_process_program = 0;
 static GLint  pp_u_screen_size = -1;
 static GLint  pp_u_exposure    = -1;
 static GLint  pp_u_gamma       = -1;
-static GLint  pp_u_time        = -1;
 
-/* ---- Anti-aliasing (FXAA pass after post-process) ---- */
+/* ---- Anti-aliasing / resolve (after post-process) ----
+ * Every mode converges on gl_present_tex, a window-resolution surface that
+ * dither.frag then presents:
+ *   AA off          post-process -------\
+ *   AA, scale <=1   post-process -> FXAA -> gl_present_tex (upscale blit)
+ *   AA, scale >1    post-process -> SSAA -> gl_present_tex
+ * gl_post_fxaa_tex holds the post-process output, gl_aa_tex the FXAA output;
+ * both are internal resolution. */
 static GLuint gl_fxaa_program    = 0;
 static GLuint gl_post_fxaa_fbo    = 0;
 static GLuint gl_post_fxaa_tex    = 0;
 static GLint  aa_u_screen_texture = -1;
 static GLint  aa_u_resolution      = -1;
+
+static GLuint gl_aa_fbo    = 0;
+static GLuint gl_aa_tex    = 0;
+
+/* Window-resolution surface the dither pass presents from */
+static GLuint gl_present_fbo    = 0;
+static GLuint gl_present_tex    = 0;
+static GLuint gl_dither_program = 0;
+static GLint  dt_u_screen_texture = -1;
+static GLint  dt_u_time            = -1;
+
+/* Supersampling resolve (used instead of FXAA when scaling up) */
+static GLuint gl_ssaa_program = 0;
+static GLint  ss_u_screen_texture = -1;
+static GLint  ss_u_src_size  = -1;
+static GLint  ss_u_dst_size  = -1;
 
 /* ---- Environment cube (IBL source) ---- */
 static GLuint gl_sky_cube     = 0;
@@ -1565,6 +1597,19 @@ static void init_wboit_resources(void) {
 }
 
 static void init_vbao_resources(void) {
+    /* Fully-unoccluded stand-in for when the pass is skipped. */
+    {
+        unsigned char white = 255;
+        C89GL_glGenTextures(1, &gl_ao_white_tex);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_white_tex);
+        C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1, 1, 0,
+                           GL_RED, GL_UNSIGNED_BYTE, &white);
+        C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
     C89GL_glGenTextures(1, &gl_ao_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
@@ -1737,7 +1782,6 @@ static void init_post_process_resources(void) {
     pp_u_screen_size = C89GL_glGetUniformLocation(gl_post_process_program, "uScreenSize");
     pp_u_exposure    = C89GL_glGetUniformLocation(gl_post_process_program, "uExposure");
     pp_u_gamma       = C89GL_glGetUniformLocation(gl_post_process_program, "uGamma");
-    pp_u_time        = C89GL_glGetUniformLocation(gl_post_process_program, "uTime");
 
     printf("Post-process initialised (HDR resolve -> sRGB).\n");
 }
@@ -1774,6 +1818,102 @@ static void init_fxaa_resources(void) {
     aa_u_resolution      = C89GL_glGetUniformLocation(gl_fxaa_program, "resolution");
 
     printf("Anti-aliasing (FXAA) initialised.\n");
+}
+
+/* ---- Final dither/present pass ----
+ * Owns the pre-present target as well, so it is initialised after the AA
+ * targets exist. */
+static void init_dither_resources(void) {
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
+                                            "dither.frag",
+                                            "#version 430 core\n");
+    if (!gl_fullscreen_vs || !fs) {
+        if (fs) C89GL_glDeleteShader(fs);
+        fprintf(stderr, "ERROR: Failed to compile dither program\n");
+        return;
+    }
+    gl_dither_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(gl_dither_program, gl_fullscreen_vs);
+    C89GL_glAttachShader(gl_dither_program, fs);
+    C89GL_glLinkProgram(gl_dither_program);
+    C89GL_glDeleteShader(fs);
+
+    {
+        GLint status;
+        C89GL_glGetProgramiv(gl_dither_program, GL_LINK_STATUS, &status);
+        if (!status) {
+            char log[512];
+            C89GL_glGetProgramInfoLog(gl_dither_program, sizeof(log), NULL, log);
+            printf("Dither program link error:\n%s\n", log);
+            C89GL_glDeleteProgram(gl_dither_program);
+            gl_dither_program = 0;
+            return;
+        }
+    }
+
+    dt_u_screen_texture = C89GL_glGetUniformLocation(gl_dither_program, "screenTexture");
+    dt_u_time           = C89GL_glGetUniformLocation(gl_dither_program, "uTime");
+
+    /* Window-resolution pre-present surface, sampled 1:1 by the dither pass,
+     * so GL_NEAREST keeps it a straight copy with no extra softening. */
+    C89GL_glGenFramebuffers(1, &gl_present_fbo);
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_present_fbo);
+    C89GL_glGenTextures(1, &gl_present_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_present_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_win_width, gl_win_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_present_tex, 0);
+    {
+        GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
+        C89GL_glDrawBuffers(1, bufs);
+    }
+    {
+        GLenum s = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (s != GL_FRAMEBUFFER_COMPLETE)
+            printf("Present FBO incomplete! status=0x%x\n", s);
+    }
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
+
+    printf("Dither/present pass initialised.\n");
+}
+
+/* ---- Supersampling resolve, used instead of FXAA + blit when scaling up ---- */
+static void init_ssaa_resources(void) {
+    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
+                                            "ssaa.frag",
+                                            "#version 430 core\n");
+    if (!gl_fullscreen_vs || !fs) {
+        if (fs) C89GL_glDeleteShader(fs);
+        fprintf(stderr, "ERROR: Failed to compile supersample resolve program\n");
+        return;
+    }
+    gl_ssaa_program = C89GL_glCreateProgram();
+    C89GL_glAttachShader(gl_ssaa_program, gl_fullscreen_vs);
+    C89GL_glAttachShader(gl_ssaa_program, fs);
+    C89GL_glLinkProgram(gl_ssaa_program);
+    C89GL_glDeleteShader(fs);
+
+    {
+        GLint status;
+        C89GL_glGetProgramiv(gl_ssaa_program, GL_LINK_STATUS, &status);
+        if (!status) {
+            char log[512];
+            C89GL_glGetProgramInfoLog(gl_ssaa_program, sizeof(log), NULL, log);
+            printf("SSAA program link error:\n%s\n", log);
+            C89GL_glDeleteProgram(gl_ssaa_program);
+            gl_ssaa_program = 0;
+            return;
+        }
+    }
+
+    ss_u_screen_texture = C89GL_glGetUniformLocation(gl_ssaa_program, "screenTexture");
+    ss_u_src_size       = C89GL_glGetUniformLocation(gl_ssaa_program, "uSrcSize");
+    ss_u_dst_size       = C89GL_glGetUniformLocation(gl_ssaa_program, "uDstSize");
+
+    printf("Supersampling resolve initialised.\n");
 }
 
 static void init_audio_resources(void) {
@@ -2358,7 +2498,8 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_col);
 
         C89GL_glActiveTexture(GL_TEXTURE4);
-        C89GL_glBindTexture(GL_TEXTURE_2D, gl_ao_blurred_tex);
+        C89GL_glBindTexture(GL_TEXTURE_2D,
+                            gl_vbao_enabled ? gl_ao_blurred_tex : gl_ao_white_tex);
 
         if (variant->u_alpha_pass != -1)
             C89GL_glUniform1i(variant->u_alpha_pass, (int)side);
@@ -2701,8 +2842,12 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glGenTextures(1, &gl_color_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    /* The post-process resolve reads this 1:1 at internal resolution, so
+     * filtering is a no-op there; GL_LINEAR keeps a non-integer internal
+     * resolution from snapping when the resolve viewport and this differ by
+     * a fraction of a texel. */
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_color_tex, 0);
@@ -2792,12 +2937,14 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    /* ---- FXAA intermediate FBO (window-resolution, for post-process -> AA chain) ---- */
+    /* ---- FXAA intermediate FBO (internal resolution, for the post-process -> AA chain) ----
+     * The post-process resolve runs at internal resolution and so does the AA
+     * pass, so this is the 1:1 input FXAA filters. */
     C89GL_glGenFramebuffers(1, &gl_post_fxaa_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
     C89GL_glGenTextures(1, &gl_post_fxaa_tex);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_win_width, gl_win_height, 0, GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -2811,6 +2958,29 @@ INLINE int render_init(i32 window_width, i32 window_height) {
         GLenum s = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (s != GL_FRAMEBUFFER_COMPLETE)
             printf("AA FBO incomplete! status=0x%x\n", s);
+    }
+
+    /* ---- AA output FBO (internal resolution, source for the resolve blit) ---- */
+    C89GL_glGenFramebuffers(1, &gl_aa_fbo);
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_aa_fbo);
+    C89GL_glGenTextures(1, &gl_aa_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_aa_tex);
+    /* Display-referred, so 8 bits per channel is enough; the dither in the
+     * AA pass cleans up the final quantization. */
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_aa_tex, 0);
+    {
+        GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
+        C89GL_glDrawBuffers(1, bufs);
+    }
+    {
+        GLenum s = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (s != GL_FRAMEBUFFER_COMPLETE)
+            printf("AA output FBO incomplete! status=0x%x\n", s);
     }
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
@@ -2847,6 +3017,8 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     init_vbao_blur_resources();
     init_post_process_resources();
     init_fxaa_resources();
+    init_ssaa_resources();
+    init_dither_resources();
 
     printf("render_init returning 1 (success)\n");
     return 1;
@@ -2872,6 +3044,7 @@ INLINE void render_shutdown(void) {
 
     if (gl_vbao_program) { C89GL_glDeleteProgram(gl_vbao_program); gl_vbao_program = 0; }
     if (gl_vbao_ubo)     { C89GL_glDeleteBuffers(1, &gl_vbao_ubo);  gl_vbao_ubo = 0; }
+    if (gl_ao_white_tex)  { C89GL_glDeleteTextures(1, &gl_ao_white_tex); gl_ao_white_tex = 0; }
     if (gl_ao_tex)       { C89GL_glDeleteTextures(1, &gl_ao_tex);   gl_ao_tex = 0; }
     if (gl_ao_fbo)       { C89GL_glDeleteFramebuffers(1, &gl_ao_fbo); gl_ao_fbo = 0; }
 
@@ -2889,6 +3062,12 @@ INLINE void render_shutdown(void) {
     if (gl_post_process_program) { C89GL_glDeleteProgram(gl_post_process_program); gl_post_process_program = 0; }
 
     if (gl_fxaa_program) { C89GL_glDeleteProgram(gl_fxaa_program); gl_fxaa_program = 0; }
+    if (gl_ssaa_program) { C89GL_glDeleteProgram(gl_ssaa_program); gl_ssaa_program = 0; }
+    if (gl_dither_program) { C89GL_glDeleteProgram(gl_dither_program); gl_dither_program = 0; }
+    if (gl_present_fbo) { C89GL_glDeleteFramebuffers(1, &gl_present_fbo); gl_present_fbo = 0; }
+    if (gl_present_tex) { C89GL_glDeleteTextures(1, &gl_present_tex); gl_present_tex = 0; }
+    if (gl_aa_fbo) { C89GL_glDeleteFramebuffers(1, &gl_aa_fbo); gl_aa_fbo = 0; }
+    if (gl_aa_tex) { C89GL_glDeleteTextures(1, &gl_aa_tex); gl_aa_tex = 0; }
     if (gl_post_fxaa_fbo) { C89GL_glDeleteFramebuffers(1, &gl_post_fxaa_fbo); gl_post_fxaa_fbo = 0; }
     if (gl_post_fxaa_tex) { C89GL_glDeleteTextures(1, &gl_post_fxaa_tex); gl_post_fxaa_tex = 0; }
 
@@ -3074,10 +3253,10 @@ static void resize_render_targets(void) {
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
 
-    /* Rescale AA intermediate texture to window resolution */
+    /* Rescale AA intermediate texture to internal resolution */
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_win_width, gl_win_height, 0, GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3087,6 +3266,24 @@ static void resize_render_targets(void) {
         GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
         C89GL_glDrawBuffers(1, bufs);
     }
+
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_aa_fbo);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_aa_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_aa_tex, 0);
+    {
+        GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
+        C89GL_glDrawBuffers(1, bufs);
+    }
+
+    /* The pre-present surface follows the window size, not the internal one */
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_present_fbo);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_present_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_win_width, gl_win_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_oit_accum_tex);
@@ -3154,7 +3351,9 @@ INLINE void render_set_render_resolution(i32 rw, i32 rh) {
 
 INLINE void render_set_resolution_scale(float scale) {
     if (scale < 0.01f) scale = 0.01f;
-    if (scale > 1.0f)  scale = 1.0f;
+    /* Above 1.0 is supersampling: the AA pass is skipped and the resolve
+     * downsamples the internal resolution to the window. */
+    if (scale > 2.0f)  scale = 2.0f;
     gl_resolution_scale = scale;
 
     gl_render_width  = (i32)(gl_win_width  * gl_resolution_scale);
@@ -3166,6 +3365,18 @@ INLINE void render_set_resolution_scale(float scale) {
 
 INLINE i32 render_get_render_width(void) { return gl_render_width; }
 INLINE i32 render_get_render_height(void) { return gl_render_height; }
+
+INLINE void render_set_anti_aliasing(int enabled) {
+    gl_anti_aliasing_enabled = enabled ? 1 : 0;
+}
+
+INLINE void render_set_vbao(int enabled) {
+    gl_vbao_enabled = enabled ? 1 : 0;
+}
+
+INLINE void render_set_dither(int enabled) {
+    gl_dither_enabled = enabled ? 1 : 0;
+}
 
 static void render_particle_system_draw_internal(void);
 static void render_particle_system_draw_wboit(alpha_pass_side side);
@@ -3513,8 +3724,10 @@ INLINE void render_finish(void) {
         C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         C89GL_glDepthMask(GL_FALSE);
 
-        dispatch_vbao();
-        dispatch_vbao_blur();
+        if (gl_vbao_enabled) {
+            dispatch_vbao();
+            dispatch_vbao_blur();
+        }
 
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
         C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
@@ -3787,7 +4000,7 @@ INLINE void render_finish(void) {
 
     if (gl_post_process_program) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
-        C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
+        C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
 
         C89GL_glDisable(GL_DEPTH_TEST);
         C89GL_glDisable(GL_BLEND);
@@ -3799,13 +4012,11 @@ INLINE void render_finish(void) {
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
 
         if (pp_u_screen_size != -1)
-            C89GL_glUniform2f(pp_u_screen_size, (float)gl_win_width, (float)gl_win_height);
+            C89GL_glUniform2f(pp_u_screen_size, (float)gl_render_width, (float)gl_render_height);
         if (pp_u_exposure != -1)
             C89GL_glUniform1f(pp_u_exposure, gl_post_exposure);
         if (pp_u_gamma != -1)
             C89GL_glUniform1f(pp_u_gamma, gl_post_gamma);
-        if (pp_u_time != -1)
-            C89GL_glUniform1f(pp_u_time, (float)gl_time);
 
         C89GL_glBindVertexArray(gl_oit_vao);
         C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -3819,16 +4030,127 @@ INLINE void render_finish(void) {
         C89GL_glEnable(GL_BLEND);
         C89GL_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
+        /* No post-process program: carry the raw scene color through at
+         * internal resolution. The AA pass still resolves to the window. */
         C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
         C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_post_fxaa_fbo);
         C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
-                                0, 0, gl_win_width, gl_win_height,
+                                0, 0, gl_render_width, gl_render_height,
                                 GL_COLOR_BUFFER_BIT, GL_NEAREST);
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
     }
 
-    /* ---- Anti-aliasing pass (FXAA) ---- */
-    if (gl_fxaa_program) {
+    /* ---- Anti-aliasing, into the pre-present surface ----
+     * Every branch ends up in gl_present_tex at window resolution; dither.frag
+     * presents from there. Three regimes:
+     *   AA off          the post-process output, upscaled
+     *   AA, scale <=1.0 FXAA at internal resolution (1:1 with the image it
+     *                    filters), then a GL_LINEAR blit, which is the
+     *                    upscale
+     *   AA, scale > 1.0 supersampling: FXAA is skipped, since the extra
+     *                    samples already resolved the edges and FXAA would
+     *                    only soften them. ssaa.frag downsamples properly. */
+    if (!gl_anti_aliasing_enabled) {
+        C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_post_fxaa_fbo);
+        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_present_fbo);
+        C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
+                                0, 0, gl_win_width, gl_win_height,
+                                GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    } else if (gl_resolution_scale > 1.0f) {
+        if (gl_ssaa_program) {
+            C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_present_fbo);
+            C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
+
+            C89GL_glDisable(GL_DEPTH_TEST);
+            C89GL_glDisable(GL_BLEND);
+            C89GL_glDepthMask(GL_FALSE);
+
+            C89GL_glUseProgram(gl_ssaa_program);
+
+            C89GL_glActiveTexture(GL_TEXTURE0);
+            C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
+
+            if (ss_u_screen_texture != -1)
+                C89GL_glUniform1i(ss_u_screen_texture, 0);
+            if (ss_u_src_size != -1)
+                C89GL_glUniform2f(ss_u_src_size, (float)gl_render_width, (float)gl_render_height);
+            if (ss_u_dst_size != -1)
+                C89GL_glUniform2f(ss_u_dst_size, (float)gl_win_width, (float)gl_win_height);
+
+            C89GL_glBindVertexArray(gl_oit_vao);
+            C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+            C89GL_glBindVertexArray(0);
+
+            C89GL_glUseProgram(0);
+            C89GL_glActiveTexture(GL_TEXTURE0);
+        } else {
+            /* No resolve program: fall back to a plain blit. */
+            C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_post_fxaa_fbo);
+            C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_present_fbo);
+            C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
+                                    0, 0, gl_win_width, gl_win_height,
+                                    GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        }
+    } else {
+        /* ---- Anti-aliasing pass (FXAA) ----
+         * Runs at internal resolution, 1:1 with the image it filters: every
+         * tap offset in fxaa.frag is a texel step, so the texel grid and the
+         * output pixel grid have to match. */
+        {
+            GLuint aa_src_fbo = gl_post_fxaa_fbo;
+            /* At 1:1 there is no upscale, so the resolve blit would be a
+             * pixel-for-pixel copy. Skip it and let FXAA write straight into
+             * the pre-present surface; the viewport is the only thing that
+             * differs. */
+            i32 aa_direct = (gl_render_width  == gl_win_width &&
+                             gl_render_height == gl_win_height);
+
+            if (gl_fxaa_program) {
+                C89GL_glBindFramebuffer(GL_FRAMEBUFFER,
+                                        aa_direct ? gl_present_fbo : gl_aa_fbo);
+                C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
+
+                C89GL_glDisable(GL_DEPTH_TEST);
+                C89GL_glDisable(GL_BLEND);
+                C89GL_glDepthMask(GL_FALSE);
+
+                C89GL_glUseProgram(gl_fxaa_program);
+
+                C89GL_glActiveTexture(GL_TEXTURE0);
+                C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
+
+                if (aa_u_screen_texture != -1)
+                    C89GL_glUniform1i(aa_u_screen_texture, 0);
+                if (aa_u_resolution != -1)
+                    C89GL_glUniform2f(aa_u_resolution, (float)gl_render_width, (float)gl_render_height);
+
+                C89GL_glBindVertexArray(gl_oit_vao);
+                C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+                C89GL_glBindVertexArray(0);
+
+                C89GL_glUseProgram(0);
+                C89GL_glActiveTexture(GL_TEXTURE0);
+
+                aa_src_fbo = aa_direct ? gl_present_fbo : gl_aa_fbo;
+            }
+
+            /* ---- Resolve internal resolution to the window ----
+             * GL_LINEAR gives the bilinear upscale; at a resolution scale of
+             * 1.0 this is 1:1. */
+            if (!aa_direct) {
+                C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, aa_src_fbo);
+                C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_present_fbo);
+                C89GL_glBlitFramebuffer(0, 0, gl_render_width, gl_render_height,
+                                        0, 0, gl_win_width, gl_win_height,
+                                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            }
+        }
+    }
+
+    /* ---- Dither / present ----
+     * Last pass before the backbuffer, and the reason it is separate: dither
+     * only works applied after every filter. */
+    if (gl_dither_program && gl_dither_enabled) {
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
         C89GL_glViewport(0, 0, gl_win_width, gl_win_height);
 
@@ -3836,15 +4158,15 @@ INLINE void render_finish(void) {
         C89GL_glDisable(GL_BLEND);
         C89GL_glDepthMask(GL_FALSE);
 
-        C89GL_glUseProgram(gl_fxaa_program);
+        C89GL_glUseProgram(gl_dither_program);
 
         C89GL_glActiveTexture(GL_TEXTURE0);
-        C89GL_glBindTexture(GL_TEXTURE_2D, gl_post_fxaa_tex);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_present_tex);
 
-        if (aa_u_screen_texture != -1)
-            C89GL_glUniform1i(aa_u_screen_texture, 0);
-        if (aa_u_resolution != -1)
-            C89GL_glUniform2f(aa_u_resolution, (float)gl_win_width, (float)gl_win_height);
+        if (dt_u_screen_texture != -1)
+            C89GL_glUniform1i(dt_u_screen_texture, 0);
+        if (dt_u_time != -1)
+            C89GL_glUniform1f(dt_u_time, (float)gl_time);
 
         C89GL_glBindVertexArray(gl_oit_vao);
         C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -3852,6 +4174,12 @@ INLINE void render_finish(void) {
 
         C89GL_glUseProgram(0);
         C89GL_glActiveTexture(GL_TEXTURE0);
+    } else {
+        C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_present_fbo);
+        C89GL_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_default_fbo);
+        C89GL_glBlitFramebuffer(0, 0, gl_win_width, gl_win_height,
+                                0, 0, gl_win_width, gl_win_height,
+                                GL_COLOR_BUFFER_BIT, GL_NEAREST);
     }
 
     C89GL_swap_buffers(&gl_ctx);

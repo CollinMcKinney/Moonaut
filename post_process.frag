@@ -18,7 +18,6 @@
 //      vibrance
 //   6. Colorblind correction
 //   7. Clamp
-//   8. Dither
 //
 // =============================================================================
 
@@ -62,7 +61,6 @@ layout(binding = 0) uniform sampler2D uColorHDR;
 uniform vec2  uScreenSize;
 uniform float uExposure;
 uniform float uGamma;
-uniform float uTime;
 
 out vec4 FragColor;
 
@@ -229,25 +227,6 @@ vec3 apply_vibrance(vec3 c) {
 }
 
 // =============================================================================
-// Dither hash
-// =============================================================================
-uint hash(uint x) {
-    x = (x ^ 61u) ^ (x >> 16u);
-    x = x + (x << 3u);
-    x = x ^ (x >> 4u);
-    x = x * 0x27d4eb2du;
-    x = x ^ (x >> 15u);
-    return x;
-}
-
-float hash_float(vec3 p) {
-    uint h = hash(floatBitsToUint(p.x));
-    h = hash(h ^ floatBitsToUint(p.y));
-    h = hash(h ^ floatBitsToUint(p.z));
-    return float(h) / 4294967296.0;
-}
-
-// =============================================================================
 // Entry point
 // =============================================================================
 void main() {
@@ -277,12 +256,10 @@ void main() {
     // see, so its channel shifts are not amplified by the sliders above.
     colorLDR = apply_colorblind_mode(colorLDR);
 
-    // Bring back into range before dithering.
+    // Bring back into range. Dithering is not done here: this pass runs at
+    // internal resolution and is followed by the AA pass, so the noise would
+    // be filtered away before it reached the backbuffer. dither.frag owns it.
     colorLDR = clamp(colorLDR, 0.0, 1.0);
-
-    // Dither must be last.
-    float dither = (hash_float(vec3(gl_FragCoord.xy, uTime)) - 0.5) / 255.0;
-    colorLDR += dither;
 
     FragColor = vec4(colorLDR, 1.0);
 }
