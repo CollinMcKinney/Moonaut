@@ -1,68 +1,166 @@
 #version 430 core
 
-layout(local_size_x = 16, local_size_y = 16) in;
+/* ========================================================================
+ * cluster.comp - Forward+ light list construction
+ * ========================================================================
+ *
+ * One workgroup per screen tile. Each tile is subdivided into depth slices
+ * that are distributed logarithmically between the near and far planes, and
+ * a light is written into the slices its bounding sphere actually overlaps.
+ * The fragment shader then reads a short per-pixel list instead of iterating
+ * every light in the scene.
+ *
+ * Culling is by bounding sphere against the tile's view-space frustum
+ * bounds, not against the depth buffer. The opaque depth prepass has already
+ * run by the time this is dispatched, so the depth texture is available, but
+ * it is deliberately unused here: it only contains opaque geometry, so
+ * slicing a tile against it would cull lights that transparent and
+ * refractive surfaces behind that geometry still need. Frustum culling is
+ * slightly looser but never wrong, and a light that misses the depth range
+ * of its own tile costs only a wasted loop iteration in the shader.
+ *
+ * Both this shader and material.frag must agree exactly on how a window-space
+ * depth maps to a slice index. The two implementations are:
+ *
+ *   linear_depth(d) = 2*near*far / (far + near - (2*d - 1)*(far - near))
+ *   slice(z)        = floor(log2(z/near) / log2(far/near) * SLICES)
+ *
+ * with d the raw gl_FragCoord.z. Keep them in sync.
+ * ===================================================================== */
 
-uniform sampler2D uDepthTex;
-uniform int uNumLights;
-uniform int uTileSize;
-uniform int uNumTilesX;
-uniform int uNumTilesY;
-uniform int uDepthSlices;
+/* One workgroup covers CLUSTER_WORKGROUP_SIZE x CLUSTER_WORKGROUP_SIZE tiles.
+ * The host derives its dispatch group counts from the same value; it is
+ * injected as a define by dispatch_cluster_build() so the two cannot drift. */
+layout(local_size_x = CLUSTER_WORKGROUP_SIZE,
+        local_size_y = CLUSTER_WORKGROUP_SIZE,
+        local_size_z = 1) in;
+
+uniform sampler2D uDepthTex;   /* bound but intentionally not sampled */
+uniform int   uNumLights;
+uniform int   uTileSize;
+uniform int   uNumTilesX;
+uniform int   uNumTilesY;
+uniform int   uDepthSlices;
 uniform float uNear;
 uniform float uFar;
+uniform mat4  uView;          /* world -> view */
+uniform mat4  uInvViewProj;   /* clip -> world */
 
 struct Light {
-    vec4 pos;
-    vec4 dir;
-    vec4 color;
+    vec4 pos;       /* xyz = world position, w = type (0 dir, 1 point, 2 spot) */
+    vec4 dir;       /* xyz = direction / spot axis, w unused */
+    vec4 color;     /* rgb = colour * intensity, a unused */
     float range;
     float inner_cos;
     float outer_cos;
     float falloff;
 };
 
-layout(std430, binding = 0) buffer LightBuffer { Light lights[]; };
-layout(std430, binding = 1) buffer ClusterBuffer { uint clusterLights[]; };
+layout(std430, binding = 0) buffer LightBuffer       { Light lights[]; };
+layout(std430, binding = 1) buffer ClusterBuffer     { uint clusterLights[]; };
 layout(std430, binding = 2) buffer ClusterOffsetBuffer { uint clusterOffsets[]; };
 
 #define MAX_LIGHTS_PER_CLUSTER 64
+
+/* Map a positive view-space distance to a slice index. Shared with
+ * cluster_lookup() in material.frag. */
+int slice_from_view_depth(float z) {
+    float t = log2(max(z, uNear) / uNear) / log2(uFar / uNear);
+    return clamp(int(floor(t * float(uDepthSlices))), 0, uDepthSlices - 1);
+}
+
+/* Does the sphere overlap the axis-aligned box? */
+bool sphere_hits_aabb(vec3 centre, float radius, vec3 boxMin, vec3 boxMax) {
+    vec3 d = max(max(boxMin - centre, vec3(0.0)), centre - boxMax);
+    return dot(d, d) <= radius * radius;
+}
 
 void main() {
     ivec2 tile = ivec2(gl_GlobalInvocationID.xy);
     if (tile.x >= uNumTilesX || tile.y >= uNumTilesY) return;
 
-    // Get tile depth bounds
-    float minDepth = 1.0;
-    float maxDepth = 0.0;
-    for (int y = 0; y < uTileSize; y++) {
-        for (int x = 0; x < uTileSize; x++) {
-            ivec2 coord = tile * uTileSize + ivec2(x, y);
-            float d = texelFetch(uDepthTex, coord, 0).r;
-            minDepth = min(minDepth, d);
-            maxDepth = max(maxDepth, d);
-        }
+    /* ---- Tile extents in normalised device coordinates ----
+     * A tile covers a rectangular block of pixels; its frustum is the wedge
+     * between the near and far planes clipped to that block. Because a
+     * perspective frustum's x and y extents grow linearly with depth, the
+     * eight corners of that wedge bound a box, and a sphere overlapping the
+     * box is a conservative (never under-inclusive) test for the wedge. */
+    vec2 tileMinPx = vec2(tile) * float(uTileSize);
+    vec2 tileMaxPx = tileMinPx + float(uTileSize) - 1.0;
+    vec2 ndcMin = (tileMinPx / vec2(float(uNumTilesX * uTileSize),
+                                    float(uNumTilesY * uTileSize))) * 2.0 - 1.0;
+    vec2 ndcMax = (tileMaxPx / vec2(float(uNumTilesX * uTileSize),
+                                    float(uNumTilesY * uTileSize))) * 2.0 - 1.0;
+
+    vec3 boxMin = vec3( 1e30);
+    vec3 boxMax = vec3(-1e30);
+    for (int i = 0; i < 4; i++) {
+        vec2 corner = vec2((i & 1) == 0 ? ndcMin.x : ndcMax.x,
+                           (i & 2) == 0 ? ndcMin.y : ndcMax.y);
+        /* z = -1 is the near plane, z = +1 the far plane. */
+        vec4 nearH = uInvViewProj * vec4(corner, -1.0, 1.0);
+        vec4 farH  = uInvViewProj * vec4(corner,  1.0, 1.0);
+        vec3 nearW = nearH.xyz / nearH.w;
+        vec3 farW  = farH.xyz  / farH.w;
+
+        vec3 nearV = (uView * vec4(nearW, 1.0)).xyz;
+        vec3 farV  = (uView * vec4(farW,  1.0)).xyz;
+
+        boxMin = min(boxMin, min(nearV, farV));
+        boxMax = max(boxMax, max(nearV, farV));
     }
 
-    // Convert to view‑space (linear) depth
-    float near = uNear;
-    float far = uFar;
-    float minZ = (2.0 * near * far) / (far + near - (2.0 * minDepth - 1.0) * (far - near));
-    float maxZ = (2.0 * near * far) / (far + near - (2.0 * maxDepth - 1.0) * (far - near));
-    minZ = clamp(minZ, near, far);
-    maxZ = clamp(maxZ, near, far);
+    uint clusterBase = uint(tile.y * uNumTilesX + tile.x);
+    uint slot = clusterBase * uint(uDepthSlices);
 
-    uint clusterBase = tile.y * uNumTilesX + tile.x;
-    uint count = 0;
-    for (uint i = 0; i < uNumLights; i++) {
-        // Write the same light to every depth slice for this tile
-        for (int s = 0; s < uDepthSlices; s++) {
-            uint idx = (clusterBase * uDepthSlices + s) * MAX_LIGHTS_PER_CLUSTER + count;
-            clusterLights[idx] = i;
+    /* The offset buffer is persistent storage, so it holds last frame's
+     * counts until cleared. Every slice is reset before anything is added. */
+    for (int s = 0; s < uDepthSlices; s++)
+        clusterOffsets[slot + uint(s)] = 0u;
+
+    for (uint i = 0; i < uint(uNumLights); i++) {
+        Light l = lights[i];
+
+        /* View space looks down -Z, so the forward distance of a point at
+         * view z is -z. A sphere spans [-(cz + r), -(cz - r)]. */
+        int s0, s1;
+        if (int(l.pos.w) == 0) {
+            /* A directional light has no position and no falloff, so it
+             * reaches every pixel: give it every slice in the tile. */
+            s0 = 0;
+            s1 = uDepthSlices - 1;
+        } else {
+            float radius = l.range;
+            if (radius <= 0.0) continue;
+
+            vec3 centreV = (uView * vec4(l.pos.xyz, 1.0)).xyz;
+            if (!sphere_hits_aabb(centreV, radius, boxMin, boxMax)) continue;
+
+            s0 = slice_from_view_depth(-(centreV.z + radius));
+            s1 = slice_from_view_depth(-(centreV.z - radius));
+            if (s1 < s0) { int t = s0; s0 = s1; s1 = t; }
+
+            /* Widen by one slice at each end.
+             *
+             * The fragment shader derives its slice by linearising
+             * gl_FragCoord.z, while this shader derives the light's range from
+             * its view-space position. Those are different expressions over
+             * the same value, so at a slice boundary they can round to
+             * different indices: a fragment sitting just inside a slice the
+             * light nominally covers can land in the neighbouring slice
+             * instead, where the light is absent, and the surface goes black
+             * for a frame. Widening absorbs that disagreement. A light may
+             * then appear in one slice it does not truly touch, which costs a
+             * loop iteration; the alternative is a visible drop. */
+            s0 = max(s0 - 1, 0);
+            s1 = min(s1 + 1, uDepthSlices - 1);
         }
-        count++;
-        if (count >= MAX_LIGHTS_PER_CLUSTER) break;
-    }
-    for (int s = 0; s < uDepthSlices; s++) {
-        clusterOffsets[clusterBase * uDepthSlices + s] = count;
+
+        for (int s = s0; s <= s1; s++) {
+            uint count = clusterOffsets[slot + uint(s)];
+            if (count >= MAX_LIGHTS_PER_CLUSTER) continue;  /* full, drop */
+            clusterLights[(slot + uint(s)) * MAX_LIGHTS_PER_CLUSTER + count] = i;
+            clusterOffsets[slot + uint(s)] = count + 1;
+        }
     }
 }

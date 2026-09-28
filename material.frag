@@ -18,9 +18,9 @@ const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
 const float EON_CONST1 = 0.5 - 2.0 / (3.0 * PI);
 const float EON_CONST2 = 2.0 / 3.0 - 28.0 / (15.0 * PI);
 
-const float CLUSTER_NEAR_Z = 0.05;
-const float CLUSTER_FAR_Z  = 1000.0;
-const float CLUSTER_INV_LOG_RANGE = 1.0 / log2(CLUSTER_FAR_Z / CLUSTER_NEAR_Z);
+/* Cluster depth bounds come from the host (gl_near / gl_far) rather than
+ * being hardcoded, so the projection used for cluster binning and the one
+ * used for depth linearization can never drift apart. */
 
 in vec3 vWorldPos;
 in vec3 vNormal;
@@ -116,6 +116,8 @@ struct Light {
 
 uniform int uNumTilesX;
 uniform int uNumTilesY;
+uniform float uClusterNear;
+uniform float uClusterFar;
 
 layout(std430, binding = 0) buffer LightBuffer         { Light lights[]; };
 layout(std430, binding = 1) buffer ClusterBuffer       { uint clusterLights[]; };
@@ -722,12 +724,29 @@ vec3 back_glow_lobe(vec3 N, vec3 L, float NdotV) {
 void cluster_lookup(out uint count, out uint base) {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     ivec2 tile = pixel / CLUSTER_TILE_SIZE;
-    float depth = max(gl_FragCoord.z, 1e-6);
-    float logDepth = log2(depth) * CLUSTER_INV_LOG_RANGE;
-    int slice = clamp(int(floor(logDepth * CLUSTER_DEPTH_SLICES)), 0, CLUSTER_DEPTH_SLICES - 1);
-    uint ci = uint(tile.y * uNumTilesX + tile.x);
+    ivec2 numTiles = ivec2(uNumTilesX, uNumTilesY);
+
+    /* Keep the tile inside the grid. With a 1:1 internal resolution the
+     * viewport can be narrower than tile*numTiles, leaving a partial tile at
+     * the right/bottom edge whose pixels would otherwise index past the end
+     * of the cluster buffers. */
+    tile = clamp(tile, ivec2(0), numTiles - ivec2(1));
+
+    /* gl_FragCoord.z is window-space depth, which is non-linear in view
+     * distance. Both the cluster build and this lookup have to invert that
+     * curve before binning, or the two disagree about which slice a fragment
+     * is in. Must stay in sync with slice_from_view_depth() in cluster.comp. */
+    float d = gl_FragCoord.z;
+    float n = uClusterNear, f = uClusterFar;
+    float viewZ = (2.0 * n * f) / (f + n - (2.0 * d - 1.0) * (f - n));
+    viewZ = max(viewZ, n);
+
+    float t = log2(viewZ / n) / log2(f / n);
+    int slice = clamp(int(floor(t * float(CLUSTER_DEPTH_SLICES))), 0, CLUSTER_DEPTH_SLICES - 1);
+
+    uint ci = uint(tile.y * numTiles.x + tile.x);
     uint oi = ci * CLUSTER_DEPTH_SLICES + uint(slice);
-    count = clusterOffsets[oi];
+    count = min(clusterOffsets[oi], uint(CLUSTER_MAX_LIGHTS_PER));
     base = oi * CLUSTER_MAX_LIGHTS_PER;
 }
 
@@ -1209,9 +1228,30 @@ layout(location = 1) out vec4 outNormal;
 #endif
 
 void main() {
-#ifdef ALPHA_PASS_FRONT
-    float tz = texelFetch(uTransmissiveDepthTex, ivec2(gl_FragCoord.xy), 0).r;
-    if (tz < 1.0 && gl_FragCoord.z >= tz) discard;
+    /* Glass partition for the two WBOIT passes.
+     *
+     * The two passes composite at different points in the frame: BEHIND before
+     * gl_refraction_src is copied, so the transmissive pass refracts whatever
+     * is behind the glass; FRONT after the transmissive pass, so transparent
+     * geometry in front of the glass blends over it. The split is per pixel
+     * against the frontmost transmissive depth, and it is exclusive: a fragment
+     * lands in exactly one pass, so nothing is composited twice.
+     *
+     * uTransmissiveDepthTex holds 1.0 where no transmissive surface exists.
+     * Such pixels have nothing to be behind, so they go to FRONT.
+     *
+     * Guarded by WBOIT_PASS on purpose. The opaque and transmissive colour
+     * passes also compile with an alpha_pass define, and they run before
+     * gl_transmissive_depth_col is written this frame, so testing them here
+     * would discard geometry against the previous frame's glass depth. */
+#if defined(WBOIT_PASS) && defined(ALPHA_PASS_BEHIND)
+    float tz_behind = texelFetch(uTransmissiveDepthTex, ivec2(gl_FragCoord.xy), 0).r;
+    if (tz_behind >= 1.0) discard;               // no transmissive surface here
+    if (gl_FragCoord.z < tz_behind) discard;     // in front of it, not behind
+#endif
+#if defined(WBOIT_PASS) && defined(ALPHA_PASS_FRONT)
+    float tz_front = texelFetch(uTransmissiveDepthTex, ivec2(gl_FragCoord.xy), 0).r;
+    if (tz_front < 1.0 && gl_FragCoord.z >= tz_front) discard;  // already in BEHIND
 #endif
     vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
     float alpha = 1.0;

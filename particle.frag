@@ -33,7 +33,7 @@ in vec4  vColor;
 in vec2  vCorner;
 in float vEyeDepth;
 
-#ifdef ALPHA_PASS_BEHIND
+#if defined(ALPHA_PASS_BEHIND) || defined(ALPHA_PASS_FRONT)
 uniform sampler2D uTransmissiveDepthTex;
 #endif
 
@@ -81,12 +81,19 @@ void main() {
 #endif
 
     // -------------------------------------------------------------------------
-    // ALPHA_PASS_FRONT: no explicit branch.
+    // ALPHA_PASS_FRONT: the complement of the test above.
     //
-    // Depth testing against the combined opaque + transmissive depth buffer
-    // culls particles that ALPHA_PASS_BEHIND already drew. No shader-side
-    // test is needed.
+    // The FRONT pass runs after the transmissive colour pass, which does write
+    // depth, but WBOIT itself does not, so the depth buffer cannot be relied on
+    // to cull what BEHIND already accumulated. Testing explicitly keeps the two
+    // passes an exclusive partition and stops a particle being composited
+    // twice, which would square its revealage contribution.
     // -------------------------------------------------------------------------
+#ifdef ALPHA_PASS_FRONT
+    float transmissive_z_front = texelFetch(uTransmissiveDepthTex,
+                                            ivec2(gl_FragCoord.xy), 0).r;
+    if (transmissive_z_front < 1.0 && gl_FragCoord.z >= transmissive_z_front) discard;
+#endif
 
     float alpha = vColor.a * (1.0 - smoothstep(0.0, 1.0, d));
 

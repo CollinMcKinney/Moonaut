@@ -810,6 +810,7 @@ void C89GL_destroy_context(C89GL_Context* ctx);
 void C89GL_make_current(C89GL_Context* ctx);
 void C89GL_swap_buffers(C89GL_Context* ctx);
 int  C89GL_load_functions(void);
+int C89GL_set_swap_interval(C89GL_Context* ctx, int interval);
 
 #ifdef __cplusplus
 }
@@ -1333,6 +1334,23 @@ void C89GL_swap_buffers(C89GL_Context* ctx) {
         SwapBuffers((HDC)ctx->hdc);
 }
 
+typedef BOOL (WINAPI *C89GL_PFN_wglSwapIntervalEXT)(int);
+
+int C89GL_set_swap_interval(C89GL_Context* ctx, int interval) {
+    if (!ctx || !ctx->initialized) return 0;
+#if defined(C89FW_WINDOWS)
+    {
+        /* EXT_swap_control is a per-HDC setting driven through the current
+         * context, so make sure ours is current before asking. */
+        C89GL_PFN_wglSwapIntervalEXT fn =
+            (C89GL_PFN_wglSwapIntervalEXT)wglGetProcAddress("wglSwapIntervalEXT");
+        if (fn)
+            return fn(interval) ? 1 : 0;
+    }
+#endif
+    return 0;
+}
+
 #endif /* C89FW_WINDOWS */
 
 /* ========================================================================
@@ -1412,6 +1430,24 @@ void C89GL_swap_buffers(C89GL_Context* ctx) {
         glXSwapBuffers((Display*)ctx->display, (GLXDrawable)ctx->window);
 }
 
+int C89GL_set_swap_interval(C89GL_Context* ctx, int interval) {
+    if (!ctx || !ctx->initialized) return 0;
+#if defined(C89FW_LINUX)
+    {
+        /* EXT_swap_control via a direct client-side GLX call; the context must
+         * be current or the driver rejects it. */
+        typedef void (*C89GL_PFN_glXSwapIntervalEXT)(Display*, GLXDrawable, int);
+        C89GL_PFN_glXSwapIntervalEXT fn = NULL;
+        void* proc = glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalEXT");
+        if (proc) *(void**)(&fn) = proc;
+        if (!fn) return 0;
+        fn((Display*)ctx->display, (GLXDrawable)ctx->window, interval);
+        return 1;
+    }
+#endif
+    return 0;
+}
+
 #endif /* C89FW_LINUX */
 
 /* ========================================================================
@@ -1470,6 +1506,19 @@ void C89GL_make_current(C89GL_Context* ctx) {
 void C89GL_swap_buffers(C89GL_Context* ctx) {
     if (ctx && ctx->initialized)
         [(NSOpenGLContext*)ctx->ns_context flushBuffer];
+}
+
+int C89GL_set_swap_interval(C89GL_Context* ctx, int interval) {
+    if (!ctx || !ctx->initialized) return 0;
+#if defined(C89FW_MACOS)
+    {
+        NSOpenGLParameter param = interval > 0 ? NSOpenGLCPSwapInterval
+                                              : NSOpenGLCPSwapIntervalNonConstrained;
+        [(NSOpenGLContext*)ctx->ns_context setValues:&param forParameter:param];
+        return 1;
+    }
+#endif
+    return 0;
 }
 
 #endif /* C89FW_MACOS */
