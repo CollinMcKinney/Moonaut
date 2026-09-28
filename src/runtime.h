@@ -6,17 +6,7 @@
 #include "common.h"
 #include "physics.h"
 
-#define USE_GL
-#if defined(USE_DX11)
-#define RASTERIZER_DX11_IMPLEMENTATION
-#include "rasterizer_DX11.h"
-#elif defined(USE_GL)
-#define RASTERIZER_GL_IMPLEMENTATION
-#include "rasterizer_GL.h"
-#else
-#define RASTERIZER_SW_IMPLEMENTATION
-#include "rasterizer_SW.h"
-#endif
+#include "rasterizer.h"
 
 #include "scripts.h"
 #include "clock.h"
@@ -49,7 +39,7 @@ extern "C" {
 #endif
 
 #define SCENARIO_MAX_ENTITIES PHYSICS_MAX_BODIES
-#define SCENARIO_WINDOW_SCALE 4
+#define SCENARIO_WINDOW_SCALE 5
 #define SCENARIO_DEFAULT_WIDTH  (256 * SCENARIO_WINDOW_SCALE)
 #define SCENARIO_DEFAULT_HEIGHT (144 * SCENARIO_WINDOW_SCALE)
 
@@ -247,7 +237,7 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
     }
 
     if (!mat) {
-        static material_definition fallback = DEFAULT_MATERIAL_WIREFRAME;
+        static material_definition fallback = DEFAULT_MATERIAL_PLASTIC;
         mat = &fallback;
     }
 
@@ -265,9 +255,9 @@ static void scenario_draw_primitive(model_primitive *prim, model_definition *mod
             g_printed_materials[g_print_material_count++] = resolved_mat_handle;
             printf("Primitive material: handle=%d color=(%f,%f,%f) render_method=0x%x ambient_factor=%f\n",
                    resolved_mat_handle,
-                   mat->color.color.r, mat->color.color.g, mat->color.color.b,
+                   mat->albedo.color.r, mat->albedo.color.g, mat->albedo.color.b,
                    mat->render_method,
-                   mat->ambient_light_factor);
+                   mat->ambient);
         }
     }
 
@@ -1325,12 +1315,6 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "vec2",                 lua_builtin_vec2);
     lua_register_builtin(state, "vec3",                 lua_builtin_vec3);
     lua_register_builtin(state, "vec4",                 lua_builtin_vec4);
-
-    /* Constants */
-    lua_set_global_integer(state, "MODE_WIREFRAME",    MODE_WIREFRAME);
-    lua_set_global_integer(state, "MODE_FLAT",         MODE_FLAT);
-    lua_set_global_integer(state, "MODE_GOURAUD",      MODE_GOURAUD);
-    lua_set_global_integer(state, "MODE_PHONG",        MODE_PHONG);
 
     lua_set_global_integer(state, "TAG_material",       TAG_material);
     lua_set_global_integer(state, "TAG_model",          TAG_model);

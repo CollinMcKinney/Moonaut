@@ -196,6 +196,7 @@ void render_particle_system_set_emitter(const struct particle_emitter_definition
 void render_particle_system_update(float dt);
 void render_particle_system_set_camera(const mat4 *view_proj, vec3 cam_right, vec3 cam_up);
 void render_particle_system_emit_burst(int count);
+void render_precompile_material(u32 method);
 
 void render_clear_lights(void);
 void render_set_light_at_index(int index, const struct light_definition *def);
@@ -1096,6 +1097,38 @@ static shader_variant_t* get_program_for_method(render_method key,
     printf("[SHADER CACHE] Compiled new variant #%d for key 0x%x (program %u)\n",
            gl_shader_compilations, (unsigned)cache_key, prog);
     return entry;
+}
+
+void render_precompile_material(u32 method) {
+    render_method key = (render_method)method;
+
+    /* gl_vao is the existing "render_init has run" sentinel. A material
+     * registered before the context exists still compiles on first use; warming
+     * the cache here would either touch a dead context or leave programs behind
+     * that render_shutdown never sees. */
+    if (!gl_vao) return;
+
+    /* Same three-way classification the draw-call builder applies, because the
+     * set of passes a material is ever submitted to follows from it. */
+    int is_transparent = (key & EFFECT_ALPHA) != 0;
+    int is_refractive  = !is_transparent && (key & EFFECT_TRANSMISSION) != 0;
+
+    if (is_transparent) {
+        /* Both WBOIT passes plus the transparent depth prepass. The prepass is a
+         * depth variant, not a third pass of the same program. */
+        get_program_for_method(key, 0, ALPHA_PASS_BEHIND);
+        get_program_for_method(key, 0, ALPHA_PASS_FRONT);
+        get_program_for_method(key, 1, ALPHA_PASS_FRONT);
+    } else if (is_refractive) {
+        /* The transmissive colour pass. Refractive geometry is skipped by the
+         * opaque prepass and colour passes, and its depth pass is the single
+         * shared gl_transmissive_depth_program rather than a cached variant. */
+        get_program_for_method(key, 0, ALPHA_PASS_FRONT);
+    } else {
+        /* Opaque depth prepass and opaque colour. */
+        get_program_for_method(key, 1, ALPHA_PASS_FRONT);
+        get_program_for_method(key, 0, ALPHA_PASS_FRONT);
+    }
 }
 
 static void update_material_ubo(const material_definition *mat) {

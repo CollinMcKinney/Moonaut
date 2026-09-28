@@ -2,6 +2,7 @@
 #define DEFAULTS_H
 
 #include "reflection.h"
+#include "rasterizer.h"
 #include "tags/globals.h"
 #include "tags/scenario.h"
 #include "tags/lua_script.h"
@@ -100,6 +101,11 @@ static i32 tag_register_default(const char *name, tag group_tag, const void *dat
     memcpy(inst->active_data, inst->backup_data, group->total_size);
 
     tag_postprocess_tag(handle);
+
+    if (group_tag == TAG_material) {
+        render_precompile_material(((const material_definition *)data)->render_method);
+    }
+
     return handle;
 }
 
