@@ -16,7 +16,6 @@
  *   vbao.frag, vbao_blur.frag – ambient occlusion
  *   fullscreen.vert, particle.vert, particle.frag – particles
  *   oit_composite.frag – weighted-blended OIT composite
- *   transmissive_depth.vert/.frag – transmissive depth pass
  *   audio_*.comp     – audio compute shaders
  *
  * Geometry submission (per-primitive GPU cache):
@@ -190,6 +189,13 @@ static INLINE u8 color_to_u8(real x);
 void render_set_exposure(real exposure);
 void render_set_gamma(real gamma);
 
+/* Bloom. intensity is the contribution of the glow relative to the tonemapped
+ * scene, threshold the scene-referred luminance that starts to bloom (after
+ * exposure), and knee the width of the soft ramp around it — larger knee fades
+ * highlights in over a wider band instead of switching them on at a hard edge. */
+void render_set_bloom(int enabled, real intensity, real threshold, real knee);
+void render_set_bloom_radius(real radius);
+
 void render_particle_system_init(int max_particles);
 void render_particle_system_shutdown(void);
 void render_particle_system_set_emitter(const struct particle_emitter_definition *def);
@@ -260,9 +266,6 @@ int  render_poll_audio_portal(vec3 *portal_positions, float *portal_distances, i
  * skipping tone map and the display-referred chain. Diagnostic for tracking
  * down where a black region originates; 0 = normal output. */
 #define POST_PROCESS_DEBUG_SOURCE 0
-
-/* Per-frame input logging for the first 400 frames. Compile-time opt-in. */
-#define GL_FRAME_DIAG 0
 
 /* Per-pass GPU timing with GL_TIME_ELAPSED, reported as rolling averages.
  * Compile-time opt-in. Reading results is non-blocking: each frame's queries
@@ -344,7 +347,7 @@ static i32 gl_win_width  = 0;
 static i32 gl_win_height = 0;
 static i32 gl_render_width  = 0;
 static i32 gl_render_height = 0;
-static real gl_resolution_scale = 1.0f;
+static real gl_resolution_scale = 0.8f;
 static i32  gl_anti_aliasing_enabled = 1;
 static i32  gl_vbao_enabled = 1;
 static i32  gl_dither_enabled = 1;
@@ -451,7 +454,6 @@ typedef struct {
     GLint u_cluster_near;
     GLint u_cluster_far;
     GLint u_refraction_src;
-    GLint u_transmissive_depth_tex;
     GLint u_ao_tex;
     GLint u_alpha_pass;
     GLint u_refraction_scale;
@@ -520,6 +522,10 @@ static GLuint gl_fbo = 0;
 static GLuint gl_color_tex = 0;
 static GLuint gl_depth_tex = 0;
 static GLuint gl_normal_tex = 0;
+/* Emissive-only colour, written by material.frag as COLOR_ATTACHMENT2 and used
+ * as the bloom source instead of gl_color_tex. See the bloom section for why
+ * the chain cannot simply threshold the main colour buffer. */
+static GLuint gl_emissive_tex = 0;
 static GLint gl_default_fbo = 0;
 
 static GLuint gl_fbo_low = 0;
@@ -527,13 +533,9 @@ static GLuint gl_depth_tex_low = 0;
 static const int gl_low_width = 64;
 static const int gl_low_height = 36;
 
-static GLuint gl_transmissive_fbo       = 0;
-static GLuint gl_transmissive_depth_col = 0;
-static GLuint gl_transmissive_depth_tex = 0;
+/* Snapshot of the opaque scene, sampled by the transmissive pass so glass can
+ * refract what is behind it. */
 static GLuint gl_refraction_src         = 0;
-static GLuint gl_transmissive_depth_program = 0;
-static GLint  gl_transmissive_depth_u_view_proj = -1;
-static GLint  gl_transmissive_depth_u_opaque_depth = -1;
 
 static GLuint gl_oit_fbo               = 0;
 static GLuint gl_oit_accum_tex         = 0;
@@ -565,6 +567,67 @@ static GLuint gl_post_process_program = 0;
 static GLint  pp_u_screen_size = -1;
 static GLint  pp_u_exposure    = -1;
 static GLint  pp_u_gamma       = -1;
+static GLint  pp_u_bloom_tex   = -1;
+static GLint  pp_u_bloom_intensity = -1;
+
+/* ---- Bloom ----
+ *
+ * A mip chain of progressively halved render targets, built from the HDR scene
+ * before tonemapping and read back by post_process.frag. The width of the glow
+ * comes from the number of levels, not from a wide kernel: level 0 is half the
+ * render resolution and each subsequent level halves again, so six levels
+ * resolve a blur an order of magnitude wider than a single full-resolution
+ * separable pass could afford.
+ *
+ * Run order each frame:
+ *   prefilter  scene  -> level 0                (threshold, half res)
+ *   downsample level N -> level N+1            (13-tap, N = 0 .. count-2)
+ *   upsample   level N+1 -> level N            (3x3 tent, additive blend)
+ *
+ * The upsample pass writes into the level it is adding to, not into a separate
+ * target, which is why the level-N framebuffer has to be both readable and
+ * writable across passes with no aliasing hazard: a level is never sampled by
+ * the same pass that writes it. */
+#define BLOOM_MIP_COUNT 6
+
+static GLuint gl_bloom_prefilter_program = 0;
+static GLuint gl_bloom_downsample_program = 0;
+static GLuint gl_bloom_upsample_program   = 0;
+static GLuint gl_bloom_fbo[BLOOM_MIP_COUNT];
+static GLuint gl_bloom_tex[BLOOM_MIP_COUNT];
+static i32    gl_bloom_width[BLOOM_MIP_COUNT];
+static i32    gl_bloom_height[BLOOM_MIP_COUNT];
+
+static GLint bl_pf_u_source   = -1;
+static GLint bl_pf_u_texel    = -1;
+static GLint bl_pf_u_dsts     = -1;
+static GLint bl_pf_u_threshold = -1;
+static GLint bl_pf_u_knee     = -1;
+static GLint bl_pf_u_clamp    = -1;
+static GLint bl_pf_u_exposure = -1;
+static GLint bl_ds_u_source   = -1;
+static GLint bl_ds_u_texel    = -1;
+static GLint bl_ds_u_dsts     = -1;
+static GLint bl_us_u_source   = -1;
+static GLint bl_us_u_texel    = -1;
+static GLint bl_us_u_dsts     = -1;
+static GLint bl_us_u_radius   = -1;
+
+/* Artistic controls. Defaults are the values that read as "Halo 3" against the
+ * default material set: a low threshold so ordinary lit surfaces contribute,
+ * and an intensity low enough that the glow frames a highlight rather than
+ * washing the frame. All three are reachable at runtime.
+ *
+ * The threshold is in exposure-multiplied units, where 1.0 is display white
+ * before the tone curve. Sitting it above 1.0 restricts bloom to genuine
+ * super-blooms and reads as almost nothing on a normally lit scene, so it is
+ * set well below white here and the intensity is what keeps the result from
+ * veiling. */
+static int   gl_bloom_enabled   = 1;
+static float gl_bloom_intensity = 0.30f;
+static float gl_bloom_threshold = 0.0f;
+static float gl_bloom_knee      = 0.45f;
+static float gl_bloom_radius    = 1.5f;
 
 /* ---- Anti-aliasing / resolve (after post-process) ----
  * Every mode converges on gl_present_tex, a window-resolution surface that
@@ -785,11 +848,12 @@ static float *g_particle_max_lifetimes = NULL;
 static GLuint g_particle_vao = 0;
 static GLuint g_particle_vbo = 0;
 
+/* Indexed by alpha_pass_side. Only the FRONT variant is compiled now, but the
+ * array stays two wide so the enum can index it directly. */
 static GLuint g_particle_program[2] = {0, 0};
 static GLint  g_particle_u_view_proj[2]           = {-1, -1};
 static GLint  g_particle_u_cam_right[2]           = {-1, -1};
 static GLint  g_particle_u_cam_up[2]              = {-1, -1};
-static GLint  g_particle_u_transmissive_depth[2]  = {-1, -1};
 static GLint  g_particle_u_screen_size[2]         = {-1, -1};
 
 static mat4 g_particle_view_proj;
@@ -1078,7 +1142,6 @@ static shader_variant_t* get_program_for_method(render_method key,
     entry->u_cluster_near = C89GL_glGetUniformLocation(prog, "uClusterNear");
     entry->u_cluster_far = C89GL_glGetUniformLocation(prog, "uClusterFar");
     entry->u_refraction_src = C89GL_glGetUniformLocation(prog, "uRefractionSrc");
-    entry->u_transmissive_depth_tex = C89GL_glGetUniformLocation(prog, "uTransmissiveDepthTex");
     entry->u_ao_tex = C89GL_glGetUniformLocation(prog, "uAOTex");
     entry->u_alpha_pass = C89GL_glGetUniformLocation(prog, "uAlphaPass");
     entry->u_refraction_scale = C89GL_glGetUniformLocation(prog, "uRefractionScale");
@@ -1114,15 +1177,13 @@ void render_precompile_material(u32 method) {
     int is_refractive  = !is_transparent && (key & EFFECT_TRANSMISSION) != 0;
 
     if (is_transparent) {
-        /* Both WBOIT passes plus the transparent depth prepass. The prepass is a
-         * depth variant, not a third pass of the same program. */
-        get_program_for_method(key, 0, ALPHA_PASS_BEHIND);
+        /* The single WBOIT pass, plus the transparent depth prepass. The
+         * prepass is a depth variant, not a second pass of the same program. */
         get_program_for_method(key, 0, ALPHA_PASS_FRONT);
         get_program_for_method(key, 1, ALPHA_PASS_FRONT);
     } else if (is_refractive) {
         /* The transmissive colour pass. Refractive geometry is skipped by the
-         * opaque prepass and colour passes, and its depth pass is the single
-         * shared gl_transmissive_depth_program rather than a cached variant. */
+         * opaque prepass and colour passes. */
         get_program_for_method(key, 0, ALPHA_PASS_FRONT);
     } else {
         /* Opaque depth prepass and opaque colour. */
@@ -1681,43 +1742,6 @@ static void init_env_cube_resources(void) {
            PROBE_SIZE);
 }
 
-static void init_transmissive_depth_program(void) {
-    GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER,
-                                            "transmissive_depth.vert",
-                                            "#version 430 core\n");
-    GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                            "transmissive_depth.frag",
-                                            "#version 430 core\n");
-    if (!vs || !fs) {
-        if (vs) C89GL_glDeleteShader(vs);
-        if (fs) C89GL_glDeleteShader(fs);
-        return;
-    }
-    gl_transmissive_depth_program = C89GL_glCreateProgram();
-    C89GL_glAttachShader(gl_transmissive_depth_program, vs);
-    C89GL_glAttachShader(gl_transmissive_depth_program, fs);
-    C89GL_glLinkProgram(gl_transmissive_depth_program);
-    {
-        GLint st;
-        C89GL_glGetProgramiv(gl_transmissive_depth_program, GL_LINK_STATUS, &st);
-        if (!st) {
-            char log[512];
-            C89GL_glGetProgramInfoLog(gl_transmissive_depth_program, sizeof(log), NULL, log);
-            printf("Transmissive depth program link error:\n%s\n", log);
-            C89GL_glDeleteProgram(gl_transmissive_depth_program);
-            gl_transmissive_depth_program = 0;
-        } else {
-            GLint modelBlk = C89GL_glGetUniformBlockIndex(gl_transmissive_depth_program, "ModelMatrices");
-            if (modelBlk != GL_INVALID_INDEX)
-                C89GL_glUniformBlockBinding(gl_transmissive_depth_program, modelBlk, MODEL_UBO_BINDING);
-            gl_transmissive_depth_u_view_proj = C89GL_glGetUniformLocation(gl_transmissive_depth_program, "uViewProj");
-            gl_transmissive_depth_u_opaque_depth = C89GL_glGetUniformLocation(gl_transmissive_depth_program, "uOpaqueDepthTex");
-        }
-    }
-    C89GL_glDeleteShader(vs);
-    C89GL_glDeleteShader(fs);
-}
-
 static void init_wboit_resources(void) {
     C89GL_glGenFramebuffers(1, &gl_oit_fbo);
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
@@ -1984,8 +2008,87 @@ static void init_post_process_resources(void) {
     pp_u_screen_size = C89GL_glGetUniformLocation(gl_post_process_program, "uScreenSize");
     pp_u_exposure    = C89GL_glGetUniformLocation(gl_post_process_program, "uExposure");
     pp_u_gamma       = C89GL_glGetUniformLocation(gl_post_process_program, "uGamma");
+    pp_u_bloom_tex   = C89GL_glGetUniformLocation(gl_post_process_program, "uBloomTex");
+    pp_u_bloom_intensity =
+        C89GL_glGetUniformLocation(gl_post_process_program, "uBloomIntensity");
 
     printf("Post-process initialised (HDR resolve -> sRGB).\n");
+}
+
+/* Compiles one full-screen pass from a fragment shader file. Returns 0 on any
+ * failure so a single bad shader cannot leave a half-built program bound. */
+static GLuint compile_fullscreen_program(const char *frag_file, const char *label) {
+    GLuint fs, prog;
+    GLint status;
+
+    if (!gl_fullscreen_vs) {
+        fprintf(stderr, "ERROR: %s: no shared full-screen vertex shader\n", label);
+        return 0;
+    }
+
+    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, frag_file, "#version 430 core\n");
+    if (!fs) {
+        fprintf(stderr, "ERROR: Failed to compile %s (%s)\n", label, frag_file);
+        return 0;
+    }
+
+    prog = C89GL_glCreateProgram();
+    C89GL_glAttachShader(prog, gl_fullscreen_vs);
+    C89GL_glAttachShader(prog, fs);
+    C89GL_glLinkProgram(prog);
+    C89GL_glDeleteShader(fs);
+
+    C89GL_glGetProgramiv(prog, GL_LINK_STATUS, &status);
+    if (!status) {
+        char log[512];
+        C89GL_glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+        printf("%s link error:\n%s\n", label, log);
+        C89GL_glDeleteProgram(prog);
+        return 0;
+    }
+    return prog;
+}
+
+static void init_bloom_resources(void) {
+    gl_bloom_prefilter_program =
+        compile_fullscreen_program("bloom_prefilter.frag", "bloom prefilter");
+    gl_bloom_downsample_program =
+        compile_fullscreen_program("bloom_downsample.frag", "bloom downsample");
+    gl_bloom_upsample_program =
+        compile_fullscreen_program("bloom_upsample.frag", "bloom upsample");
+
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_source    = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uSourceTex");
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_texel     = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uTexelSize");
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_dsts      = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uDstSize");
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_threshold = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uThreshold");
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_knee      = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uKnee");
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_clamp     = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uClamp");
+    if (gl_bloom_prefilter_program)
+        bl_pf_u_exposure  = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uExposure");
+    if (gl_bloom_downsample_program)
+        bl_ds_u_source    = C89GL_glGetUniformLocation(gl_bloom_downsample_program, "uSourceTex");
+    if (gl_bloom_downsample_program)
+        bl_ds_u_texel     = C89GL_glGetUniformLocation(gl_bloom_downsample_program, "uTexelSize");
+    if (gl_bloom_downsample_program)
+        bl_ds_u_dsts      = C89GL_glGetUniformLocation(gl_bloom_downsample_program, "uDstSize");
+    if (gl_bloom_upsample_program)
+        bl_us_u_source    = C89GL_glGetUniformLocation(gl_bloom_upsample_program, "uSourceTex");
+    if (gl_bloom_upsample_program)
+        bl_us_u_texel     = C89GL_glGetUniformLocation(gl_bloom_upsample_program, "uTexelSize");
+    if (gl_bloom_upsample_program)
+        bl_us_u_dsts      = C89GL_glGetUniformLocation(gl_bloom_upsample_program, "uDstSize");
+    if (gl_bloom_upsample_program)
+        bl_us_u_radius    = C89GL_glGetUniformLocation(gl_bloom_upsample_program, "uRadius");
+
+    if (gl_bloom_prefilter_program && gl_bloom_downsample_program && gl_bloom_upsample_program)
+        printf("Bloom initialised (%d mip levels, threshold %.2f knee %.2f).\n",
+               BLOOM_MIP_COUNT, (double)gl_bloom_threshold, (double)gl_bloom_knee);
 }
 
 static void init_fxaa_resources(void) {
@@ -2597,6 +2700,15 @@ INLINE void render_set_light_at_index(int index, const light_definition *def) {
 INLINE void render_set_exposure(real exposure) { gl_post_exposure = (float)exposure; }
 INLINE void render_set_gamma(real gamma)       { gl_post_gamma    = (float)gamma; }
 
+INLINE void render_set_bloom(int enabled, real intensity, real threshold, real knee) {
+    gl_bloom_enabled   = enabled;
+    gl_bloom_intensity = (float)intensity;
+    gl_bloom_threshold = (float)threshold;
+    gl_bloom_knee      = (float)knee;
+}
+INLINE void render_set_bloom_radius(real radius) { gl_bloom_radius = (float)radius; }
+
+
 INLINE void render_set_env_probe_box(vec3 boxMin, vec3 boxMax) {
     gl_env_box_min = boxMin;
     gl_env_box_max = boxMax;
@@ -2700,20 +2812,13 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
         C89GL_glActiveTexture(GL_TEXTURE2);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
 
-        C89GL_glActiveTexture(GL_TEXTURE3);
-        /* Always the real transmissive depth image, cleared to 1.0 earlier this
-         * frame if the scene has no transmissive geometry. material.frag reads it
-         * with texelFetch, so it must be full resolution: a smaller sentinel
-         * reads out of bounds and yields 0.0, which reads as "transmissive
-         * surface right at the near plane" and discards every WBOIT fragment. */
-        C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_col);
-
         C89GL_glActiveTexture(GL_TEXTURE4);
         C89GL_glBindTexture(GL_TEXTURE_2D,
                             gl_vbao_enabled ? gl_ao_blurred_tex : gl_ao_white_tex);
 
         if (variant->u_alpha_pass != -1)
             C89GL_glUniform1i(variant->u_alpha_pass, (int)side);
+
         if (variant->u_refraction_scale != -1)
             C89GL_glUniform1f(variant->u_refraction_scale, 0.1f);
 
@@ -2940,6 +3045,8 @@ static void draw_entity_with_model_index(const struct entity_definition *ent, in
     }
 }
 
+static void resize_render_targets(void);
+
 INLINE int render_init(i32 window_width, i32 window_height) {
     printf("render_init: width=%d height=%d\n", window_width, window_height);
     if (gl_vao) return 1;
@@ -3072,9 +3179,25 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl_normal_tex, 0);
 
+    /* Emissive-only bloom source. Same format and filtering as the colour
+     * attachment because the bloom prefilter samples it with the same taps it
+     * would use on the scene, and the values it holds are scene-referred HDR
+     * radiance. Only fragments shaded with an EFFECT_EMISSIVE material write
+     * anything here; everything else writes zero, so the bloom chain sees a
+     * frame whose lit surfaces are black and whose emissive surfaces are
+     * intact. That is what makes the glow selective rather than global. */
+    C89GL_glGenTextures(1, &gl_emissive_tex);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_emissive_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gl_emissive_tex, 0);
+
     {
-        GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-        C89GL_glDrawBuffers(2, bufs);
+        GLenum bufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+        C89GL_glDrawBuffers(3, bufs);
     }
 
     C89GL_glGenTextures(1, &gl_depth_tex);
@@ -3106,38 +3229,6 @@ INLINE int render_init(i32 window_width, i32 window_height) {
         if (fbo_status_low != GL_FRAMEBUFFER_COMPLETE) {
             printf("Low-res FBO incomplete! status=0x%x\n", fbo_status_low);
         }
-    }
-
-    C89GL_glGenFramebuffers(1, &gl_transmissive_fbo);
-    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
-
-    C89GL_glGenTextures(1, &gl_transmissive_depth_col);
-    C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_col);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, gl_render_width, gl_render_height, 0, GL_RED, GL_FLOAT, NULL);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_transmissive_depth_col, 0);
-
-    C89GL_glGenTextures(1, &gl_transmissive_depth_tex);
-    C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_tex);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
-                       GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_transmissive_depth_tex, 0);
-
-    {
-        GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
-        C89GL_glDrawBuffers(1, bufs);
-    }
-    {
-        GLenum s = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (s != GL_FRAMEBUFFER_COMPLETE)
-            printf("Transmissive FBO incomplete! status=0x%x\n", s);
     }
 
     C89GL_glGenTextures(1, &gl_refraction_src);
@@ -3225,14 +3316,22 @@ INLINE int render_init(i32 window_width, i32 window_height) {
 #endif
     init_env_cube_resources();
     init_audio_resources();
-    init_transmissive_depth_program();
     init_wboit_resources();
     init_vbao_resources();
     init_vbao_blur_resources();
     init_post_process_resources();
+    init_bloom_resources();
     init_fxaa_resources();
     init_ssaa_resources();
     init_dither_resources();
+
+    /* render_init above creates its own targets inline, so the bloom mip chain
+     * — which lives in resize_render_targets, alongside everything else that
+     * depends only on the render resolution — is still unallocated here. Run it
+     * once to size the chain to the initial resolution. It is idempotent: it
+     * re-specifies storage on the names already created above and creates only
+     * the ones that do not exist yet. */
+    resize_render_targets();
 
     /* Off by default. Enabling vsync did not remove the intermittent flicker,
      * and it costs most of the frame rate here (1560 -> 240 FPS on a 240Hz
@@ -3250,6 +3349,7 @@ INLINE void render_shutdown(void) {
     if (gl_fbo) { C89GL_glDeleteFramebuffers(1, &gl_fbo); gl_fbo = 0; }
     if (gl_color_tex) { C89GL_glDeleteTextures(1, &gl_color_tex); gl_color_tex = 0; }
     if (gl_normal_tex) { C89GL_glDeleteTextures(1, &gl_normal_tex); gl_normal_tex = 0; }
+    if (gl_emissive_tex) { C89GL_glDeleteTextures(1, &gl_emissive_tex); gl_emissive_tex = 0; }
     if (gl_depth_tex) { C89GL_glDeleteTextures(1, &gl_depth_tex); gl_depth_tex = 0; }
     if (gl_fbo_low) { C89GL_glDeleteFramebuffers(1, &gl_fbo_low); gl_fbo_low = 0; }
     if (gl_depth_tex_low) { C89GL_glDeleteTextures(1, &gl_depth_tex_low); gl_depth_tex_low = 0; }
@@ -3281,6 +3381,14 @@ INLINE void render_shutdown(void) {
 
     if (gl_post_process_program) { C89GL_glDeleteProgram(gl_post_process_program); gl_post_process_program = 0; }
 
+    if (gl_bloom_prefilter_program) { C89GL_glDeleteProgram(gl_bloom_prefilter_program); gl_bloom_prefilter_program = 0; }
+    if (gl_bloom_downsample_program) { C89GL_glDeleteProgram(gl_bloom_downsample_program); gl_bloom_downsample_program = 0; }
+    if (gl_bloom_upsample_program)   { C89GL_glDeleteProgram(gl_bloom_upsample_program);   gl_bloom_upsample_program = 0; }
+    for (i = 0; i < BLOOM_MIP_COUNT; i++) {
+        if (gl_bloom_tex[i]) { C89GL_glDeleteTextures(1, &gl_bloom_tex[i]); gl_bloom_tex[i] = 0; }
+        if (gl_bloom_fbo[i]) { C89GL_glDeleteFramebuffers(1, &gl_bloom_fbo[i]); gl_bloom_fbo[i] = 0; }
+    }
+
     if (gl_fxaa_program) { C89GL_glDeleteProgram(gl_fxaa_program); gl_fxaa_program = 0; }
     if (gl_ssaa_program) { C89GL_glDeleteProgram(gl_ssaa_program); gl_ssaa_program = 0; }
     if (gl_dither_program) { C89GL_glDeleteProgram(gl_dither_program); gl_dither_program = 0; }
@@ -3291,10 +3399,6 @@ INLINE void render_shutdown(void) {
     if (gl_post_fxaa_fbo) { C89GL_glDeleteFramebuffers(1, &gl_post_fxaa_fbo); gl_post_fxaa_fbo = 0; }
     if (gl_post_fxaa_tex) { C89GL_glDeleteTextures(1, &gl_post_fxaa_tex); gl_post_fxaa_tex = 0; }
 
-    if (gl_transmissive_depth_program) { C89GL_glDeleteProgram(gl_transmissive_depth_program); gl_transmissive_depth_program = 0; }
-    if (gl_transmissive_fbo) { C89GL_glDeleteFramebuffers(1, &gl_transmissive_fbo); gl_transmissive_fbo = 0; }
-    if (gl_transmissive_depth_col) { C89GL_glDeleteTextures(1, &gl_transmissive_depth_col); gl_transmissive_depth_col = 0; }
-    if (gl_transmissive_depth_tex) { C89GL_glDeleteTextures(1, &gl_transmissive_depth_tex); gl_transmissive_depth_tex = 0; }
     if (gl_refraction_src) { C89GL_glDeleteTextures(1, &gl_refraction_src); gl_refraction_src = 0; }
 
     /* Environment cube */
@@ -3436,8 +3540,13 @@ INLINE void render_clear_color(real r, real g, real b) {
 
     color[0] = r; color[1] = g; color[2] = b; color[3] = 1.0f;
     zero[0] = zero[1] = zero[2] = zero[3] = 0.0f;
-    C89GL_glClearBufferfv(GL_COLOR, 0, color);
-    C89GL_glClearBufferfv(GL_COLOR, 1, zero);
+    C89GL_glClearBufferfv(GL_COLOR, GL_COLOR_ATTACHMENT0, color);
+    C89GL_glClearBufferfv(GL_COLOR, GL_COLOR_ATTACHMENT1, zero);
+    /* Emissive buffer has to be cleared every frame like any other attachment.
+     * Nothing writes it for a non-emissive surface, so a frame that skipped
+     * this would leave last frame's emitters glowing through whatever
+     * replaced them — a trail that follows the object instead of the frame. */
+    C89GL_glClearBufferfv(GL_COLOR, GL_COLOR_ATTACHMENT2, zero);
     C89GL_glClear(GL_DEPTH_BUFFER_BIT);
 }
 INLINE const u32* render_get_fb(void) { return NULL; }
@@ -3454,22 +3563,17 @@ static void resize_render_targets(void) {
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_normal_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, gl_render_width, gl_render_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl_normal_tex, 0);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_emissive_tex);
+    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
+    C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gl_emissive_tex, 0);
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
                        GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
     C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gl_depth_tex, 0);
     {
-        GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-        C89GL_glDrawBuffers(2, bufs);
+        GLenum bufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+        C89GL_glDrawBuffers(3, bufs);
     }
-
-    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
-    C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_col);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, gl_render_width, gl_render_height, 0, GL_RED, GL_FLOAT, NULL);
-    C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_tex);
-    C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, gl_render_width, gl_render_height, 0,
-                       GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
-
     C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, gl_render_width, gl_render_height, 0, GL_RGBA, GL_FLOAT, NULL);
 
@@ -3526,6 +3630,50 @@ static void resize_render_targets(void) {
     C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
                        gl_ao_width, gl_ao_height, 0,
                        GL_RED, GL_UNSIGNED_BYTE, NULL);
+
+    /* Bloom mip chain. Level 0 is half the render resolution and each level
+     * halves again, so the sizes are derived from the level index rather than
+     * stored. Clamped at 1 so a very small render target cannot drive a level
+     * to zero and produce an incomplete framebuffer. */
+    {
+        int mip, w = (gl_render_width  + 1) / 2;
+        int h = (gl_render_height + 1) / 2;
+        for (mip = 0; mip < BLOOM_MIP_COUNT; mip++) {
+            if (w < 1) w = 1;
+            if (h < 1) h = 1;
+            gl_bloom_width[mip]  = w;
+            gl_bloom_height[mip] = h;
+
+            if (!gl_bloom_tex[mip]) C89GL_glGenTextures(1, &gl_bloom_tex[mip]);
+            if (!gl_bloom_fbo[mip]) C89GL_glGenFramebuffers(1, &gl_bloom_fbo[mip]);
+
+            C89GL_glBindTexture(GL_TEXTURE_2D, gl_bloom_tex[mip]);
+            /* RGBA16F to match gl_color_tex: the chain is a plain average, so
+             * there is no reason to narrow the format, and the prefilter writes
+             * the scene's full range. */
+            C89GL_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, NULL);
+            C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            C89GL_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+            C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_bloom_fbo[mip]);
+            C89GL_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                         GL_TEXTURE_2D, gl_bloom_tex[mip], 0);
+            {
+                GLenum bufs[1] = { GL_COLOR_ATTACHMENT0 };
+                C89GL_glDrawBuffers(1, bufs);
+            }
+            {
+                GLenum status = C89GL_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+                if (status != GL_FRAMEBUFFER_COMPLETE)
+                    printf("Bloom mip %d framebuffer incomplete! status=0x%x\n", mip, status);
+            }
+
+            w = (w + 1) / 2;
+            h = (h + 1) / 2;
+        }
+    }
 
     C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_default_fbo);
 
@@ -3783,14 +3931,17 @@ static void render_depth_cube_pass(void) {
 
 /* ---- Main-pass skybox ---- */
 static void render_sky_pass(void) {
-    GLenum sky_buf[1] = { GL_COLOR_ATTACHMENT0 };
-    GLenum both_bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    /* Attachment 2 is included so sky.frag's outEmissive is actually written.
+     * With only attachment 0 selected the driver discards location 2, and the
+     * sky region keeps whatever the frame-start clear left there. */
+    GLenum sky_buf[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+    GLenum all_bufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
     mat4 inv_vp;
 
     if (!gl_skybox_program) return;
     if (!gl_skybox_enabled) return;
 
-    C89GL_glDrawBuffers(1, sky_buf);
+    C89GL_glDrawBuffers(3, sky_buf);
 
     C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     C89GL_glDepthMask(GL_FALSE);
@@ -3824,7 +3975,7 @@ static void render_sky_pass(void) {
     C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
     C89GL_glUseProgram(0);
 
-    C89GL_glDrawBuffers(2, both_bufs);
+    C89GL_glDrawBuffers(3, all_bufs);
 
     C89GL_glDepthMask(GL_TRUE);
     C89GL_glEnable(GL_BLEND);
@@ -3885,16 +4036,15 @@ typedef enum {
     PT_SKY,
     PT_OPAQUE_COLOR,
     PT_VBAO,
-    PT_TRANSMISSIVE_CLEAR,
-    PT_TRANSMISSIVE_DEPTH,
-    PT_WBOIT_BEHIND,
-    PT_OIT_COMPOSITE_BEHIND,
     PT_REFRACTION_COPY,
     PT_TRANSMISSIVE_COLOR,
     PT_TRANSPARENT_DEPTH,
     PT_WBOIT_FRONT,
     PT_OIT_COMPOSITE_FRONT,
     PT_TRANSPARENT_DEPTH_LOW,
+    PT_BLOOM_PREFILTER,
+    PT_BLOOM_DOWN,
+    PT_BLOOM_UP,
     PT_POST_PROCESS,
     PT_AA,
     PT_DITHER,
@@ -3903,18 +4053,17 @@ typedef enum {
 
 static const char* const gl_pass_names[PT_PASS_COUNT] = {
     "audio_compute", "sky_cube", "depth_cube", "opaque_depth", "cluster",
-    "sky", "opaque_color", "vbao", "transmissive_clear",
-    "transmissive_depth", "wboit_behind", "oit_composite_behind",
+    "sky", "opaque_color", "vbao",
     "refraction_copy", "transmissive_color", "transparent_depth", "wboit_front",
-    "oit_composite_front", "transparent_depth_low", "post_process", "aa", "dither"
+    "oit_composite_front", "transparent_depth_low",
+    "bloom_prefilter", "bloom_down", "bloom_up", "post_process", "aa", "dither"
 };
 
 /* The passes that only exist to service transparent and refractive geometry,
  * plus the refraction copy that feeds them. Summed separately in the report
  * because that is the number the WBOIT path is actually costing. */
 static const gpu_pass_t gl_transparency_passes[] = {
-    PT_TRANSMISSIVE_CLEAR, PT_TRANSMISSIVE_DEPTH, PT_WBOIT_BEHIND,
-    PT_OIT_COMPOSITE_BEHIND, PT_REFRACTION_COPY, PT_TRANSMISSIVE_COLOR,
+    PT_REFRACTION_COPY, PT_TRANSMISSIVE_COLOR,
     PT_TRANSPARENT_DEPTH, PT_WBOIT_FRONT, PT_OIT_COMPOSITE_FRONT,
     PT_TRANSPARENT_DEPTH_LOW
 };
@@ -4049,6 +4198,133 @@ static void shutdown_pass_timing(void) {
 #define shutdown_pass_timing() ((void)0)
 #endif
 
+/* =============================================================================
+ * Bloom
+ * =============================================================================
+ *
+ * Builds the mip chain from the finished HDR scene and leaves the result in
+ * gl_bloom_tex[0], which post_process.frag reads.
+ *
+ * The source is gl_emissive_tex, not gl_color_tex. material.frag writes its
+ * COLOR_ATTACHMENT2 only for fragments shaded with an EFFECT_EMISSIVE
+ * material, so the chain sees a frame in which every non-emissive surface is
+ * black. Thresholding the main colour buffer could not express this: a surface
+ * that is merely lit is exactly what a brightness threshold selects, so the
+ * glow would still cover the whole viewport and there would be no per-material
+ * control over what blooms. With the emissive buffer, the EFFECT_EMISSIVE flag
+ * is the switch, and the threshold is left to shape how hard a flagged surface
+ * glows.
+ *
+ * Only the opaque colour pass writes this attachment. Materials that take the
+ * transmissive or WBOIT paths render through their own targets and do not
+ * populate it, so an emissive material that is also transparent or refractive
+ * will not bloom.
+ *
+ * Runs after every pass that writes gl_color_tex, so the glow is ordered against
+ * the last of the transparency passes and cannot itself be left uncomposited.
+ *
+ * Every level is written by one pass and read by another, so there is no
+ * read-write aliasing even though the upsample stage adds into the same target
+ * it read the smaller level from. Defined after the pass-timing block above
+ * because the pass_begin/pass_end macros are only in scope from there.
+ */
+static void run_bloom_chain(void) {
+    int mip;
+
+    if (!gl_bloom_enabled || gl_bloom_intensity <= 0.0f) return;
+    if (!gl_bloom_prefilter_program || !gl_bloom_downsample_program ||
+        !gl_bloom_upsample_program) return;
+    if (!gl_bloom_tex[0]) return;
+
+    C89GL_glDisable(GL_DEPTH_TEST);
+    C89GL_glDisable(GL_BLEND);
+    C89GL_glDepthMask(GL_FALSE);
+    C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    /* ---- Prefilter: scene -> level 0, at half resolution ----
+     * The source is gl_color_tex while the draw target is gl_bloom_fbo[0], so
+     * the draw FBO is bound explicitly rather than left over from the pass
+     * above. */
+    pass_begin(PT_BLOOM_PREFILTER);
+    C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_bloom_fbo[0]);
+    C89GL_glViewport(0, 0, gl_bloom_width[0], gl_bloom_height[0]);
+    C89GL_glUseProgram(gl_bloom_prefilter_program);
+    C89GL_glActiveTexture(GL_TEXTURE0);
+    C89GL_glBindTexture(GL_TEXTURE_2D, gl_emissive_tex);
+    if (bl_pf_u_source    != -1) C89GL_glUniform1i(bl_pf_u_source, 0);
+    if (bl_pf_u_texel     != -1) C89GL_glUniform2f(bl_pf_u_texel,
+                                                    1.0f / (float)gl_render_width,
+                                                    1.0f / (float)gl_render_height);
+    if (bl_pf_u_dsts      != -1) C89GL_glUniform2f(bl_pf_u_dsts,
+                                                    (float)gl_bloom_width[0],
+                                                    (float)gl_bloom_height[0]);
+    if (bl_pf_u_threshold != -1) C89GL_glUniform1f(bl_pf_u_threshold, gl_bloom_threshold);
+    if (bl_pf_u_knee      != -1) C89GL_glUniform1f(bl_pf_u_knee,
+                                                    gl_bloom_knee > 1e-4f ? gl_bloom_knee : 1e-4f);
+    if (bl_pf_u_clamp     != -1) C89GL_glUniform1f(bl_pf_u_clamp, 8.0f);
+    if (bl_pf_u_exposure  != -1) C89GL_glUniform1f(bl_pf_u_exposure, gl_post_exposure);
+    C89GL_glBindVertexArray(gl_oit_vao);
+    C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+    C89GL_glBindVertexArray(0);
+    C89GL_glUseProgram(0);
+    pass_end();
+
+    /* ---- Downsample: level N -> level N+1 ----
+     * One timing entry covers the whole chain. The levels are a fraction of a
+     * full-resolution pass between them, and splitting the report per level
+     * would add five columns that are never individually acted on. */
+    pass_begin(PT_BLOOM_DOWN);
+    C89GL_glUseProgram(gl_bloom_downsample_program);
+    for (mip = 0; mip < BLOOM_MIP_COUNT - 1; mip++) {
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_bloom_fbo[mip + 1]);
+        C89GL_glViewport(0, 0, gl_bloom_width[mip + 1], gl_bloom_height[mip + 1]);
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_bloom_tex[mip]);
+        if (bl_ds_u_source != -1) C89GL_glUniform1i(bl_ds_u_source, 0);
+        if (bl_ds_u_texel  != -1) C89GL_glUniform2f(bl_ds_u_texel,
+                                                    1.0f / (float)gl_bloom_width[mip],
+                                                    1.0f / (float)gl_bloom_height[mip]);
+        if (bl_ds_u_dsts   != -1) C89GL_glUniform2f(bl_ds_u_dsts,
+                                                    (float)gl_bloom_width[mip + 1],
+                                                    (float)gl_bloom_height[mip + 1]);
+        C89GL_glBindVertexArray(gl_oit_vao);
+        C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    C89GL_glBindVertexArray(0);
+    C89GL_glUseProgram(0);
+    pass_end();
+
+    /* ---- Upsample: level N+1 -> level N, additive ----
+     * Additive blending is what lets each level contribute one octave of the
+     * blur, instead of one level having to resolve the whole kernel. */
+    pass_begin(PT_BLOOM_UP);
+    C89GL_glEnable(GL_BLEND);
+    C89GL_glBlendFunc(GL_ONE, GL_ONE);
+    C89GL_glUseProgram(gl_bloom_upsample_program);
+    for (mip = BLOOM_MIP_COUNT - 1; mip > 0; mip--) {
+        C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_bloom_fbo[mip - 1]);
+        C89GL_glViewport(0, 0, gl_bloom_width[mip - 1], gl_bloom_height[mip - 1]);
+        C89GL_glActiveTexture(GL_TEXTURE0);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_bloom_tex[mip]);
+        if (bl_us_u_source != -1) C89GL_glUniform1i(bl_us_u_source, 0);
+        if (bl_us_u_texel  != -1) C89GL_glUniform2f(bl_us_u_texel,
+                                                    1.0f / (float)gl_bloom_width[mip],
+                                                    1.0f / (float)gl_bloom_height[mip]);
+        if (bl_us_u_dsts   != -1) C89GL_glUniform2f(bl_us_u_dsts,
+                                                    (float)gl_bloom_width[mip - 1],
+                                                    (float)gl_bloom_height[mip - 1]);
+        if (bl_us_u_radius != -1) C89GL_glUniform1f(bl_us_u_radius, gl_bloom_radius);
+        C89GL_glBindVertexArray(gl_oit_vao);
+        C89GL_glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    C89GL_glBindVertexArray(0);
+    C89GL_glUseProgram(0);
+    C89GL_glBlendFunc(GL_ONE, GL_ZERO);
+    C89GL_glDisable(GL_BLEND);
+    C89GL_glActiveTexture(GL_TEXTURE0);
+    pass_end();
+}
+
 INLINE void render_finish(void) {
     GLuint current_program = 0;
     int current_cull = 1;
@@ -4058,24 +4334,6 @@ INLINE void render_finish(void) {
 
 #ifdef GL_PASS_TIMING
     pass_frame_begin();
-#endif
-
-    /* Diagnostic: log the per-frame inputs that change over the first seconds
-     * of a run. Temporary, remove once the start-up flicker is located. */
-#ifdef GL_FRAME_DIAG
-    {
-        static int gl_frame_diag_n = 0;
-        if (gl_frame_diag_n < 400) {
-            gl_frame_diag_n++;
-            if (gl_frame_diag_n < 40 || (gl_frame_diag_n % 20) == 0)
-                printf("[diag] f=%d lights=%d gpu_lights=%d draws=%d parts=%d "
-                       "time=%.3f win=%dx%d rend=%dx%d\n",
-                       gl_frame_diag_n, g_light_count, g_gpu_light_count,
-                       gl_draw_call_count, g_particle_count, (double)gl_time,
-                       gl_win_width, gl_win_height,
-                       gl_render_width, gl_render_height);
-        }
-    }
 #endif
 
     /* Audio compute: reads the *previous* frame's depth cube. */
@@ -4170,8 +4428,8 @@ INLINE void render_finish(void) {
         /* ---- Main opaque color pass ---- */
         pass_begin(PT_OPAQUE_COLOR);
         {
-            GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-            C89GL_glDrawBuffers(2, bufs);
+            GLenum bufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+            C89GL_glDrawBuffers(3, bufs);
         }
         C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         C89GL_glDepthMask(GL_TRUE);
@@ -4228,184 +4486,20 @@ INLINE void render_finish(void) {
             C89GL_glDrawBuffers(1, bufs);
         }
 
-        /* The transmissive depth image is the BEHIND/FRONT partition for the
-         * whole transparency pipeline, so it has to hold a defined value in every
-         * frame, not just frames that draw glass.
-         *
-         * The color attachment is therefore cleared to 1.0 unconditionally, and
-         * the real full-resolution R32F texture is what the WBOIT passes sample.
-         * The obvious alternative, swapping in a 1x1 white sentinel when the
-         * scene has no transmissive geometry, cannot work: both material.frag and
-         * particle.frag read this with texelFetch, which is unindexed and does not
-         * clamp, so every fragment but the one at texel (0,0) reads out of bounds
-         * and gets 0.0. A 0.0 transmissive depth makes the FRONT test
-         * "tz < 1.0 && gl_FragCoord.z >= tz" true for every fragment, discarding
-         * all transparent geometry and all particles.
-         *
-         * Skipped entirely for a frame with neither transmissive geometry nor any
-         * WBOIT work, since then no shader samples the image. */
-        if (have_transmissive || have_wboit) {
-            C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
-            C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
-            pass_begin(PT_TRANSMISSIVE_CLEAR);
-            {
-                GLfloat clr[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                C89GL_glClearBufferfv(GL_COLOR, 0, clr);
-                if (have_transmissive) {
-                    /* glClear obeys the depth writemask, and the VBAO block above
-                     * left it FALSE. The clear would then be a no-op and the depth
-                     * attachment would keep whatever the initial NULL allocation put
-                     * there, which rejects every transmissive fragment and leaves
-                     * the frontmost-transmissive-depth image at its cleared 1.0. */
-                    C89GL_glDepthMask(GL_TRUE);
-                    C89GL_glClear(GL_DEPTH_BUFFER_BIT);
-                }
-            }
-            pass_end();
-            C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-
-            /* ---- Transmissive depth pass ---- */
-            if (have_transmissive && gl_transmissive_depth_program) {
-                pass_begin(PT_TRANSMISSIVE_DEPTH);
-                C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_transmissive_fbo);
-                C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
-
-                C89GL_glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
-                C89GL_glDepthMask(GL_TRUE);
-                C89GL_glDepthFunc(GL_LESS);
-                C89GL_glEnable(GL_DEPTH_TEST);
-                C89GL_glDisable(GL_BLEND);
-
-                C89GL_glActiveTexture(GL_TEXTURE0);
-                C89GL_glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
-
-                C89GL_glUseProgram(gl_transmissive_depth_program);
-                C89GL_glUniformMatrix4fv(gl_transmissive_depth_u_view_proj, 1, GL_TRUE, (float*)&gl_view_proj);
-                C89GL_glUniform1i(gl_transmissive_depth_u_opaque_depth, 0);
-                C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MODEL_UBO_BINDING, gl_model_ubo);
-
-                current_cull = 1;
-                C89GL_glEnable(GL_CULL_FACE);
-                for (i = 0; i < gl_draw_call_count; i++) {
-                    draw_call_t *dc = &gl_draw_calls[i];
-                    if (!dc->is_refractive) continue;
-                    C89GL_glBindVertexArray(dc->prim->vao);
-                    C89GL_glVertexAttrib1f(3, (float)dc->model_index);
-                    C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
-                                         GL_UNSIGNED_INT, (void*)0);
-                }
-                C89GL_glUseProgram(0);
-                /* This pass is depth-only, so the mask it needs is a
-                 * temporary. Restore the full one on the way out: the frame
-                 * no longer ends here, and a leaked (TRUE, FALSE, FALSE,
-                 * FALSE) silently strips colour from whatever draws next. */
-                C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                C89GL_glActiveTexture(GL_TEXTURE0);
-                pass_end();
-            }
-        }
-
-        /* ---- WBOIT pass: behind the glass ----
-         *
-         * Accumulates only the transparent fragments lying strictly behind the
-         * frontmost transmissive surface, and composites them before
-         * gl_refraction_src is copied. That copy is what the transmissive pass
-         * samples, so this is what makes glass and water refract transparent
-         * geometry rather than only the opaque scene.
-         *
-         * The split is a per-pixel partition, not a face-culling trick: the
-         * ALPHA_PASS_BEHIND variant in material.frag and particle.frag discards
-         * anything not behind the glass, and ALPHA_PASS_FRONT below discards
-         * the complement. Each fragment therefore lands in exactly one pass and
-         * is composited exactly once.
-         *
-         * The accum targets are cleared here, which is what keeps the two
-         * passes independent. WBOIT blends revealage multiplicatively, so
-         * accumulating both halves into the same pair without a clear would
-         * darken every transparent pixel twice.
-         *
-         * Only runs when there is glass to refract. With no transmissive
-         * surface every pixel has a transmissive depth of 1.0, so the BEHIND
-         * variant would discard the entire scene and the pass would cost a full
-         * accumulation for nothing. */
-        if (have_wboit && have_transmissive) {
-            C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_oit_fbo);
-            C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
-            pass_begin(PT_WBOIT_BEHIND);
-
-            {
-                GLfloat clear_accum[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
-                GLfloat clear_reveal[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                C89GL_glClearBufferfv(GL_COLOR, 0, clear_accum);
-                C89GL_glClearBufferfv(GL_COLOR, 1, clear_reveal);
-            }
-
-            C89GL_glEnable(GL_BLEND);
-            C89GL_glBlendFunci(0, GL_ONE, GL_ONE);
-            C89GL_glBlendFunci(1, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
-            C89GL_glEnable(GL_DEPTH_TEST);
-            C89GL_glDepthMask(GL_FALSE);
-            C89GL_glDepthFunc(GL_LESS);
-            C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-            C89GL_glEnable(GL_CULL_FACE);
-            C89GL_glCullFace(GL_BACK);
-            current_cull = 1;
-
-            current_program = 0;
-            for (i = 0; i < gl_draw_call_count; i++) {
-                draw_call_t *dc = &gl_draw_calls[i];
-                shader_variant_t *v;
-                int want_cull;
-                if (!dc->is_transparent) continue;
-                v = get_program_for_method((render_method)dc->mat->render_method, 0, ALPHA_PASS_BEHIND);
-                if (!v) continue;
-                if (current_program != v->program) {
-                    C89GL_glUseProgram(v->program);
-                    current_program = v->program;
-                    set_uniforms_for_variant(v, 0, ALPHA_PASS_BEHIND);
-                }
-                update_material_ubo(dc->mat);
-                want_cull = dc->mat->double_sided ? 0 : 1;
-                if (current_cull != want_cull) {
-                    if (want_cull) C89GL_glEnable(GL_CULL_FACE);
-                    else           C89GL_glDisable(GL_CULL_FACE);
-                    current_cull = want_cull;
-                }
-                C89GL_glBindVertexArray(dc->prim->vao);
-                C89GL_glVertexAttrib1f(3, (float)dc->model_index);
-                C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
-                                     GL_UNSIGNED_INT, (void*)0);
-            }
-            if (current_program) C89GL_glUseProgram(0);
-
-            if (current_cull != 1) {
-                C89GL_glEnable(GL_CULL_FACE);
-                current_cull = 1;
-            }
-            render_particle_system_draw_wboit(ALPHA_PASS_BEHIND);
-            pass_end();
-
-            C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
-            C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
-            pass_begin(PT_OIT_COMPOSITE_BEHIND);
-            oit_composite_into_current_fbo();
-            pass_end();
-        }
-
         /* The refraction source exists only to be sampled by the transmissive
          * pass, so the full-framebuffer read and write is only worth paying for
          * when there is transmissive geometry to sample it.
          *
-         * Taken after the BEHIND composite and before the transmissive pass, so
-         * it holds the opaque scene plus the transparent geometry the glass is
-         * meant to refract. */
+         * Taken after the opaque pass and before the transmissive pass, so it
+         * holds the scene the glass is meant to refract. Transparent geometry
+         * drawn later composites over the glass rather than being refracted by
+         * it, which is the accepted cost of a single WBOIT pass. */
         if (have_transmissive) {
             C89GL_glBindFramebuffer(GL_READ_FRAMEBUFFER, gl_fbo);
-            C89GL_glReadBuffer(GL_COLOR_ATTACHMENT0);
             C89GL_glActiveTexture(GL_TEXTURE0);
             C89GL_glBindTexture(GL_TEXTURE_2D, gl_refraction_src);
             pass_begin(PT_REFRACTION_COPY);
+            C89GL_glReadBuffer(GL_COLOR_ATTACHMENT0);
             C89GL_glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, gl_render_width, gl_render_height);
             pass_end();
             C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
@@ -4455,21 +4549,24 @@ INLINE void render_finish(void) {
             }
         }
 
-        /* ---- WBOIT pass: in front of the glass ----
+        /* ---- WBOIT pass ----
          *
-         * The complement of the BEHIND pass: the transparent fragments that are
-         * not behind the glass, composited after the transmissive pass so they
-         * blend over it. This is what makes transparent geometry occlude glass
-         * by blending, rather than by discarding the glass outright.
+         * The single transparency pass, run after the transmissive pass so
+         * transparent geometry composites over glass by blending rather than
+         * discarding it.
+         *
+         * The price of collapsing the old BEHIND/FRONT pair into one pass is
+         * that glass no longer refracts transparent geometry. The transmissive
+         * pass writes depth, so anything behind it is depth-rejected here and
+         * simply occluded. That is the intended limitation, not a bug: material
+         * the player is meant to see through belongs in this pass, and
+         * transmissive is reserved for surfaces where what sits behind them
+         * does not need to be resolved.
          *
          * Culling is per material, exactly as in the opaque pass: a closed
          * double-sided volume contributes its front and back face once each.
          * The face mode is never inverted, because scene winding is not
          * consistent enough for GL_FRONT to mean "the far side" everywhere.
-         * The near/far split is the shader's depth test against the
-         * transmissive depth, not the cull face.
-         *
-         * Clears the accum pair for the same reason the BEHIND pass does.
          *
          * Gated on have_wboit, not on transparent geometry alone: with no
          * transmissive surface this pass is the only one that runs, and it is
@@ -4492,13 +4589,6 @@ INLINE void render_finish(void) {
             C89GL_glEnable(GL_DEPTH_TEST);
             C89GL_glDepthMask(GL_FALSE);
             C89GL_glDepthFunc(GL_LESS);
-
-            /* The transmissive depth pass leaves the mask at
-             * (TRUE, FALSE, FALSE, FALSE) for its depth-only draw. Accumulation
-             * needs all four channels, and the clear above is not subject to
-             * the mask either, so without this the accum target keeps its
-             * cleared RGB while alpha is accumulated, and the composite
-             * resolves against a revealage that no longer matches the weights. */
             C89GL_glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
             C89GL_glEnable(GL_CULL_FACE);
@@ -4632,6 +4722,11 @@ INLINE void render_finish(void) {
         C89GL_glEnable(GL_BLEND);
     }
 
+    /* ---- Bloom ----
+     * After everything that writes gl_color_tex, including the transparent depth
+     * work and the sky-only path above, and before the resolve that consumes it. */
+    run_bloom_chain();
+
     if (gl_post_process_program) {
         pass_begin(PT_POST_PROCESS);
         C89GL_glBindFramebuffer(GL_FRAMEBUFFER, gl_post_fxaa_fbo);
@@ -4645,6 +4740,16 @@ INLINE void render_finish(void) {
 
         C89GL_glActiveTexture(GL_TEXTURE0);
         C89GL_glBindTexture(GL_TEXTURE_2D, gl_color_tex);
+
+        C89GL_glActiveTexture(GL_TEXTURE1);
+        C89GL_glBindTexture(GL_TEXTURE_2D, gl_bloom_enabled ? gl_bloom_tex[0] : gl_ao_white_tex);
+        if (pp_u_bloom_tex != -1)
+            C89GL_glUniform1i(pp_u_bloom_tex, 1);
+        if (pp_u_bloom_intensity != -1)
+            C89GL_glUniform1f(pp_u_bloom_intensity,
+                              gl_bloom_enabled ? gl_bloom_intensity : 0.0f);
+
+        C89GL_glActiveTexture(GL_TEXTURE0);
 
         if (pp_u_screen_size != -1)
             C89GL_glUniform2f(pp_u_screen_size, (float)gl_render_width, (float)gl_render_height);
@@ -4884,11 +4989,12 @@ static void spawn_particle(void) {
 }
 
 INLINE void render_particle_system_init(int max_particles) {
-    const char* defines_for_side[2] = {
-        "#version 330 core\n#define ALPHA_PASS_BEHIND 1\n#define WBOIT_PASS 1\n",
-        "#version 330 core\n#define ALPHA_PASS_FRONT 1\n#define WBOIT_PASS 1\n"
-    };
-    int side;
+    /* One program, not one per alpha-pass side. The BEHIND variant existed only
+     * to split transparency around transmissive geometry, and there is no longer
+     * a BEHIND pass for it to draw into. */
+    const char* defines = "#version 330 core\n#define ALPHA_PASS_FRONT 1\n#define WBOIT_PASS 1\n";
+    int side = ALPHA_PASS_FRONT;
+    GLuint vs, fs;
 
     if (g_particles) return;
     g_particle_capacity = max_particles > 0 ? max_particles : 4096;
@@ -4905,13 +5011,13 @@ INLINE void render_particle_system_init(int max_particles) {
     g_emission_timer = 0.0f;
     g_burst_done = 0;
 
-    for (side = 0; side < 2; side++) {
-        GLuint vs = compile_shader_with_defines(GL_VERTEX_SHADER, "particle.vert", defines_for_side[side]);
-        GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "particle.frag", defines_for_side[side]);
+    {
+        vs = compile_shader_with_defines(GL_VERTEX_SHADER, "particle.vert", defines);
+        fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "particle.frag", defines);
         if (!vs || !fs) {
             if (vs) C89GL_glDeleteShader(vs);
             if (fs) C89GL_glDeleteShader(fs);
-            fprintf(stderr, "Failed to compile particle shaders for side %d\n", side);
+            fprintf(stderr, "Failed to compile particle shaders\n");
             render_particle_system_shutdown();
             return;
         }
@@ -4940,7 +5046,6 @@ INLINE void render_particle_system_init(int max_particles) {
         g_particle_u_view_proj[side]           = C89GL_glGetUniformLocation(g_particle_program[side], "uViewProj");
         g_particle_u_cam_right[side]           = C89GL_glGetUniformLocation(g_particle_program[side], "uCamRight");
         g_particle_u_cam_up[side]              = C89GL_glGetUniformLocation(g_particle_program[side], "uCamUp");
-        g_particle_u_transmissive_depth[side]  = C89GL_glGetUniformLocation(g_particle_program[side], "uTransmissiveDepthTex");
         g_particle_u_screen_size[side]         = C89GL_glGetUniformLocation(g_particle_program[side], "uScreenSize");
     }
 
@@ -4971,6 +5076,8 @@ INLINE void render_particle_system_shutdown(void) {
     if (g_particle_velocities) { free(g_particle_velocities); g_particle_velocities = NULL; }
     if (g_particle_lifetimes) { free(g_particle_lifetimes); g_particle_lifetimes = NULL; }
     if (g_particle_max_lifetimes) { free(g_particle_max_lifetimes); g_particle_max_lifetimes = NULL; }
+    /* Indexed by alpha_pass_side, so the array stays two wide even though only
+     * the FRONT variant is compiled now. */
     for (i = 0; i < 2; i++) {
         if (g_particle_program[i]) C89GL_glDeleteProgram(g_particle_program[i]);
         g_particle_program[i] = 0;
@@ -5085,20 +5192,6 @@ static void render_particle_system_draw_wboit(alpha_pass_side side) {
     C89GL_glUniform3fv(g_particle_u_cam_right[side], 1, (float*)&cam_right_scaled);
     C89GL_glUniform3fv(g_particle_u_cam_up[side], 1, (float*)&g_particle_cam_up);
 
-    /* uTransmissiveDepthTex must be bound for both variants, not just BEHIND:
-     * The FRONT variant reads it too, to discard what the BEHIND pass already
-     * took. Leaving it unbound for FRONT means the partition is decided against
-     * whatever texture the previous pass happened to leave on unit 3.
-     *
-     * Always the real full-resolution transmissive depth image, which the frame
-     * clears to 1.0 when the scene has no transmissive geometry. A 1x1 white
-     * sentinel is not usable here: particle.frag fetches with texelFetch, which
-     * does not clamp, so it reads 0.0 for every fragment but texel (0,0), and a
-     * 0.0 transmissive depth makes the FRONT partition discard the particle
-     * system in full. */
-    C89GL_glActiveTexture(GL_TEXTURE3);
-    C89GL_glBindTexture(GL_TEXTURE_2D, gl_transmissive_depth_col);
-    C89GL_glUniform1i(g_particle_u_transmissive_depth[side], 3);
     C89GL_glUniform2f(g_particle_u_screen_size[side],
                       (float)gl_render_width, (float)gl_render_height);
     C89GL_glActiveTexture(GL_TEXTURE0);

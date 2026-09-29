@@ -67,6 +67,17 @@ uniform float uProbeSize;
 
 out vec4 FragColor;
 
+#ifdef SKYBOX_MODE
+/* The main pass renders the sky into an FBO that also carries the bloom source
+ * as COLOR_ATTACHMENT2. Declaring it here means the sky writes a defined black
+ * to that attachment for every sky pixel, instead of leaving whatever the
+ * frame-start clear put there. The two are equivalent only while the clear
+ * runs on every frame; writing it makes the sky region's value a property of
+ * the pass rather than of the clear, so a skipped or reordered clear cannot
+ * leave an emitter's glow hanging in the sky. */
+layout(location = 2) out vec4 outEmissive;
+#endif
+
 // -----------------------------------------------------------------------------
 // Astronomy
 // -----------------------------------------------------------------------------
@@ -315,4 +326,9 @@ void main() {
                                     SKY_TIME_OF_DAY);
     vec3 col = sky_evaluate(dir, sunDir);
     FragColor = vec4(col, 1.0);
+#ifdef SKYBOX_MODE
+    /* The sky is lit scenery, not an emitter: nothing about it may bloom, so
+     * the bloom source stays black here no matter how bright the sun disc is. */
+    outEmissive = vec4(0.0);
+#endif
 }

@@ -10,17 +10,23 @@
 //
 // Pipeline order:
 //
-//   1. Tone map (Hable filmic, at uExposure)
-//   2. Artist color grade (LUT stub)
-//   3. sRGB encode
-//   4. User gamma (display calibration)
-//   5. Display controls: black level, brightness, contrast, saturation,
+//   1. Bloom composite (added in HDR, before the curve)
+//   2. Tone map (Hable filmic + soft knee; uExposure already applied — see
+//      tone_map)
+//   3. Artist color grade (LUT stub)
+//   4. sRGB encode
+//   5. User gamma (display calibration)
+//   6. Display controls: black level, brightness, contrast, saturation,
 //      vibrance
-//   6. Colorblind correction
-//   7. Clamp
+//   7. Colorblind correction
+//   8. Clamp
 //
 // =============================================================================
 
+
+#ifndef PP_DEBUG_SOURCE
+#define PP_DEBUG_SOURCE 0
+#endif
 
 // TODO: Promote to uniforms.
 // =============================================================================
@@ -57,10 +63,12 @@
 // Inputs
 // =============================================================================
 layout(binding = 0) uniform sampler2D uColorHDR;
+layout(binding = 1) uniform sampler2D uBloomTex;
 
 uniform vec2  uScreenSize;
 uniform float uExposure;
 uniform float uGamma;
+uniform float uBloomIntensity;
 
 out vec4 FragColor;
 
@@ -69,6 +77,27 @@ const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
 // =============================================================================
 // Tone mapping (Hable / Uncharted 2)
 // =============================================================================
+//
+// The filmic curve from "Filmic Tone Mapping for Real-Time Rendering" (Hable,
+// SIGGRAPH 2002), normalised by the curve's own value at W so that the input
+// W maps to exactly 1.0. It is a per-channel rational function, so it differs
+// from a luma-only operator in the way it handles chroma: because it is applied
+// to each channel independently, a highlight whose channels are far apart
+// compresses unevenly and drifts toward white on its own. That is the
+// behaviour this curve is kept for, so no highlight desaturation is layered
+// on top of it.
+//
+// Structure:
+//
+//   1. Luma curve on the Rec.709 luma, then the chroma is restored by scaling
+//      the original colour by Lm/L. This is what carries the midtones.
+//   2. An optional chroma compression on top, disabled at CHROMA_COMPRESS = 0.
+//   3. A soft-knee exponential above KNEE. This is the part that bends the
+//      top of the range without the hard shoulder-to-white edge a pure Hable
+//      curve has, and it is applied per channel — the per-channel rolloff is
+//      the curve's own highlight desaturation.
+//   4. A small shadow toe, uniform across channels so it lifts luminance
+//      without touching hue.
 float filmic_base(float x, float A, float B, float C,
                   float D, float E, float F) {
     return ((x * (A * x + C * B) + D * E)
@@ -92,7 +121,10 @@ vec3 tone_map(vec3 color) {
     const float F = 0.35;
     const float W = 10.0;
 
-    color = max(color * uExposure, vec3(0.0));
+    // uExposure has already been applied in main, before the bloom composite,
+    // because the bloom prefilter thresholds in exposed units too — applying it
+    // here as well would double it.
+    color = max(color, vec3(0.0));
 
     float L  = dot(color, LUMA_REC709);
     float Lm = filmic_base(L, A, B, C, D, E, F)
@@ -232,7 +264,33 @@ vec3 apply_vibrance(vec3 c) {
 void main() {
     vec2 uv = gl_FragCoord.xy / uScreenSize;
 
-    vec3 colorHDR = texture(uColorHDR, uv).rgb;
+    /* Raw, unexposed scene. Read before anything else so PP_DEBUG_SOURCE below
+     * still shows the scene buffer itself rather than an already-graded value. */
+    vec3 sceneHDR = texture(uColorHDR, uv).rgb;
+
+#if PP_DEBUG_SOURCE
+    /* Visualise the raw scene buffer, bypassing every display-referred
+     * operation. Shows whether black originates upstream (in gl_color_tex) or
+     * in the tonemap/grade chain below. */
+    FragColor = vec4(isnan(sceneHDR.r) || isnan(sceneHDR.g) || isnan(sceneHDR.b)
+                         ? vec3(1.0, 0.0, 1.0)
+                         : clamp(sceneHDR, 0.0, 1.0), 1.0);
+    return;
+#endif
+
+    // Exposure first, in linear HDR. The bloom prefilter applied the same
+    // exposure when it built the chain, so the glow is in the same units as the
+    // scene here and the two can simply be summed before the curve.
+    vec3 exposed = max(texture(uColorHDR, uv).rgb * uExposure, vec3(0.0));
+
+    // Bloom is added in HDR, before the tone curve, not after. Added after, it
+    // would be compressed by a curve that was not designed for it and would
+    // never reach white the way a real highlight does; added before, it lifts
+    // the scene into the shoulder and is subject to the same highlight
+    // desaturation, which is what makes a bloomed highlight read as bright
+    // rather than as a coloured haze sitting on top of the image.
+    vec3 bloom = texture(uBloomTex, uv).rgb * uBloomIntensity;
+    vec3 colorHDR = exposed + bloom;
 
     // Tone map and grade.
     vec3 colorLDR = tone_map(colorHDR);

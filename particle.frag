@@ -4,38 +4,21 @@
 // particle.frag — Particle fragment shader for the WBOIT transparency pipeline
 // =============================================================================
 //
-// The particle geometry is drawn twice per frame, once into each WBOIT alpha
-// pass. The two draws use different compiled variants of this shader, selected
-// by the ALPHA_PASS_BEHIND / ALPHA_PASS_FRONT defines injected by the C side.
+// Drawn once per frame, in the single WBOIT pass, after the transmissive pass.
+// The transmissive pass writes depth, so particles behind glass or water are
+// depth-rejected and simply occluded; particles in front blend over it. There
+// is no second alpha-pass variant, because there is no second pass for it to
+// draw into.
 //
-//   ALPHA_PASS_BEHIND — drawn before the copy to gl_refraction_src. Discards
-//                       fragments that are not strictly behind the frontmost
-//                       transmissive surface. The WBOIT composite of this
-//                       pass is captured by gl_refraction_src and refracted
-//                       by the transmissive colour pass, so smoke behind
-//                       glass/water/ice is visible through it.
-//
-//   ALPHA_PASS_FRONT  — drawn after the transmissive colour pass. Depth
-//                       testing against the combined opaque + transmissive
-//                       depth buffer culls fragments that ALPHA_PASS_BEHIND
-//                       already drew. This variant handles smoke in front of
-//                       a transmissive surface and smoke with no transmissive
-//                       surface behind it.
-//
-// Both variants compile with WBOIT_PASS, so they write two outputs — the
-// accumulation pair — instead of a single colour. Order-independence means
-// particles no longer need to be sorted against transparent material
-// geometry; the composite pass resolves them all at once.
-//
+// Compiles with WBOIT_PASS, so it writes two outputs — the accumulation pair —
+// instead of a single colour. Order-independence means particles no longer need
+// to be sorted against transparent material geometry; the composite pass
+// resolves them all at once.
 // =============================================================================
 
 in vec4  vColor;
 in vec2  vCorner;
 in float vEyeDepth;
-
-#if defined(ALPHA_PASS_BEHIND) || defined(ALPHA_PASS_FRONT)
-uniform sampler2D uTransmissiveDepthTex;
-#endif
 
 #ifdef WBOIT_PASS
 layout(location = 0) out vec4 outAccumulation;
@@ -64,36 +47,9 @@ void main() {
     float d = length(vCorner);
     if (d > 1.0) discard;
 
-    // -------------------------------------------------------------------------
-    // ALPHA_PASS_BEHIND culling.
-    //
-    // uTransmissiveDepthTex holds the frontmost transmissive surface's
-    // gl_FragCoord.z, or 1.0 where no transmissive surface is present. A
-    // particle survives this pass only when it is strictly behind that
-    // surface. Particles in front of it, or in empty space, fall through to
-    // ALPHA_PASS_FRONT.
-    // -------------------------------------------------------------------------
-#ifdef ALPHA_PASS_BEHIND
-    float transmissive_z = texelFetch(uTransmissiveDepthTex,
-                                      ivec2(gl_FragCoord.xy), 0).r;
-    if (transmissive_z >= 1.0) discard;             // no transmissive here
-    if (gl_FragCoord.z < transmissive_z) discard;   // in front of it
-#endif
-
-    // -------------------------------------------------------------------------
-    // ALPHA_PASS_FRONT: the complement of the test above.
-    //
-    // The FRONT pass runs after the transmissive colour pass, which does write
-    // depth, but WBOIT itself does not, so the depth buffer cannot be relied on
-    // to cull what BEHIND already accumulated. Testing explicitly keeps the two
-    // passes an exclusive partition and stops a particle being composited
-    // twice, which would square its revealage contribution.
-    // -------------------------------------------------------------------------
-#ifdef ALPHA_PASS_FRONT
-    float transmissive_z_front = texelFetch(uTransmissiveDepthTex,
-                                            ivec2(gl_FragCoord.xy), 0).r;
-    if (transmissive_z_front < 1.0 && gl_FragCoord.z >= transmissive_z_front) discard;
-#endif
+    // No transmissive-depth cull here. The BEHIND/FRONT split it existed to
+    // implement is gone; the depth test in the WBOIT pass now covers it, since
+    // the transmissive pass writes depth.
 
     float alpha = vColor.a * (1.0 - smoothstep(0.0, 1.0, d));
 

@@ -42,10 +42,6 @@ uniform mat4  uView;
 
 layout(binding = 2) uniform sampler2D uRefractionSrc;
 
-#if defined(ALPHA_PASS_BEHIND) || defined(ALPHA_PASS_FRONT)
-layout(binding = 3) uniform sampler2D uTransmissiveDepthTex;
-#endif
-
 layout(binding = 4) uniform sampler2D uAOTex;
 
 uniform float     uRefractionScale;
@@ -997,6 +993,7 @@ void accumulate_direct_lighting(vec3 N, vec3 Ncc, float NdotV, float NdotV_cc, v
 // =============================================================================
 // Surface shading
 // =============================================================================
+
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (!gl_FrontFacing) N = -N;
     vec3 N_geom = normalize(N);
@@ -1143,6 +1140,10 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
                 vec3 transmitted = sample_env_map(Rr, uMatTransmissionRoughness)
                                  * uMatTransmissionTint;
 
+                /* Screen-space refraction, applied as a displacement of the
+                 * lookup along the refracted direction. gl_refraction_src is a
+                 * copy of the scene, so this bends the water against real
+                 * geometry rather than the environment probe. */
                 if (uRefractionScale > 0.0) {
                     vec2 uv  = gl_FragCoord.xy / uScreenSize;
                     vec3 Rr_view = (uView * vec4(Rr, 0.0)).xyz;
@@ -1225,34 +1226,20 @@ layout(location = 1) out vec4 outRevealage;
 #else
 layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 outNormal;
+layout(location = 2) out vec4 outEmissive;
 #endif
 
 void main() {
-    /* Glass partition for the two WBOIT passes.
+    /* No glass partition here. Transparency used to be split into a BEHIND and a
+     * FRONT pass so glass could refract transparent geometry, but that required
+     * a transmissive depth image to divide the two and made the pass graph grow
+     * a partition for every later effect. There is now a single WBOIT pass that
+     * runs after the transmissive pass: the transmissive pass writes depth, so
+     * transparent geometry behind it is depth-rejected and occluded.
      *
-     * The two passes composite at different points in the frame: BEHIND before
-     * gl_refraction_src is copied, so the transmissive pass refracts whatever
-     * is behind the glass; FRONT after the transmissive pass, so transparent
-     * geometry in front of the glass blends over it. The split is per pixel
-     * against the frontmost transmissive depth, and it is exclusive: a fragment
-     * lands in exactly one pass, so nothing is composited twice.
-     *
-     * uTransmissiveDepthTex holds 1.0 where no transmissive surface exists.
-     * Such pixels have nothing to be behind, so they go to FRONT.
-     *
-     * Guarded by WBOIT_PASS on purpose. The opaque and transmissive colour
-     * passes also compile with an alpha_pass define, and they run before
-     * gl_transmissive_depth_col is written this frame, so testing them here
-     * would discard geometry against the previous frame's glass depth. */
-#if defined(WBOIT_PASS) && defined(ALPHA_PASS_BEHIND)
-    float tz_behind = texelFetch(uTransmissiveDepthTex, ivec2(gl_FragCoord.xy), 0).r;
-    if (tz_behind >= 1.0) discard;               // no transmissive surface here
-    if (gl_FragCoord.z < tz_behind) discard;     // in front of it, not behind
-#endif
-#if defined(WBOIT_PASS) && defined(ALPHA_PASS_FRONT)
-    float tz_front = texelFetch(uTransmissiveDepthTex, ivec2(gl_FragCoord.xy), 0).r;
-    if (tz_front < 1.0 && gl_FragCoord.z >= tz_front) discard;  // already in BEHIND
-#endif
+     * The authoring consequence is deliberate: a surface the player needs to
+     * see through belongs in this pass, and transmissive is reserved for
+     * surfaces where what sits behind them does not need resolving. */
     vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
     float alpha = 1.0;
 #ifdef EFFECT_ALPHA
@@ -1267,6 +1254,25 @@ void main() {
     if (!gl_FrontFacing) Ng = -Ng;
     outNormal = vec4(normalize((uView * vec4(Ng, 0.0)).xyz) * 0.5 + 0.5, 0.0);
     FragColor = vec4(colorHDR, alpha);
+
+    /* Bloom source. EFFECT_EMISSIVE is the opt-in: a material carrying the flag
+     * hands its shaded colour to the bloom chain, anything else writes black and
+     * cannot glow no matter how brightly it is lit.
+     *
+     * The full shaded colour is written rather than just the emissive term, so
+     * the bloom threshold still has something to work with — a flagged
+     * material blooms where it is bright and stays dark where it is not, and
+     * tuning gl_bloom_threshold still means something. Writing the emissive
+     * lobe alone would make every flagged surface glow at full strength
+     * regardless of how dark the rest of it is, which defeats the threshold.
+     *
+     * Written after the fog and grade steps above so the glow matches what the
+     * surface actually contributes to the frame, not its unlit radiance. */
+#ifdef EFFECT_EMISSIVE
+    outEmissive = vec4(colorHDR, alpha);
+#else
+    outEmissive = vec4(0.0);
+#endif
 #endif
 }
 
