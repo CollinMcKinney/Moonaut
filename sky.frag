@@ -34,14 +34,15 @@
 // -----------------------------------------------------------------------------
 #define SKY_LATITUDE             40.0     // degrees, +N / -S
 #define SKY_DAY_OF_YEAR          172      // 1..365 (172 ≈ June 21)
-#define SKY_TIME_OF_DAY          8.0     // hours, 12.0 = solar noon
+#define SKY_TIME_OF_DAY          5.5     // hours, 12.0 = solar noon
 #define SKY_LUNAR_PHASE          0.5      // 0 = new, 0.5 = full, 1 = new
 #define SKY_RAIN                 0.0      // 0..1
 
-#define SKY_SUN_TINT             vec3(1.00, 0.92, 0.78)
+#define SKY_SUN_TINT             vec3(1.00, 0.65, 0.17)
+#define SKY_SUN_TINT_MIX         0.85
 #define SKY_MOON_TINT            vec3(0.85, 0.85, 0.90)
 #define SKY_INTENSITY            0.5     // overall brightness multiplier
-#define SKY_SUN_ANGULAR_RADIUS   0.00465  // radians, ~0.266 deg (real sun)
+#define SKY_SUN_ANGULAR_RADIUS   0.0465  // radians, ~0.266 deg (real sun)
 
 // Gradient colors and shaping
 #define SKY_ZENITH               vec3(0.08, 0.24, 0.84)
@@ -49,7 +50,7 @@
 #define SKY_GROUND               vec3(0.05, 0.5, 0.03)
 #define SKY_EXPONENT             0.4
 #define SKY_CLOUD_COLOR          vec3(1.15, 1.12, 1.05)
-#define SKY_CLOUD_COVERAGE       0.4
+#define SKY_CLOUD_COVERAGE       0.5
 
 // -----------------------------------------------------------------------------
 // Uniforms
@@ -211,22 +212,46 @@ vec3 sky_cloud_color(float sunY) {
 // -----------------------------------------------------------------------------
 // Sun and moon disks
 // -----------------------------------------------------------------------------
+/* The sun's colour, shared by the disc and its glow.
+ *
+ * These used to be computed independently — the disc was tinted toward
+ * SKY_SUN_TINT, the glow carried its own hardcoded ramp — and the two disagreed.
+ * That is what made the sun read white no matter how the disc was tinted: the
+ * glow's tight lobe peaks at d == 1.0, which is the exact centre of the disc, so
+ * a near-white glow at ~0.85 amplitude was being summed straight on top of the
+ * disc and diluting it. One colour for both is the fix; the disc is not
+ * independently tintable from the light it is surrounded by. */
+vec3 sky_sun_color(float sunY) {
+    float low = smoothstep(0.0, 0.25, sunY);
+    /* This ramp carries the ALTITUDE change only — orange low, white high — and
+     * the white end is deliberately pure vec3(1.0). Any warmth in it fights
+     * SKY_SUN_TINT and the two blend into a cream, which is the same mistake as
+     * having the disc and glow disagree, one level up. Hue comes from the tint
+     * below; this only decides how orange the sun is near the horizon. */
+    vec3 col = mix(vec3(1.0, 0.45, 0.20), vec3(1.0, 1.0, 1.0), low);
+    return mix(col, SKY_SUN_TINT, SKY_SUN_TINT_MIX);
+}
+
 vec3 sky_sun_disk(vec3 dir, vec3 sunDir, float sunY) {
     float cosA = dot(dir, sunDir);
     float cosLimb = cos(SKY_SUN_ANGULAR_RADIUS);
     float edge = smoothstep(cosLimb - 0.0004, cosLimb + 0.0004, cosA);
-    float low = smoothstep(0.0, 0.25, sunY);
-    vec3 col = mix(vec3(1.0, 0.45, 0.20), vec3(1.0, 0.95, 0.85), low);
-    col = mix(col, SKY_SUN_TINT, 0.5);
-    return col * edge;
+    return sky_sun_color(sunY) * edge;
 }
 
+/* The sun's atmospheric glow, for the SKY you see. Two lobes: a tight one
+ * hugging the disc (exponent 350, gone by ~10 degrees) and a broad one
+ * (exponent 25, decaying across tens of degrees).
+ *
+ * This is scattering, not emission, and it is deliberately NOT a bloom source —
+ * see the emissive term in sky_evaluate. Its widest lobe covers a large solid
+ * angle at low amplitude, which blurs into a very large halo. */
 vec3 sky_sun_glow(vec3 dir, vec3 sunDir, float sunY) {
     float d = max(dot(dir, sunDir), 0.0);
     float glow = pow(d, 350.0) * 0.8 + pow(d, 25.0) * 0.05;
-    float low = smoothstep(0.0, 0.25, sunY);
-    vec3 tint = mix(vec3(1.0, 0.55, 0.30), vec3(1.0, 0.90, 0.75), low);
-    return tint * glow;
+    /* Same colour as the disc, so the glow reinforces the disc's hue instead of
+     * washing it out. See sky_sun_color(). */
+    return sky_sun_color(sunY) * glow;
 }
 
 // Moon disk with phase. Treats the moon as a sphere lit by the sun
@@ -284,7 +309,7 @@ vec3 sky_direction_from_screen() {
 // -----------------------------------------------------------------------------
 // Sky evaluation
 // -----------------------------------------------------------------------------
-vec3 sky_evaluate(vec3 dir, vec3 sunDir) {
+vec3 sky_evaluate(vec3 dir, vec3 sunDir, out vec3 emissive) {
     float sunY = sunDir.y;
 
     float up = dir.y;
@@ -304,7 +329,8 @@ vec3 sky_evaluate(vec3 dir, vec3 sunDir) {
 
     vec3 sunDisk = sky_sun_disk(dir, sunDir, sunY);
     vec3 sunGlow = sky_sun_glow(dir, sunDir, sunY);
-    col += (sunDisk + sunGlow) * smoothstep(-0.05, 0.05, sunY);
+    float sunVisible = smoothstep(-0.05, 0.05, sunY);
+    col += (sunDisk + sunGlow) * sunVisible;
 
     vec3 moonDir = sky_moon_direction(SKY_LATITUDE, SKY_DAY_OF_YEAR,
                                       SKY_TIME_OF_DAY, SKY_LUNAR_PHASE);
@@ -313,6 +339,25 @@ vec3 sky_evaluate(vec3 dir, vec3 sunDir) {
 
     float haze = SKY_RAIN * (1.0 - smoothstep(0.0, 0.20, abs(dir.y)));
     col = mix(col, vec3(0.35, 0.36, 0.38), haze * 0.5);
+
+    /* The celestial discs are the one part of the sky that behaves like an
+     * emitter. The dome, clouds and haze above are lit scenery and stay out of
+     * the bloom source; the sun and moon are self-luminous, so they are what
+     * the bloom chain should see. Emitted pre-multiplied by SKY_INTENSITY to
+     * match the colour returned below, so raising the sky intensity brightens
+     * the glow with the disc rather than desyncing them.
+     *
+     * Sun contributes sunDisk ONLY, no glow of any kind. sunGlow is real
+     * atmospheric scattering and belongs to the colour above; as a bloom source
+     * it is the wrong signal twice over. It is far too wide — even its tight
+     * 350-exponent lobe spans ~8 degrees, roughly 30x the sun's own 0.27
+     * degrees — so blurring it produces an oversized halo. And amplitude and
+     * bloom radius are independent, so even its faint 0.05 wide lobe still
+     * blooms wide. The disk is the only part of the sun that actually radiates
+     * enough to register, and letting the bloom chain supply its own falloff
+     * gives a halo sized by the mip blur rather than by a hand-picked
+     * exponent. Any glow the disc needs comes out of the chain's own profile. */
+    emissive = (sunDisk * sunVisible + moonDisk) * SKY_INTENSITY;
 
     return col * SKY_INTENSITY;
 }
@@ -324,11 +369,15 @@ void main() {
     vec3 dir = sky_direction_from_screen();
     vec3 sunDir = sky_sun_direction(SKY_LATITUDE, SKY_DAY_OF_YEAR,
                                     SKY_TIME_OF_DAY);
-    vec3 col = sky_evaluate(dir, sunDir);
+    vec3 emissive;
+    vec3 col = sky_evaluate(dir, sunDir, emissive);
     FragColor = vec4(col, 1.0);
 #ifdef SKYBOX_MODE
-    /* The sky is lit scenery, not an emitter: nothing about it may bloom, so
-     * the bloom source stays black here no matter how bright the sun disc is. */
-    outEmissive = vec4(0.0);
+    /* The dome itself does not bloom, but the sun and moon do: they are the
+     * self-luminous bodies in the sky, and a sun that renders as a hard-edged
+     * disc with no glow reads as a sticker. Writing only the discs keeps the
+     * zenith, horizon and clouds out of the bloom source, so raising exposure
+     * brightens the sky without turning the whole hemisphere into a haze. */
+    outEmissive = vec4(emissive, 1.0);
 #endif
 }

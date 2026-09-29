@@ -1223,6 +1223,7 @@ float wboit_weight(float eye_depth, float alpha) {
 #if defined(WBOIT_PASS)
 layout(location = 0) out vec4 outAccumulation;
 layout(location = 1) out vec4 outRevealage;
+layout(location = 2) out vec4 outEmissive;
 #else
 layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 outNormal;
@@ -1230,16 +1231,6 @@ layout(location = 2) out vec4 outEmissive;
 #endif
 
 void main() {
-    /* No glass partition here. Transparency used to be split into a BEHIND and a
-     * FRONT pass so glass could refract transparent geometry, but that required
-     * a transmissive depth image to divide the two and made the pass graph grow
-     * a partition for every later effect. There is now a single WBOIT pass that
-     * runs after the transmissive pass: the transmissive pass writes depth, so
-     * transparent geometry behind it is depth-rejected and occluded.
-     *
-     * The authoring consequence is deliberate: a surface the player needs to
-     * see through belongs in this pass, and transmissive is reserved for
-     * surfaces where what sits behind them does not need resolving. */
     vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
     float alpha = 1.0;
 #ifdef EFFECT_ALPHA
@@ -1249,30 +1240,22 @@ void main() {
     float w = wboit_weight(vEyeDepth, alpha);
     outAccumulation = vec4(colorHDR * w, w);
     outRevealage = vec4(alpha);
+    #ifdef EFFECT_EMISSIVE
+        outEmissive = vec4(colorHDR * alpha, alpha);
+    #else
+        outEmissive = vec4(0.0);
+    #endif
 #else
     vec3 Ng = normalize(vNormal);
     if (!gl_FrontFacing) Ng = -Ng;
     outNormal = vec4(normalize((uView * vec4(Ng, 0.0)).xyz) * 0.5 + 0.5, 0.0);
     FragColor = vec4(colorHDR, alpha);
 
-    /* Bloom source. EFFECT_EMISSIVE is the opt-in: a material carrying the flag
-     * hands its shaded colour to the bloom chain, anything else writes black and
-     * cannot glow no matter how brightly it is lit.
-     *
-     * The full shaded colour is written rather than just the emissive term, so
-     * the bloom threshold still has something to work with — a flagged
-     * material blooms where it is bright and stays dark where it is not, and
-     * tuning gl_bloom_threshold still means something. Writing the emissive
-     * lobe alone would make every flagged surface glow at full strength
-     * regardless of how dark the rest of it is, which defeats the threshold.
-     *
-     * Written after the fog and grade steps above so the glow matches what the
-     * surface actually contributes to the frame, not its unlit radiance. */
-#ifdef EFFECT_EMISSIVE
-    outEmissive = vec4(colorHDR, alpha);
-#else
-    outEmissive = vec4(0.0);
-#endif
+    #ifdef EFFECT_EMISSIVE
+        outEmissive = vec4(colorHDR, alpha);
+    #else
+        outEmissive = vec4(0.0);
+    #endif
 #endif
 }
 
