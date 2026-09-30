@@ -10,6 +10,7 @@
 #include "tags/entity.h"
 #include "tags/model.h"
 #include "tags/material.h"
+#include "tags/animation.h"
 #include "tags/particle_emitter.h"
 
 #ifdef __cplusplus
@@ -115,6 +116,7 @@ static void tag_register_default_all(void){
 
     /* Register all tag groups */
     tag_register_group(&material);
+    tag_register_group(&animation);
     tag_register_group(&model);
     tag_register_group(&entity);
     tag_register_group(&rigid_body);

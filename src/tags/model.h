@@ -31,14 +31,12 @@ typedef struct model_vertex {
 
     vec4 color0;  vec4 color1;  vec4 color2;  vec4 color3;
 
+    /* Four joint influences, the glTF guarantee and what the GPU blend loop
+     * consumes. Weights are normalised to sum to 255 by the importer. */
     u16  bone_index0;  u8  bone_weight0;
     u16  bone_index1;  u8  bone_weight1;
     u16  bone_index2;  u8  bone_weight2;
     u16  bone_index3;  u8  bone_weight3;
-    u16  bone_index4;  u8  bone_weight4;
-    u16  bone_index5;  u8  bone_weight5;
-    u16  bone_index6;  u8  bone_weight6;
-    u16  bone_index7;  u8  bone_weight7;
 } model_vertex;
 
 /* Reflection – fields must match the struct layout exactly */
@@ -62,10 +60,6 @@ TAG_BLOCK_BEGIN(model_vertex_block, -1, sizeof(model_vertex))
     FIELD_U16("bone_index1"),  FIELD_U8("bone_weight1"),
     FIELD_U16("bone_index2"),  FIELD_U8("bone_weight2"),
     FIELD_U16("bone_index3"),  FIELD_U8("bone_weight3"),
-    FIELD_U16("bone_index4"),  FIELD_U8("bone_weight4"),
-    FIELD_U16("bone_index5"),  FIELD_U8("bone_weight5"),
-    FIELD_U16("bone_index6"),  FIELD_U8("bone_weight6"),
-    FIELD_U16("bone_index7"),  FIELD_U8("bone_weight7"),
     FIELD_TERMINATOR
 TAG_BLOCK_END(model_vertex_block, -1, sizeof(model_vertex))
 
@@ -79,17 +73,47 @@ TAG_BLOCK_END(model_index_block, -1, sizeof(u32))
 
 /* --------------------------------------------------------------------------
  * Skeleton joint
- * -------------------------------------------------------------------------- */
+ *
+ * bind_local is the joint's rest-pose transform relative to its parent joint.
+ * It is the starting point for forward kinematics (a clip overrides the local
+ * transform, children follow, then inv_bind_matrix maps into joint space).
+ * ------------------------------------------------------------------------ */
 typedef struct model_joint {
     i32      parent;              /* -1 for root */
+    i32      node_index;          /* glTF node index this joint maps to */
     string_id name;               /* interned string (from string table) */
+    mat4     bind_local;          /* rest local transform, relative to parent joint */
     mat4     inv_bind_matrix;     /* row‑major, world‑to‑joint space */
+    /* bind_local decomposed into scale * rotation * translation. A clip
+     * overrides any subset of these three, so the rest pose has to be
+     * available in the same form the channels deliver. Decomposing once at
+     * import keeps a per-frame matrix-to-quaternion solve off the hot path. */
+    vec3     rest_translation;
+    vec4     rest_rotation;
+    vec3     rest_scale;
+    /* Scene-space transform of the nearest non-joint ancestor above a root
+     * joint; identity for a skeleton that starts at a scene root and for
+     * non-root joints.
+     *
+     * The mesh vertices live in this frame, so the joint hierarchy has to be
+     * composed onto it: an armature root carrying a centimetre-to-metre scale
+     * (as most exporters emit) must appear in the joint transforms, otherwise
+     * a joint sitting 92 units out poses a mesh that is one unit across and the
+     * animation throws it off screen. The importer derives the bind matrices
+     * from the same base, so the rest pose still resolves to identity. */
+    mat4     bind_root_world;
 } model_joint;
 
 TAG_BLOCK_BEGIN(model_joint_block, 256, sizeof(model_joint))
     FIELD_I32("parent"),
+    FIELD_I32("node_index"),
     FIELD_STRING_ID("name"),
+    FIELD_MAT4("bind_local"),
     FIELD_MAT4("inv_bind_matrix"),
+    FIELD_VEC3("rest_translation"),
+    FIELD_VEC4("rest_rotation"),
+    FIELD_VEC3("rest_scale"),
+    FIELD_MAT4("bind_root_world"),
     FIELD_TERMINATOR
 TAG_BLOCK_END(model_joint_block, 256, sizeof(model_joint))
 
@@ -117,26 +141,32 @@ TAG_BLOCK_END(model_vec4_block, 65535, sizeof(vec4))
 typedef struct model_morph_target {
     struct tag_block position_deltas;   /* block of vec3, count = vertex count */
     struct tag_block normal_deltas;     /* block of vec3, may be empty */
-    struct tag_block tangent_deltas;    /* block of vec4, may be empty */
+    struct tag_block tangent_deltas;    /* block of vec3, may be empty */
     real             default_weight;    /* from glTF mesh.weights */
 } model_morph_target;
 
-TAG_BLOCK_BEGIN(model_morph_target_block, 64, sizeof(model_morph_target))
+TAG_BLOCK_BEGIN(model_morph_target_block, -1, sizeof(model_morph_target))
     FIELD_BLOCK("position_deltas", model_vec3_block),
     FIELD_BLOCK("normal_deltas", model_vec3_block),
-    FIELD_BLOCK("tangent_deltas", model_vec4_block),
+    FIELD_BLOCK("tangent_deltas", model_vec3_block),
     FIELD_REAL("default_weight"),
     FIELD_TERMINATOR
-TAG_BLOCK_END(model_morph_target_block, 64, sizeof(model_morph_target))
+TAG_BLOCK_END(model_morph_target_block, -1, sizeof(model_morph_target))
 
 /* --------------------------------------------------------------------------
  * Primitive – a draw call unit (one material, one set of vertex/index buffers)
- * -------------------------------------------------------------------------- */
+ *
+ * For a skinned primitive the mesh node's world transform is NOT baked into
+ * the vertices; it is kept here in node_transform so the runtime can compose
+ * node_transform with the skinning matrices. is_skinned selects the behaviour.
+ * ------------------------------------------------------------------------ */
 typedef struct model_primitive {
     struct tag_block vertices;          /* block of model_vertex */
     struct tag_block indices;           /* block of u32 */
     struct tag_block morph_targets;     /* block of model_morph_target */
     i32              material_index;    /* index into model's material block */
+    i32              is_skinned;        /* 1 when JOINTS/WEIGHTS are used */
+    mat4             node_transform;    /* mesh node world transform (skinned only) */
 } model_primitive;
 
 TAG_BLOCK_BEGIN(model_primitive_block, -1, sizeof(model_primitive))
@@ -144,6 +174,8 @@ TAG_BLOCK_BEGIN(model_primitive_block, -1, sizeof(model_primitive))
     FIELD_BLOCK("indices", model_index_block),
     FIELD_BLOCK("morph_targets", model_morph_target_block),
     FIELD_I32("material_index"),
+    FIELD_I32("is_skinned"),
+    FIELD_MAT4("node_transform"),
     FIELD_TERMINATOR
 TAG_BLOCK_END(model_primitive_block, -1, sizeof(model_primitive))
 
@@ -165,7 +197,7 @@ typedef struct model_definition {
     struct tag_block materials;          /* block of tag_reference (material handles) */
     struct tag_block skeleton;           /* block of model_joint */
     real_bounding_box bounding_box;
-    /* Animations are stored in separate tags (animation.h) */
+    u32 node_count;                      /* glTF node count; sizes the node->joint map */
 } model_definition;
 
 TAG_GROUP_BEGIN(model, TAG_MAGIC_PACK(modl), sizeof(model_definition))
@@ -173,6 +205,7 @@ TAG_GROUP_BEGIN(model, TAG_MAGIC_PACK(modl), sizeof(model_definition))
     FIELD_BLOCK("materials", model_material_block),
     FIELD_BLOCK("skeleton", model_joint_block),
     FIELD_REAL_BOUNDING_BOX("bounding_box"),
+    FIELD_U32("node_count"),
     FIELD_TERMINATOR
 TAG_GROUP_END(model, sizeof(model_definition))
 

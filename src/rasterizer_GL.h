@@ -129,6 +129,8 @@
 #include "common.h"
 #include "tags/entity.h"
 #include "tags/model.h"
+#include "tags/animation.h"
+#include "animation.h"
 #include "tags/material.h"
 #include "tags/particle_emitter.h"
 #include "tags/light.h"
@@ -170,7 +172,7 @@ void draw_triangle_shaded( vec3 v0, vec3 v1, vec3 v2,
                            vec3 l0, vec3 l1, vec3 l2,
                            const struct material_definition *mat );
 void render_draw_entity(const struct entity_definition *ent);
-void render_draw_entities(struct entity_definition **entities, int count);
+void render_draw_entities(struct entity_definition **entities, int count, const i32 *entity_handles);
 void render_finish(void);
 const u32* render_get_fb(void);
 int render_resize(i32 new_w, i32 new_h);
@@ -374,6 +376,7 @@ static real gl_resolution_scale = 0.8f;
 static i32  gl_anti_aliasing_enabled = 1;
 static i32  gl_vbao_enabled = 1;
 static i32  gl_dither_enabled = 1;
+static i32  gl_opaque_depth_prepass = 1;
 static i32  gl_vsync_enabled = 0;
 static i32  gl_sky_cube_enabled = 1;
 static i32  gl_skybox_enabled = 1;
@@ -489,6 +492,8 @@ typedef struct {
     GLint u_cloud_color;
     GLint u_cloud_coverage;
     GLint u_sky_ambient_scale;
+    GLint u_joint_offset;
+    GLint u_node_transform;
 } shader_variant_t;
 
 #define SHADER_CACHE_INITIAL_SIZE 64
@@ -727,8 +732,24 @@ static float gl_sky_exponent    = 2.0f;
 static float gl_sky_cloud_cover = 0.55f;
 static float gl_sky_ambient_scale = 0.5f;
 
-#define VERTEX_STRIDE_FLOATS 16
+/* Floats per vertex: position(3), normal(3), position again(3), unused(1),
+ * face normal(3), centroid(3), bone indices(4), bone weights(4).
+ * Attributes 0-5 are the original layout; 6 and 7 carry the skinning data
+ * added for GPU skinning. */
+#define VERTEX_STRIDE_FLOATS 24
 #define VERTEX_STRIDE_BYTES (VERTEX_STRIDE_FLOATS * sizeof(float))
+
+/* Joint palette capacity, in matrices. The palette lives in a shader storage
+ * buffer rather than a uniform block: 4096 mat4 is 256KB, well past
+ * GL_MAX_UNIFORM_BLOCK_SIZE (64KB on desktop, 16KB guaranteed), while
+ * GL_MAX_SHADER_STORAGE_BLOCK_SIZE is orders of magnitude larger. This also
+ * matches how the light and cluster data is already bound. Each animated
+ * entity reserves a contiguous slice; its draw calls carry the base slot. */
+#define MAX_JOINT_SLOTS 4096
+#define JOINT_SSBO_BINDING 3
+static GLuint gl_joint_ubo = 0;
+static mat4   gl_joint_matrices[MAX_JOINT_SLOTS];
+static int    gl_joint_slot_count = 0;
 
 /* ---- Per-primitive GPU cache ----
  *
@@ -758,6 +779,12 @@ typedef struct {
     int  model_index;
     int  is_transparent;
     int  is_refractive;
+    /* First joint matrix for this draw in the shared joint palette, or -1
+     * when the primitive is not skinned. */
+    int  joint_offset;
+    /* The mesh node's world transform, carried per draw because it is not
+     * baked into the vertices of a skinned primitive. Identity otherwise. */
+    mat4 node_transform;
 } draw_call_t;
 
 #define MAX_DRAW_CALLS 8192
@@ -891,6 +918,8 @@ typedef struct {
     struct entity_definition *ent;
     float depth;
     int model_index;
+    int joint_offset;   /* base slot in the shared joint palette, or -1 */
+    i32  handle;        /* entity tag handle, or -1 for a runtime entity */
 } entity_sort_t;
 
 /* Scratch for render_draw_entities' front-to-back sort. Owned here rather than
@@ -1167,6 +1196,8 @@ static shader_variant_t* shader_cache_compile(u32 cache_key, render_method key,
     entry->u_cloud_color = C89GL_glGetUniformLocation(prog, "uCloudColor");
     entry->u_cloud_coverage = C89GL_glGetUniformLocation(prog, "uCloudCoverage");
     entry->u_sky_ambient_scale = C89GL_glGetUniformLocation(prog, "uSkyAmbientScale");
+    entry->u_joint_offset = C89GL_glGetUniformLocation(prog, "uJointOffset");
+    entry->u_node_transform = C89GL_glGetUniformLocation(prog, "uNodeTransform");
 
     gl_shader_cache_count++;
     gl_shader_compilations++;
@@ -1330,6 +1361,38 @@ static void update_model_ubo(void) {
         C89GL_glBufferSubData(GL_UNIFORM_BUFFER, 0, total_bytes, gl_model_matrices);
     }
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+/* Reserve `count` consecutive slots in the shared joint palette and return
+ * the first slot index, or -1 when the palette is full. Allocation is a
+ * bump pointer reset once per frame by render_draw_entities. */
+static int joint_palette_alloc(int count) {
+    int base;
+    if (count <= 0) return -1;
+    if (gl_joint_slot_count + count > MAX_JOINT_SLOTS) return -1;
+    base = gl_joint_slot_count;
+    gl_joint_slot_count += count;
+    return base;
+}
+
+static void update_joint_ubo(void) {
+    size_t total_bytes = (size_t)gl_joint_slot_count * sizeof(mat4);
+    if (total_bytes == 0) return;
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_joint_ubo);
+    C89GL_glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, total_bytes, gl_joint_matrices);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+/* GLSL reads a mat4 out of a buffer as four column vectors, so a row-major
+ * matrix copied in verbatim is interpreted transposed -- every skinned vertex
+ * would be blended against the inverse of its joint transform. Copy through an
+ * explicit transpose instead, which is what the GL_TRUE uniform uploads
+ * elsewhere in this file already do for the same reason. */
+static void joint_palette_store(int slot, const mat4 *src) {
+    int r, c;
+    for (r = 0; r < 4; ++r)
+        for (c = 0; c < 4; ++c)
+            gl_joint_matrices[slot].data[c * 4 + r] = src->data[r * 4 + c];
 }
 
 /* Number of lights actually written by the last upload_lights_to_ssbo() call.
@@ -2916,6 +2979,15 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
         C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, gl_cluster_offset_ssbo);
     }
 
+    /* The joint palette is read by the VERTEX shader, which the depth prepass
+     * shares with the colour pass, so it must be bound on every path -- not
+     * just the non-depth one. Leaving it unbound made the prepass read zeros,
+     * collapse `skin` to the identity fallback in material.vert, and write
+     * depth for the bind pose while colour drew the animated pose. Fragments
+     * behind the stale bind-pose depth were then rejected, punching
+     * model-shaped holes that fell through to the sky. */
+    C89GL_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, JOINT_SSBO_BINDING, gl_joint_ubo);
+
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MATERIAL_UBO_BINDING, gl_material_ubo);
     C89GL_glBindBufferBase(GL_UNIFORM_BUFFER, MODEL_UBO_BINDING, gl_model_ubo);
 }
@@ -2924,13 +2996,16 @@ static void set_uniforms_for_variant(shader_variant_t* variant, int is_depth_pas
    Per-primitive GPU cache
    ================================================================ */
 
-/* Pack one vertex into the 16-float GPU layout the shader expects.
- * The layout matches the previous PACK_V macro: position, normal,
- * position again (attr2), unused float (attr3 — set per draw as a
- * vertex attrib constant), face normal, centroid. */
+/* Pack one vertex into the 24-float GPU layout the shader expects.
+ * The layout is position, normal, position again (attr2), unused float
+ * (attr3 - set per draw as a vertex attrib constant), face normal,
+ * centroid, then the four bone indices (attr6) and weights (attr7).
+ * Bone weights arrive as 0-255 and are stored pre-divided by 255 so the
+ * shader can use them directly. */
 static void gpu_pack_vertex(float **pp,
                             vec3 position, vec3 normal,
-                            vec3 face_normal, vec3 centroid)
+                            vec3 face_normal, vec3 centroid,
+                            const u16 bone_idx[4], const u8 bone_wgt[4])
 {
     float *p = *pp;
     p[0]  = position.position.x; p[1]  = position.position.y; p[2]  = position.position.z;
@@ -2939,6 +3014,12 @@ static void gpu_pack_vertex(float **pp,
     p[9]  = 0.0f;
     p[10] = face_normal.position.x; p[11] = face_normal.position.y; p[12] = face_normal.position.z;
     p[13] = centroid.position.x;    p[14] = centroid.position.y;    p[15] = centroid.position.z;
+    p[16] = (float)bone_idx[0]; p[17] = (float)bone_idx[1];
+    p[18] = (float)bone_idx[2]; p[19] = (float)bone_idx[3];
+    p[20] = (float)bone_wgt[0] * (1.0f / 255.0f);
+    p[21] = (float)bone_wgt[1] * (1.0f / 255.0f);
+    p[22] = (float)bone_wgt[2] * (1.0f / 255.0f);
+    p[23] = (float)bone_wgt[3] * (1.0f / 255.0f);
     *pp = p + VERTEX_STRIDE_FLOATS;
 }
 
@@ -2994,6 +3075,18 @@ gpu_primitive_get_or_upload(const model_definition *mod, u32 prim_idx)
             u32 i0 = src_idx[tri*3+0], i1 = src_idx[tri*3+1], i2 = src_idx[tri*3+2];
             vec3 v0 = src_verts[i0].position, v1 = src_verts[i1].position, v2 = src_verts[i2].position;
             vec3 n0 = src_verts[i0].normal,   n1 = src_verts[i1].normal,   n2 = src_verts[i2].normal;
+            u16 b0[4] = { src_verts[i0].bone_index0, src_verts[i0].bone_index1,
+                          src_verts[i0].bone_index2, src_verts[i0].bone_index3 };
+            u16 b1[4] = { src_verts[i1].bone_index0, src_verts[i1].bone_index1,
+                          src_verts[i1].bone_index2, src_verts[i1].bone_index3 };
+            u16 b2[4] = { src_verts[i2].bone_index0, src_verts[i2].bone_index1,
+                          src_verts[i2].bone_index2, src_verts[i2].bone_index3 };
+            u8  w0[4] = { src_verts[i0].bone_weight0, src_verts[i0].bone_weight1,
+                          src_verts[i0].bone_weight2, src_verts[i0].bone_weight3 };
+            u8  w1[4] = { src_verts[i1].bone_weight0, src_verts[i1].bone_weight1,
+                          src_verts[i1].bone_weight2, src_verts[i1].bone_weight3 };
+            u8  w2[4] = { src_verts[i2].bone_weight0, src_verts[i2].bone_weight1,
+                          src_verts[i2].bone_weight2, src_verts[i2].bone_weight3 };
             vec3 lfn, lc;
             if (is_transparent) {
                 lfn = vec3_normalize(vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
@@ -3002,9 +3095,9 @@ gpu_primitive_get_or_upload(const model_definition *mod, u32 prim_idx)
                 lfn = vec3_init_from_3(0.0f, 0.0f, 0.0f);
                 lc  = vec3_init_from_3(0.0f, 0.0f, 0.0f);
             }
-            gpu_pack_vertex(&p, v0, n0, lfn, lc);
-            gpu_pack_vertex(&p, v1, n1, lfn, lc);
-            gpu_pack_vertex(&p, v2, n2, lfn, lc);
+            gpu_pack_vertex(&p, v0, n0, lfn, lc, b0, w0);
+            gpu_pack_vertex(&p, v1, n1, lfn, lc, b1, w1);
+            gpu_pack_vertex(&p, v2, n2, lfn, lc, b2, w2);
             inds_stage[tri*3+0] = tri*3 + 0;
             inds_stage[tri*3+1] = tri*3 + 1;
             inds_stage[tri*3+2] = tri*3 + 2;
@@ -3042,6 +3135,13 @@ gpu_primitive_get_or_upload(const model_definition *mod, u32 prim_idx)
     C89GL_glEnableVertexAttribArray(4);
     C89GL_glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(13 * sizeof(float)));
     C89GL_glEnableVertexAttribArray(5);
+    /* Attributes 6/7 carry the four joint indices and their weights. They are
+     * enabled for every primitive; an unskinned primitive packs zero weights,
+     * so the blend collapses to identity without needing a shader branch. */
+    C89GL_glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(16 * sizeof(float)));
+    C89GL_glEnableVertexAttribArray(6);
+    C89GL_glVertexAttribPointer(7, 4, GL_FLOAT, GL_FALSE, VERTEX_STRIDE_BYTES, (void*)(20 * sizeof(float)));
+    C89GL_glEnableVertexAttribArray(7);
 
     gp->index_count = prim->indices.count;
 
@@ -3074,7 +3174,29 @@ static void bind_fbo(void) {
     C89GL_glViewport(0, 0, gl_render_width, gl_render_height);
 }
 
-static void draw_entity_with_model_index(const struct entity_definition *ent, int model_index)
+/* Per-draw state that is not part of the vertex data: the entity's model
+ * matrix index, the joint palette base, and the mesh node transform. Every
+ * draw loop calls this instead of setting attribute 3 by hand, so the
+ * skinning uniforms cannot drift out of sync between passes. */
+static void set_draw_uniforms(const shader_variant_t *v, const draw_call_t *dc) {
+    C89GL_glVertexAttrib1f(3, (float)dc->model_index);
+    if (v->u_joint_offset != -1)
+        C89GL_glUniform1i(v->u_joint_offset, dc->joint_offset);
+    if (v->u_node_transform != -1) {
+        static const float identity[16] = {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+        if (dc->joint_offset >= 0)
+            C89GL_glUniformMatrix4fv(v->u_node_transform, 1, GL_TRUE, (const float*)&dc->node_transform);
+        else
+            C89GL_glUniformMatrix4fv(v->u_node_transform, 1, GL_FALSE, identity);
+    }
+}
+
+static void draw_entity_with_model_index(const struct entity_definition *ent, int model_index, int joint_offset)
 {
     model_definition *mod;
     u32 p;
@@ -3113,6 +3235,13 @@ static void draw_entity_with_model_index(const struct entity_definition *ent, in
         dc->mat = mat;
         dc->prim = gp;
         dc->model_index = model_index;
+        /* Only a skinned primitive both needs a palette and carries a node
+         * transform that was not baked into its vertices. */
+        dc->joint_offset = prim->is_skinned ? joint_offset : -1;
+        if (prim->is_skinned)
+            dc->node_transform = prim->node_transform;
+        else
+            memset(&dc->node_transform, 0, sizeof(dc->node_transform));
         if (mat->render_method & EFFECT_ALPHA) {
             dc->is_transparent = 1;
             dc->is_refractive = 0;
@@ -3231,6 +3360,11 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, gl_model_ubo);
     C89GL_glBufferData(GL_UNIFORM_BUFFER, MAX_MODEL_MATRICES * sizeof(mat4), NULL, GL_STREAM_DRAW);
     C89GL_glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    C89GL_glGenBuffers(1, &gl_joint_ubo);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl_joint_ubo);
+    C89GL_glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_JOINT_SLOTS * sizeof(mat4), NULL, GL_STREAM_DRAW);
+    C89GL_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     gl_default_fbo = 0;
     C89GL_glGetIntegerv(GL_FRAMEBUFFER_BINDING, &gl_default_fbo);
@@ -3411,6 +3545,7 @@ INLINE void render_shutdown(void) {
     if (gl_depth_tex) { C89GL_glDeleteTextures(1, &gl_depth_tex); gl_depth_tex = 0; }
     if (gl_material_ubo) { C89GL_glDeleteBuffers(1, &gl_material_ubo); gl_material_ubo = 0; }
     if (gl_model_ubo) { C89GL_glDeleteBuffers(1, &gl_model_ubo); gl_model_ubo = 0; }
+    if (gl_joint_ubo) { C89GL_glDeleteBuffers(1, &gl_joint_ubo); gl_joint_ubo = 0; }
     if (gl_light_ssbo) { C89GL_glDeleteBuffers(1, &gl_light_ssbo); gl_light_ssbo = 0; }
     if (gl_cluster_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_ssbo); gl_cluster_ssbo = 0; }
     if (gl_cluster_offset_ssbo) { C89GL_glDeleteBuffers(1, &gl_cluster_offset_ssbo); gl_cluster_offset_ssbo = 0; }
@@ -3532,12 +3667,14 @@ INLINE void render_shutdown(void) {
     gl_draw_call_count = 0;
 }
 
-INLINE void render_draw_entities(struct entity_definition **entities, int count) {
+INLINE void render_draw_entities(struct entity_definition **entities, int count,
+                                 const i32 *entity_handles) {
     int i, valid_count;
     entity_sort_t *sorted;
     if (!entities || count <= 0) return;
 
     gl_model_count = 0;
+    gl_joint_slot_count = 0;
     for (i = 0; i < count && gl_model_count < MAX_MODEL_MATRICES; i++) {
         entity_definition *ent = entities[i];
         if (!ent || ent->model.handle < 0) continue;
@@ -3575,12 +3712,57 @@ INLINE void render_draw_entities(struct entity_definition **entities, int count)
             entities[i]->position.position.z,
             1.0f));
         sorted[valid_count].depth = -c.position.z;
+        sorted[valid_count].joint_offset = -1;
+        sorted[valid_count].handle =
+            (entity_handles && i < count) ? entity_handles[i] : -1;
         valid_count++;
     }
     qsort(sorted, valid_count, sizeof(entity_sort_t), entity_sort_compare);
 
+    /* Evaluate one pose per animated entity and copy the resulting palettes
+     * into the shared joint buffer. The copy matters: the scratch holds a
+     * single pose, so every entity's matrices must be lifted out before the
+     * next one is evaluated. */
     for (i = 0; i < valid_count; i++) {
-        draw_entity_with_model_index(sorted[i].ent, sorted[i].model_index);
+        entity_definition *ent = sorted[i].ent;
+        const model_definition *mod;
+        const animation_definition *adef;
+        const animation_clip *clips;
+        animation_player *player;
+        const animation_clip *clip;
+        u32 joint_count, j;
+        int base;
+
+        if (ent->animation.handle < 0) continue;
+        if (sorted[i].handle < 0) continue;   /* runtime entity: no playback state */
+        mod = (const model_definition*)tag_get(ent->model.handle, TAG_model);
+        adef = (const animation_definition*)tag_get(ent->animation.handle, TAG_animation);
+        if (!mod || !adef || !adef->clips.address || adef->clips.count == 0u) continue;
+
+        player = animation_player_for(sorted[i].handle);
+        if (!player || player->entity != sorted[i].handle) continue;
+        if (player->clip < 0 || (u32)player->clip >= adef->clips.count) player->clip = 0;
+
+        clips = (const animation_clip*)adef->clips.address;
+        clip = &clips[player->clip];
+        if (mod->skeleton.count == 0u) continue;
+
+        joint_count = animation_eval_pose(mod, clip, player->time);
+        if (joint_count == 0u) continue;
+
+        base = joint_palette_alloc((int)joint_count);
+        if (base < 0) continue;   /* palette exhausted this frame */
+
+        for (j = 0; j < joint_count; ++j)
+            joint_palette_store(base + j, &g_anim_scratch.palette[j]);
+
+        sorted[i].joint_offset = base;
+    }
+    update_joint_ubo();
+
+    for (i = 0; i < valid_count; i++) {
+        draw_entity_with_model_index(sorted[i].ent, sorted[i].model_index,
+                                     sorted[i].joint_offset);
     }
 }
 
@@ -3588,7 +3770,8 @@ INLINE void render_draw_entity(const struct entity_definition *ent) {
     if (!ent) return;
     {
         struct entity_definition *ents[1] = { (struct entity_definition*)ent };
-        render_draw_entities(ents, 1);
+        i32 handles[1] = { -1 };
+        render_draw_entities(ents, 1, handles);
     }
 }
 
@@ -4018,7 +4201,7 @@ static void render_depth_cube_pass(void) {
             }
 
             C89GL_glBindVertexArray(dc->prim->vao);
-            C89GL_glVertexAttrib1f(3, (float)dc->model_index);
+            set_draw_uniforms(v, dc);
             C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
                                  GL_UNSIGNED_INT, (void*)0);
         }
@@ -4496,18 +4679,21 @@ INLINE void render_finish(void) {
         C89GL_glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         C89GL_glDepthMask(GL_TRUE);
         C89GL_glDepthFunc(GL_LESS);
-        /* render_depth_cube_pass runs earlier in this frame and leaves
-         * GL_CULL_FACE disabled if its last material was double_sided. The
-         * cached `current_cull` below is a local seeded to 1, not a query, so
-         * without this the prepass would rasterise back faces and no later
-         * comparison would ever correct it. Assert the state the cache claims
-         * rather than trusting the seed. */
+        /* The prepass must rasterise exactly the triangle set the colour
+         * pass will rasterise. Forcing GL_CULL_FACE on for every opaque draw
+         * made it disagree with the colour pass for double-sided materials:
+         * the prepass wrote depth for front faces only, while colour drew
+         * both. Fragments whose depth lost to a face the colour pass never
+         * drew were then rejected, leaving model-shaped holes that fell
+         * through to the sky. Mirror the colour pass's cull choice exactly,
+         * including the seed, which render_depth_cube_pass can leave stale. */
         C89GL_glEnable(GL_CULL_FACE);
         current_cull = 1;
         current_program = 0;
-        for (i = 0; i < gl_draw_call_count; i++) {
+        for (i = 0; gl_opaque_depth_prepass && i < gl_draw_call_count; i++) {
             draw_call_t *dc = &gl_draw_calls[i];
             shader_variant_t *v;
+            int want_cull;
             if (dc->is_transparent || dc->is_refractive) continue;
             v = get_program_for_method((render_method)dc->mat->render_method, 1, ALPHA_PASS_FRONT);
             if (!v) continue;
@@ -4516,8 +4702,14 @@ INLINE void render_finish(void) {
                 current_program = v->program;
                 set_uniforms_for_variant(v, 1, ALPHA_PASS_FRONT);
             }
+            want_cull = dc->mat->double_sided ? 0 : 1;
+            if (current_cull != want_cull) {
+                if (want_cull) C89GL_glEnable(GL_CULL_FACE);
+                else           C89GL_glDisable(GL_CULL_FACE);
+                current_cull = want_cull;
+            }
             C89GL_glBindVertexArray(dc->prim->vao);
-            C89GL_glVertexAttrib1f(3, (float)dc->model_index);
+            set_draw_uniforms(v, dc);
             C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
                                  GL_UNSIGNED_INT, (void*)0);
         }
@@ -4577,7 +4769,7 @@ INLINE void render_finish(void) {
                 current_cull = want_cull;
             }
             C89GL_glBindVertexArray(dc->prim->vao);
-            C89GL_glVertexAttrib1f(3, (float)dc->model_index);
+            set_draw_uniforms(v, dc);
             C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
                                  GL_UNSIGNED_INT, (void*)0);
         }
@@ -4663,7 +4855,7 @@ INLINE void render_finish(void) {
                         current_cull = want_cull;
                     }
                     C89GL_glBindVertexArray(dc->prim->vao);
-                    C89GL_glVertexAttrib1f(3, (float)dc->model_index);
+                    set_draw_uniforms(v, dc);
                     C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
                                          GL_UNSIGNED_INT, (void*)0);
                 }
@@ -4753,7 +4945,7 @@ INLINE void render_finish(void) {
                     current_cull = want_cull;
                 }
                 C89GL_glBindVertexArray(dc->prim->vao);
-                C89GL_glVertexAttrib1f(3, (float)dc->model_index);
+                set_draw_uniforms(v, dc);
                 C89GL_glDrawElements(GL_TRIANGLES, (GLsizei)dc->prim->index_count,
                                      GL_UNSIGNED_INT, (void*)0);
             }

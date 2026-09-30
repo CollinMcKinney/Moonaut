@@ -14,6 +14,7 @@
 #include "defaults.h"
 
 #include "tags/model.h"
+#include "tags/animation.h"
 #include "tags/entity.h"
 #include "tags/rigid_body.h"
 #include "tags/collision_bsp.h"
@@ -56,6 +57,10 @@ typedef struct scenario_world {
 
     /* Pointers to actual entity data (either Tag Instance memory or pool) */
     entity_definition *entities[SCENARIO_MAX_ENTITIES];
+    /* Tag handle for the matching entry in `entities`, or -1 for an entity
+     * created at runtime from the pool. The renderer needs this to look up
+     * per-entity animation playback state, which is keyed by handle. */
+    i32               entity_handles[SCENARIO_MAX_ENTITIES];
     i32               entity_count;
 
     /* Backing store for entities created at runtime that aren't Tags */
@@ -208,6 +213,7 @@ static i32 scenario_load_tag(const char *scenario_name) {
 
         i32 ent_idx = g_scene_world->entity_count;
         g_scene_world->entities[ent_idx] = src; /* Point directly to tag data */
+        g_scene_world->entity_handles[ent_idx] = ent_handle;
 
         if (src->rigid_body.handle >= 0) {
             physics_add_entity(&g_scene_world->physics, ent_idx);
@@ -297,7 +303,8 @@ static void scenario_render(void) {
     render_set_light(light_dir, light_col, ambient_col);
     render_clear(sc_clear_r, sc_clear_g, sc_clear_b);
 
-    render_draw_entities(g_scene_world->entities, g_scene_world->entity_count);
+    render_draw_entities(g_scene_world->entities, g_scene_world->entity_count,
+                         g_scene_world->entity_handles);
 
     /* ---- Set particle camera ---- */
     vec3 forward = vec3_normalize(vec3_sub(sc_cam_center, sc_cam_eye));
@@ -664,17 +671,18 @@ static i32 lua_tag_load(lua_State *L)
     return 1;
 }
 
-/* import_model(path [, material_handle]) -> model tag handle */
+/* import_model(path [, material_handle]) -> model tag handle [, animation tag handle] */
 static i32 lua_import_model(lua_State *L)
 {
     const char *path = luaL_checkstring(L, 1);
     i32 material_handle = -1;
+    i32 anim_handle = -1;
     i32 handle;
 
     if (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
         material_handle = (i32)luaL_checkinteger(L, 2);
 
-    handle = model_importer_import_model_with_material(path, material_handle);
+    handle = model_importer_import_model_with_material(path, material_handle, &anim_handle);
     if (handle < 0) {
         const char *error = model_importer_last_error();
         if (!error || error[0] == '\0')
@@ -683,6 +691,126 @@ static i32 lua_import_model(lua_State *L)
     }
 
     lua_pushinteger(L, handle);
+    lua_pushinteger(L, anim_handle);
+    return 2;
+}
+
+/* anim_play(entity_handle [, clip]) -> true
+ * Binds the entity to its 'anim' tag and starts (or restarts) playback. The
+ * clip index defaults to 0. Binding happens here rather than in the renderer
+ * so the entity carries the reference and the draw path just reads it. */
+static i32 lua_anim_play(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    i32 clip = (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) ? (i32)luaL_checkinteger(L, 2) : 0;
+    entity_definition *ent;
+    animation_player *p;
+
+    ent = (entity_definition*)tag_get(entity_handle, TAG_entity);
+    if (!ent) return luaL_error(L, "invalid entity handle %d", entity_handle);
+    if (ent->animation.handle < 0)
+        return luaL_error(L, "entity %d has no animation assigned", entity_handle);
+
+    p = animation_player_for(entity_handle);
+    if (!p) return luaL_error(L, "animation player table is full");
+    p->entity  = entity_handle;
+    p->clip    = clip;
+    p->time    = 0.0f;
+    p->speed   = 1.0f;
+    p->playing = 1;
+    p->looping = 1;
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* anim_pause(entity_handle) - stop advancing, hold the current pose */
+static i32 lua_anim_pause(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    animation_player *p = animation_player_for(entity_handle);
+    if (p && p->entity == entity_handle) p->playing = 0;
+    return 0;
+}
+
+/* anim_set_time(entity_handle, seconds) - scrub the playhead */
+static i32 lua_anim_set_time(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    real t = (real)luaL_checknumber(L, 2);
+    animation_player *p = animation_player_for(entity_handle);
+    if (p && p->entity == entity_handle) p->time = t;
+    return 0;
+}
+
+static i32 lua_anim_get_time(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    animation_player *p = animation_player_for(entity_handle);
+    lua_pushnumber(L, (p && p->entity == entity_handle) ? (lua_Number)p->time : 0.0);
+    return 1;
+}
+
+static i32 lua_anim_set_speed(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    real s = (real)luaL_checknumber(L, 2);
+    animation_player *p = animation_player_for(entity_handle);
+    if (p && p->entity == entity_handle) p->speed = s;
+    return 0;
+}
+
+static i32 lua_anim_set_loop(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    i32 loop = lua_toboolean(L, 2);
+    animation_player *p = animation_player_for(entity_handle);
+    if (p && p->entity == entity_handle) p->looping = (u8)(loop ? 1 : 0);
+    return 0;
+}
+
+/* anim_set_clip(entity_handle, clip) - switch clip, keeping playback state */
+static i32 lua_anim_set_clip(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    i32 clip = (i32)luaL_checkinteger(L, 2);
+    animation_player *p = animation_player_for(entity_handle);
+    if (p && p->entity == entity_handle) p->clip = clip;
+    return 0;
+}
+
+/* anim_get_clip_count(entity_handle) - number of clips on the entity's tag */
+static i32 lua_anim_get_clip_count(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    entity_definition *ent = (entity_definition*)tag_get(entity_handle, TAG_entity);
+    animation_definition *adef;
+    if (!ent || ent->animation.handle < 0) { lua_pushinteger(L, 0); return 1; }
+    adef = (animation_definition*)tag_get(ent->animation.handle, TAG_animation);
+    lua_pushinteger(L, adef ? (lua_Integer)adef->clips.count : 0);
+    return 1;
+}
+
+/* anim_get_clip_name(entity_handle, clip) - string, or nil when out of range */
+static i32 lua_anim_get_clip_name(lua_State *L)
+{
+    i32 entity_handle = (i32)luaL_checkinteger(L, 1);
+    i32 clip = (i32)luaL_checkinteger(L, 2);
+    entity_definition *ent = (entity_definition*)tag_get(entity_handle, TAG_entity);
+    animation_definition *adef;
+    const animation_clip *clips;
+    const char *name;
+
+    if (!ent || ent->animation.handle < 0) { lua_pushnil(L); return 1; }
+    adef = (animation_definition*)tag_get(ent->animation.handle, TAG_animation);
+    if (!adef || !adef->clips.address || clip < 0 || (u32)clip >= adef->clips.count) {
+        lua_pushnil(L);
+        return 1;
+    }
+    clips = (const animation_clip*)adef->clips.address;
+    name = string_id_lookup(clips[clip].name);
+    if (!name) { lua_pushnil(L); return 1; }
+    lua_pushstring(L, name);
     return 1;
 }
 
@@ -1283,6 +1411,17 @@ static void runtime_register_lua_functions(lua_state *state) {
     lua_register_builtin(state, "tag_set_block_field",  lua_tag_set_block_field);
     lua_register_builtin(state, "tag_get_script",       lua_tag_get_script);
 
+    /* Animation bindings */
+    lua_register_builtin(state, "anim_play",           lua_anim_play);
+    lua_register_builtin(state, "anim_pause",          lua_anim_pause);
+    lua_register_builtin(state, "anim_set_time",       lua_anim_set_time);
+    lua_register_builtin(state, "anim_get_time",       lua_anim_get_time);
+    lua_register_builtin(state, "anim_set_speed",      lua_anim_set_speed);
+    lua_register_builtin(state, "anim_set_loop",       lua_anim_set_loop);
+    lua_register_builtin(state, "anim_set_clip",       lua_anim_set_clip);
+    lua_register_builtin(state, "anim_get_clip_count", lua_anim_get_clip_count);
+    lua_register_builtin(state, "anim_get_clip_name",  lua_anim_get_clip_name);
+
     /* Particle bindings */
     lua_register_builtin(state, "particle_load_emitter",    lua_particle_load_emitter);
     lua_register_builtin(state, "particle_set_position",    lua_particle_set_position);
@@ -1318,6 +1457,7 @@ static void runtime_register_lua_functions(lua_state *state) {
 
     lua_set_global_integer(state, "TAG_material",       TAG_material);
     lua_set_global_integer(state, "TAG_model",          TAG_model);
+    lua_set_global_integer(state, "TAG_animation",      TAG_animation);
     lua_set_global_integer(state, "TAG_collision_bsp",  TAG_collision_bsp);
     lua_set_global_integer(state, "TAG_particle_emitter", TAG_particle_emitter);
     lua_set_global_integer(state, "TAG_light",          TAG_light);
@@ -1433,6 +1573,11 @@ static void runtime_init(void) {
             printf("Failed to initialize audio pipe.\n");
         }
     }
+
+    /* The playback table must be empty before the script runs: anim_play()
+     * binds entities to slots, and an uninitialised table has every slot
+     * looking occupied. */
+    animation_players_init();
 
     scripts_init();
     if (scripts_add_lua("script.lua", runtime_bind_lua_state, g_scene_world) < 0)
@@ -1599,6 +1744,9 @@ static void runtime_start(void)
             }
             /* Update particles */
             render_particle_system_update((float)fixed_dt);
+            /* Advance animation playheads on the same fixed step as physics
+             * so a paused or slow-motion world also slows its animation. */
+            animation_players_update((real)fixed_dt);
 
             accumulator -= fixed_dt;
             step_count++;
