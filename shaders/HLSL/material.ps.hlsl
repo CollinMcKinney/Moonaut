@@ -18,6 +18,8 @@ cbuffer GlobalsCB : register(b1) {
     float2 _GlobalsPad1;
 }
 
+
+
 // Existing defines
 #define uMatColor uMatData[0].xyz
 #define uMatTint uMatData[1].xyz
@@ -45,7 +47,7 @@ cbuffer GlobalsCB : register(b1) {
 #define uMatBumpFrequency uMatData[11].x
 #define uMatBumpSpeed uMatData[11].y
 #define uMatRoughness uMatData[11].z
-#define uMatFringeIntensity uMatData[11].w
+#define uMatDiffractionIntensity uMatData[11].w
 #define uMatCelBands int(uMatData[12].x)
 #define uMatGlitchIntensity uMatData[12].y
 #define uMatPosterizeLevels int(uMatData[12].z)
@@ -221,8 +223,8 @@ float3 shade_surface(float3 N, float3 worldPos, float3 localPos) {
         color += offset * 0.25f;
     }
 #endif
-#ifdef EFFECT_FRINGE
-    { float fringe = pow(1.0f-ndotv, 3.0f) * uMatFringeIntensity; color.r += fringe; color.b -= fringe; }
+#ifdef EFFECT_DIFFRACTION
+    { float diff = pow(1.0f-ndotv, 3.0f) * uMatDiffractionIntensity; color.r += diff; color.b -= diff; }
 #endif
 #ifdef EFFECT_POSTERIZE
     { float levels = float(uMatPosterizeLevels); color = floor(color*levels + 0.5f) / levels; }
