@@ -119,6 +119,16 @@ layout(std430, binding = 0) buffer LightBuffer         { Light lights[]; };
 layout(std430, binding = 1) buffer ClusterBuffer       { uint clusterLights[]; };
 layout(std430, binding = 2) buffer ClusterOffsetBuffer { uint clusterOffsets[]; };
 
+#if defined(WBOIT_PASS)
+    layout(location = 0) out vec4 outAccumulation;
+    layout(location = 1) out vec4 outRevealage;
+    layout(location = 2) out vec4 outEmissive;
+#else
+    layout(location = 0) out vec4 FragColor;
+    layout(location = 1) out vec4 outNormal;
+    layout(location = 2) out vec4 outEmissive;
+#endif
+
 // =============================================================================
 // Saturate Overloads (Fixes GLSL vector mismatch)
 // =============================================================================
@@ -223,7 +233,21 @@ vec3 perturb_normal_wave(vec3 N, vec3 localPos) {
     float hz = bump_height(pz, time, speed, value_noise(pz * 0.1));
 
     vec3 gradient = vec3(hx - h0, hy - h0, hz - h0) / eps;
+    gradient -= N * dot(gradient, N);
+    float gradLen = length(gradient);
+    if (gradLen < 1e-6) return N;
+    // Use the gradient's direction, not its magnitude. Dividing by eps made
+    // the perturbation a function of how densely the mesh was tessellated:
+    // on a coarse mesh footprintWave kept eps large and `fade` drove the
+    // effect to nothing, so the raw slope was never exercised. On a dense
+    // mesh eps pinned to its 0.01 floor and the unbounded slope swamped the
+    // normal. Normalising matches perturb_normal_noise and makes the effect
+    // independent of poly density.
+    gradient /= gradLen;
     gradient *= uMatBumpWaveAmplitude * fade;
+    const float MAX_PERTURB = 0.5;
+    float pl = length(gradient);
+    if (pl > MAX_PERTURB) gradient *= MAX_PERTURB / pl;
     return normalize(N - gradient);
 }
 
@@ -993,7 +1017,6 @@ void accumulate_direct_lighting(vec3 N, vec3 Ncc, float NdotV, float NdotV_cc, v
 // =============================================================================
 // Surface shading
 // =============================================================================
-
 vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     if (!gl_FrontFacing) N = -N;
     vec3 N_geom = normalize(N);
@@ -1068,7 +1091,13 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
     }
 #endif
 
-    vec3 irradiance = sample_env_map(N_geom, uEnvCubeMaxMip);
+    // Diffuse ambient must be sampled with the SHADING normal, not the
+    // geometric one. Using N_geom here discarded the entire bump perturbation,
+    // so EFFECT_BUMP_WAVE and EFFECT_BUMP_NOISE only ever reached the direct
+    // term at accumulate_direct_lighting. On a model lit predominantly by the
+    // IBL probe that left the effects effectively invisible, while low-poly
+    // models lit by a strong key light still showed them.
+    vec3 irradiance = sample_env_map(N, uEnvCubeMaxMip);
     ambientDiffuse = irradiance * diffuseColor * kD_env
                         * uMatAmbient * uSkyAmbientScale;
 
@@ -1161,17 +1190,27 @@ vec3 shade_surface(vec3 N, vec3 worldPos, vec3 localPos) {
 
     vec3 colorHDR = surfaceDiffuse + surfaceReflection + surfaceTransmission;
 
+// Inside your emission calculation function
 #ifdef EFFECT_EMISSIVE
-    vec3 em = uMatEmissiveColor;
-#ifdef EFFECT_EMISSIVE_PULSE
-    em *= 1.0 + uMatEmissivePulseAmplitude
-         * sin(uTime * uMatEmissivePulseFrequency + uMatEmissivePulsePhase);
-#endif
-    colorHDR += em;
-#endif
+    vec3 emissive = uMatEmissiveColor;
+    
+    #ifdef EFFECT_EMISSIVE_PULSE
+        emissive *= 1.0 + uMatEmissivePulseAmplitude
+            * sin(uTime * uMatEmissivePulseFrequency + uMatEmissivePulsePhase);
+    #endif
 
-#ifdef EFFECT_STROBE
-    colorHDR += uMatStrobeColor * (sin(uTime * uMatStrobeFrequency + uMatStrobePhase) * 0.5 + 0.5);
+    #ifdef EFFECT_STROBE
+        emissive += uMatStrobeColor * smoothstep(0.0, 0.2, sin(uTime * uMatStrobeFrequency + uMatStrobePhase));
+    #endif
+
+    outEmissive = vec4(emissive, 1.0);
+#else
+    #ifdef EFFECT_STROBE
+        vec3 strobe = uMatStrobeColor * smoothstep(0.0, 0.2, sin(uTime * uMatStrobeFrequency + uMatStrobePhase));
+        outEmissive = vec4(strobe, 1.0);
+    #else
+        outEmissive = vec4(0.0);
+    #endif
 #endif
 
     colorHDR *= uMatTint;
@@ -1220,42 +1259,22 @@ float wboit_weight(float eye_depth, float alpha) {
     return alpha * clamp(w, 1e-2, 3e3);
 }
 
-#if defined(WBOIT_PASS)
-layout(location = 0) out vec4 outAccumulation;
-layout(location = 1) out vec4 outRevealage;
-layout(location = 2) out vec4 outEmissive;
-#else
-layout(location = 0) out vec4 FragColor;
-layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec4 outEmissive;
-#endif
-
 void main() {
     vec3 colorHDR = shade_surface(vNormal, vWorldPos, vLocalPos);
     float alpha = 1.0;
 #ifdef EFFECT_ALPHA
     alpha = clamp(uMatAlpha, 0.0, 1.0);
 #endif
+
 #ifdef WBOIT_PASS
     float w = wboit_weight(vEyeDepth, alpha);
     outAccumulation = vec4(colorHDR * w, w);
     outRevealage = vec4(alpha);
-    #ifdef EFFECT_EMISSIVE
-        outEmissive = vec4(colorHDR * alpha, alpha);
-    #else
-        outEmissive = vec4(0.0);
-    #endif
 #else
     vec3 Ng = normalize(vNormal);
     if (!gl_FrontFacing) Ng = -Ng;
     outNormal = vec4(normalize((uView * vec4(Ng, 0.0)).xyz) * 0.5 + 0.5, 0.0);
     FragColor = vec4(colorHDR, alpha);
-
-    #ifdef EFFECT_EMISSIVE
-        outEmissive = vec4(colorHDR, alpha);
-    #else
-        outEmissive = vec4(0.0);
-    #endif
 #endif
 }
 

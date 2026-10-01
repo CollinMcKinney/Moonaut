@@ -47,7 +47,7 @@
 // Gradient colors and shaping
 #define SKY_ZENITH               vec3(0.08, 0.24, 0.84)
 #define SKY_HORIZON              vec3(0.9, 0.7, 0.6)
-#define SKY_GROUND               vec3(0.05, 0.5, 0.03)
+#define SKY_GROUND               vec3(0.025, 0.25, 0.015)
 #define SKY_EXPONENT             0.4
 #define SKY_CLOUD_COLOR          vec3(1.15, 1.12, 1.05)
 #define SKY_CLOUD_COVERAGE       0.5
