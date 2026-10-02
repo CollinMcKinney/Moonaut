@@ -638,16 +638,20 @@ static GLint bl_us_u_texel    = -1;
 static GLint bl_us_u_dsts     = -1;
 static GLint bl_us_u_radius   = -1;
 
-/* Artistic controls. Defaults are the values that read as "Halo 3" against the
- * default material set: a low threshold so ordinary lit surfaces contribute,
- * and an intensity low enough that the glow frames a highlight rather than
- * washing the frame. All three are reachable at runtime.
+/* Artistic controls. All are reachable at runtime via render_set_bloom.
  *
- * The threshold is in exposure-multiplied units, where 1.0 is display white
- * before the tone curve. Sitting it above 1.0 restricts bloom to genuine
- * super-blooms and reads as almost nothing on a normally lit scene, so it is
- * set well below white here and the intensity is what keeps the result from
- * veiling. */
+ * What blooms is decided upstream, not here: the chain samples
+ * gl_emissive_tex, and material.frag writes only that attachment for
+ * EFFECT_EMISSIVE materials. Everything else leaves it black, so the threshold
+ * has nothing left to select and stays at 0.
+ *
+ * The knee shapes how hard the prefilter bites into what does get through. It
+ * cannot be left at 0 with a non-zero threshold or the soft-knee term bottoms
+ * out at knee^2/(4*knee) = knee/4 instead of reaching zero, and dark texels
+ * divide that floor by a small brightness — a texel at 0.001 was emitted at
+ * 113x its own value, smearing every faint emissive edge across the frame. If
+ * the threshold is ever raised above 0, the knee must stay strictly below it or
+ * that floor comes back. */
 static int   gl_bloom_enabled   = 1;
 static float gl_bloom_intensity = 1.0f;
 static float gl_bloom_threshold = 0.0f;
@@ -1113,8 +1117,8 @@ static shader_variant_t* shader_cache_compile(u32 cache_key, render_method key,
            side == ALPHA_PASS_BEHIND ? "BEHIND" : "FRONT");
     generate_defines(key, is_depth, side, defines, sizeof(defines));
 
-    vs = compile_shader_with_defines(GL_VERTEX_SHADER, "material.vert", defines);
-    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "material.frag", defines);
+    vs = compile_shader_with_defines(GL_VERTEX_SHADER, "shaders/GLSL/material.vert", defines);
+    fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "shaders/GLSL/material.frag", defines);
     if (!vs || !fs) {
         if (vs) C89GL_glDeleteShader(vs);
         if (fs) C89GL_glDeleteShader(fs);
@@ -1653,7 +1657,7 @@ static void init_cluster_resources(void) {
         snprintf(defines, sizeof(defines),
                  "#version 430 core\n#define CLUSTER_WORKGROUP_SIZE %d\n",
                  CLUSTER_WORKGROUP_SIZE);
-        GLuint cs = compile_shader_with_defines(GL_COMPUTE_SHADER, "cluster.comp", defines);
+        GLuint cs = compile_shader_with_defines(GL_COMPUTE_SHADER, "shaders/GLSL/cluster.comp", defines);
         if (!cs) {
             printf("ERROR: Failed to compile cluster compute shader.\n");
             return;
@@ -1777,7 +1781,7 @@ static void init_env_cube_resources(void) {
     /* Sky program, cube-face mode. */
     {
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                                "sky.frag",
+                                                "shaders/GLSL/sky.frag",
                                                 "#version 430 core\n");
         if (gl_fullscreen_vs && fs) {
             gl_sky_program = C89GL_glCreateProgram();
@@ -1816,7 +1820,7 @@ static void init_env_cube_resources(void) {
     /* Sky program, skybox variant. */
     {
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                                "sky.frag",
+                                                "shaders/GLSL/sky.frag",
                                                 "#version 430 core\n#define SKYBOX_MODE 1\n");
         if (gl_fullscreen_vs && fs) {
             gl_skybox_program = C89GL_glCreateProgram();
@@ -1931,7 +1935,7 @@ static void init_wboit_resources(void) {
 
     {
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                                "oit_composite.frag",
+                                                "shaders/GLSL/oit_composite.frag",
                                                 "#version 430 core\n");
         if (gl_fullscreen_vs && fs) {
             gl_oit_composite_program = C89GL_glCreateProgram();
@@ -2003,7 +2007,7 @@ static void init_vbao_resources(void) {
 
     {
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                                "vbao.frag",
+                                                "shaders/GLSL/vbao.frag",
                                                 "#version 430 core\n");
         if (!gl_fullscreen_vs || !fs) {
             if (fs) C89GL_glDeleteShader(fs);
@@ -2074,7 +2078,7 @@ static void init_vbao_blur_resources(void) {
 
     {
         GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                                "vbao_blur.frag",
+                                                "shaders/GLSL/vbao_blur.frag",
                                                 "#version 430 core\n");
         if (!gl_fullscreen_vs || !fs) {
             if (fs) C89GL_glDeleteShader(fs);
@@ -2123,7 +2127,7 @@ static void init_post_process_resources(void) {
              "#version 430 core\n#define PP_DEBUG_SOURCE %d\n",
              POST_PROCESS_DEBUG_SOURCE);
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                             "post_process.frag",
+                                             "shaders/GLSL/post_process.frag",
                                              defines);
     if (!gl_fullscreen_vs || !fs) {
         if (fs) C89GL_glDeleteShader(fs);
@@ -2195,11 +2199,11 @@ static GLuint compile_fullscreen_program(const char *frag_file, const char *labe
 
 static void init_bloom_resources(void) {
     gl_bloom_prefilter_program =
-        compile_fullscreen_program("bloom_prefilter.frag", "bloom prefilter");
+        compile_fullscreen_program("shaders/GLSL/bloom_prefilter.frag", "bloom prefilter");
     gl_bloom_downsample_program =
-        compile_fullscreen_program("bloom_downsample.frag", "bloom downsample");
+        compile_fullscreen_program("shaders/GLSL/bloom_downsample.frag", "bloom downsample");
     gl_bloom_upsample_program =
-        compile_fullscreen_program("bloom_upsample.frag", "bloom upsample");
+        compile_fullscreen_program("shaders/GLSL/bloom_upsample.frag", "bloom upsample");
 
     if (gl_bloom_prefilter_program)
         bl_pf_u_source    = C89GL_glGetUniformLocation(gl_bloom_prefilter_program, "uSourceTex");
@@ -2237,7 +2241,7 @@ static void init_bloom_resources(void) {
 
 static void init_fxaa_resources(void) {
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                            "fxaa.frag",
+                                            "shaders/GLSL/fxaa.frag",
                                             "#version 430 core\n");
     if (!gl_fullscreen_vs || !fs) {
         if (fs) C89GL_glDeleteShader(fs);
@@ -2274,7 +2278,7 @@ static void init_fxaa_resources(void) {
  * targets exist. */
 static void init_dither_resources(void) {
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                            "dither.frag",
+                                            "shaders/GLSL/dither.frag",
                                             "#version 430 core\n");
     if (!gl_fullscreen_vs || !fs) {
         if (fs) C89GL_glDeleteShader(fs);
@@ -2332,7 +2336,7 @@ static void init_dither_resources(void) {
 /* ---- Supersampling resolve, used instead of FXAA + blit when scaling up ---- */
 static void init_ssaa_resources(void) {
     GLuint fs = compile_shader_with_defines(GL_FRAGMENT_SHADER,
-                                            "ssaa.frag",
+                                            "shaders/GLSL/ssaa.frag",
                                             "#version 430 core\n");
     if (!gl_fullscreen_vs || !fs) {
         if (fs) C89GL_glDeleteShader(fs);
@@ -2368,7 +2372,7 @@ static void init_ssaa_resources(void) {
 static void init_audio_resources(void) {
 #ifdef AUDIO_OCCLUSION
     {
-        GLuint cs_occ = compile_shader_with_defines(GL_COMPUTE_SHADER, "audio_occlusion.comp", "#version 430 core\n");
+        GLuint cs_occ = compile_shader_with_defines(GL_COMPUTE_SHADER, "shaders/GLSL/audio_occlusion.comp", "#version 430 core\n");
         if (cs_occ) {
             gl_audio_occlusion_program = C89GL_glCreateProgram();
             C89GL_glAttachShader(gl_audio_occlusion_program, cs_occ);
@@ -2414,7 +2418,7 @@ static void init_audio_resources(void) {
 
 #ifdef AUDIO_REVERB
     {
-        GLuint cs_rev = compile_shader_with_defines(GL_COMPUTE_SHADER, "audio_reverb.comp", "#version 430 core\n");
+        GLuint cs_rev = compile_shader_with_defines(GL_COMPUTE_SHADER, "shaders/GLSL/audio_reverb.comp", "#version 430 core\n");
         if (cs_rev) {
             gl_audio_reverb_program = C89GL_glCreateProgram();
             C89GL_glAttachShader(gl_audio_reverb_program, cs_rev);
@@ -2448,7 +2452,7 @@ static void init_audio_resources(void) {
 
 #ifdef AUDIO_PORTAL
     {
-        GLuint cs_port = compile_shader_with_defines(GL_COMPUTE_SHADER, "audio_portal.comp", "#version 430 core\n");
+        GLuint cs_port = compile_shader_with_defines(GL_COMPUTE_SHADER, "shaders/GLSL/audio_portal.comp", "#version 430 core\n");
         if (cs_port) {
             gl_audio_portal_program = C89GL_glCreateProgram();
             C89GL_glAttachShader(gl_audio_portal_program, cs_port);
@@ -3495,7 +3499,7 @@ INLINE int render_init(i32 window_width, i32 window_height) {
     C89GL_glFrontFace(GL_CCW);
 
     gl_fullscreen_vs = compile_shader_with_defines(GL_VERTEX_SHADER,
-                                                   "fullscreen.vert",
+                                                   "shaders/GLSL/fullscreen.vert",
                                                    "#version 430 core\n");
     if (!gl_fullscreen_vs) {
         printf("ERROR: Failed to compile shared full-screen vertex shader.\n");
@@ -5268,8 +5272,8 @@ INLINE void render_particle_system_init(int max_particles) {
     g_burst_done = 0;
 
     {
-        vs = compile_shader_with_defines(GL_VERTEX_SHADER, "particle.vert", defines);
-        fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "particle.frag", defines);
+        vs = compile_shader_with_defines(GL_VERTEX_SHADER, "shaders/GLSL/particle.vert", defines);
+        fs = compile_shader_with_defines(GL_FRAGMENT_SHADER, "shaders/GLSL/particle.frag", defines);
         if (!vs || !fs) {
             if (vs) C89GL_glDeleteShader(vs);
             if (fs) C89GL_glDeleteShader(fs);
