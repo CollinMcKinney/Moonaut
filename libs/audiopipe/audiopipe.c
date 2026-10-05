@@ -160,7 +160,7 @@ int ap_init(int sample_rate, int channels, int buffer_frames,
     pwfx_orig = pwfx;   /* save the original mix format */
 
     printf("Device mix format: tag=0x%04X, channels=%d, sample_rate=%d\n",
-           pwfx->wFormatTag, pwfx->nChannels, pwfx->nSamplesPerSec);
+           pwfx->wFormatTag, pwfx->nChannels, (int)pwfx->nSamplesPerSec);
 
     /* If the mix format is float and matches our channel count, we can use it directly.
        Otherwise, we try to build our own float format. */
@@ -168,7 +168,7 @@ int ap_init(int sample_rate, int channels, int buffer_frames,
         /* Use the device's mix format as-is (it already matches our requested sample rate) */
         use_mix_format = 1;
         printf("Using device mix format (float, %d channels, %d Hz)\n",
-               pwfx->nChannels, pwfx->nSamplesPerSec);
+               pwfx->nChannels, (int)pwfx->nSamplesPerSec);
     } else {
         /* Build our custom float format (may be rejected if sample rate/channels differ) */
         WAVEFORMATEXTENSIBLE *pExt = &wfxExt;
