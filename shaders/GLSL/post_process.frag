@@ -40,6 +40,7 @@ out vec4 FragColor;
 #define TONE_MAP_HABLE                  2
 #define TONE_MAP_KHRONOS_PBR_NEUTRAL    3
 #define TONE_MAP_REINHARD               4
+#define TONE_MAP_NONE                   5  
 
 #define TONE_MAP_MODE TONE_MAP_CUSTOM
 
@@ -575,18 +576,20 @@ vec3 tonemap_reinhard(vec3 c) {
 // Tonemap dispatcher
 // =============================================================================
 vec3 tone_map(vec3 color) {
-#if TONE_MAP_MODE == TONE_MAP_CUSTOM
-    return tonemap_custom(color);
-#elif TONE_MAP_MODE == TONE_MAP_GT7
+#if TONE_MAP_MODE == TONE_MAP_GT7
     return tonemap_gt7(color, gt7_init_sdr());
+#elif TONE_MAP_MODE == TONE_MAP_CUSTOM
+    return tonemap_custom(color);
 #elif TONE_MAP_MODE == TONE_MAP_HABLE
     return tonemap_hable(color);
 #elif TONE_MAP_MODE == TONE_MAP_KHRONOS_PBR_NEUTRAL
     return tonemap_khronos_pbr_neutral(color);
 #elif TONE_MAP_MODE == TONE_MAP_REINHARD
     return tonemap_reinhard(color);
+#elif TONE_MAP_MODE == TONE_MAP_NONE
+    return color;
 #else
-#error "TONE_MAP_MODE must be 0..4"
+#error "TONE_MAP_MODE must be 0..5"
 #endif
 }
 
